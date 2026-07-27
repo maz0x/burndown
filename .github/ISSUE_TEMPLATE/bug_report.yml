@@ -1,0 +1,42 @@
+name: Bug report
+description: Something in Burndown is wrong or broken.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time. Screenshots help a lot, and nothing here is required.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What did you see, and what did you expect instead?
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Burndown version
+      description: Settings, General, next to the version, or the About window.
+      placeholder: "1.1"
+  - type: input
+    id: macos
+    attributes:
+      label: macOS version and Mac
+      placeholder: "macOS 15.2, M2 MacBook Air"
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Which mode
+      options:
+        - Live (signed in)
+        - Estimate only (not signed in)
+        - Not sure
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: |
+        If it is a data problem, the diagnostic log can help: it lives at
+        ~/.config/burndown/live-debug.log and never contains your token. Paste only what you
+        are comfortable sharing.

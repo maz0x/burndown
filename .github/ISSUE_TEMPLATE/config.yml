@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Question or idea to talk through
+    url: https://github.com/maz0x/burndown/discussions
+    about: Discussions is the friendlier place for questions, setups, and half-formed ideas.
+  - name: Documentation
+    url: https://maz0x.github.io/burndown/guide.html
+    about: Setup, every feature, the JSON contract, and troubleshooting.
