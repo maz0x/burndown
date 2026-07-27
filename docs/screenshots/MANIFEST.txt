@@ -18,7 +18,7 @@ f-charts.png               720x360  display width 360
 f-chats.png                720x360  display width 360
 f-forecast.png             720x360  display width 360
 f-themes.png               720x360  display width 360
-insights.png               1280x2733  display width 640
+insights.png               1280x2691  display width 640
 menubar-styles.png         1840x2368  display width 920
 popover-dark.png           528x1196  display width 264
 popover.png                528x1196  display width 264
