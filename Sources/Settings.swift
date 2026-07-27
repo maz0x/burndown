@@ -183,7 +183,7 @@ enum LiveColor: String, CaseIterable, Identifiable {
     }
 }
 let kAppName = "Burndown"           // app name (floating window title + About). Tagline: "usage monitor for Claude"
-let kAppVersion = "1.2"             // bump on release builds
+let kAppVersion = "0.9.0"           // bump on release builds; 1.0 is reserved for Developer ID signing + multi-provider
 let kMinWindowAlpha = 0.45          // most see-through the windows go at 100% transparency (keeps text legible)
 
 // A curated set,every style earns its place, all keep a small footprint (most are

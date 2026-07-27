@@ -521,8 +521,9 @@ or later.
 
 ## Early days
 
-Version 1.1 is young: it has been built and tested carefully, but it has
-not yet met every Mac, every plan, and every setup out there. If
+This is 0.9: built and tested carefully, but it has not yet met every
+Mac, every plan, and every setup out there. 1.0 is reserved for when
+releases are Developer ID signed and other providers are supported. If
 something looks wrong,
 [open an issue](https://github.com/maz0x/burndown/issues) and
 say what you saw. That is the fastest way to make it better for everyone.
