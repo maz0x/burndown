@@ -1,5 +1,17 @@
 # What's new in Burndown
 
+## 0.9.1
+
+Housekeeping, no feature changes.
+
+- **The website moved** to burndown-app.pages.dev, and the Guide menu item now
+  opens it directly. The old address is being retired, so update to keep that
+  menu item working.
+- **Install instructions rewritten.** Both documented ways past Gatekeeper had
+  stopped working: Homebrew removed the `--no-quarantine` command-line flag, and
+  Apple removed the right-click, Open shortcut in macOS 15. The README, the
+  guide and the Homebrew cask now describe four routes that actually work.
+
 ## 0.9.0
 
 The first public release.
