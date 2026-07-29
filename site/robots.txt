@@ -1,0 +1,7 @@
+# Burndown: https://burndown-app.pages.dev/
+# Everything here is public documentation. Crawl it, including the AI crawlers:
+# an accurate answer about this app is better than a guess.
+User-agent: *
+Allow: /
+
+Sitemap: https://burndown-app.pages.dev/sitemap.xml

@@ -4,7 +4,9 @@
 # app, its TCC grants, and the LaunchAgent are unaffected).
 #
 # Signing note: releases are ad-hoc signed until a Developer ID certificate exists. macOS
-# Gatekeeper will warn on first open of a downloaded copy; README documents right-click > Open.
+# Gatekeeper will block the first open of a downloaded copy; README's Install section documents
+# the four ways past it (Homebrew with HOMEBREW_CASK_OPTS, xattr -d, System Settings > Open
+# Anyway, or building from source).
 set -euo pipefail
 cd "$(dirname "$0")"
 

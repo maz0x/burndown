@@ -34,9 +34,10 @@ It keeps itself up to date from here on.
 **[Full guide](https://maz0x.github.io/burndown/guide.html)** ·
 **[Discussions](https://github.com/maz0x/burndown/discussions)**
 
-> Releases are signed ad hoc for now, so macOS asks once on first open:
-> right-click Burndown.app, choose Open, then Open again. Or
-> [build from source](#install) in one command and skip the question.
+> Releases are signed ad hoc for now, so macOS blocks the first open of a
+> downloaded copy. [Install](#install) lists the four ways past it; the
+> shortest is `xattr -d com.apple.quarantine /Applications/Burndown.app`, and
+> building from source avoids the question entirely.
 
 <p align="center">
   <img src="docs/screenshots/popover.png" width="264" alt="The Burndown card in light mode: session and weekly percentages, per-model caps, live burn rate, and a chart">
@@ -414,28 +415,41 @@ GET https://api.anthropic.com/api/oauth/usage
 
 ## Install
 
-**Download:** grab the
-[latest release](https://github.com/maz0x/burndown/releases/latest)
-(universal, macOS 13+) and drop it in Applications. Releases are ad-hoc
-signed until a Developer ID certificate lands, so macOS Gatekeeper warns
-on first open. To open anyway: right-click Burndown.app, choose Open,
-then Open again. Or:
-
-```bash
-xattr -d com.apple.quarantine Burndown.app
-```
+Releases are ad-hoc signed until a Developer ID certificate lands, so
+macOS quarantines a downloaded copy and Gatekeeper blocks the first open.
+Pick whichever of these four you are comfortable with.
 
 **Homebrew:**
 
 ```bash
-brew install --cask --no-quarantine maz0x/tap/burndown
+HOMEBREW_CASK_OPTS="--no-quarantine" brew install --cask maz0x/tap/burndown
 ```
 
-(`--no-quarantine` is what skips the Gatekeeper prompt on an ad-hoc signed
-build. Drop it if you would rather right-click and Open once.)
+That environment variable tells Homebrew not to attach the quarantine flag
+to the download. Homebrew's own documentation calls it a Gatekeeper bypass
+that reduces system security, so treat it as your informed choice rather
+than a magic flag. Homebrew removed the old `--no-quarantine` command-line
+flag, and a cask cannot set the variable on your behalf, so this form is
+the only one that still works.
 
-**Build from source** (needs the Xcode Command Line Tools; no Gatekeeper
-warning this way):
+**Download and clear the flag yourself:** grab the
+[latest release](https://github.com/maz0x/burndown/releases/latest)
+(universal, macOS 13+), unzip it, drop Burndown in Applications, then:
+
+```bash
+xattr -d com.apple.quarantine /Applications/Burndown.app
+```
+
+**No Terminal at all:** try to open Burndown and let macOS block it. Then
+open System Settings, go to Privacy & Security, scroll down to Security,
+and click **Open Anyway** next to the note about Burndown, entering your
+login password. That button only appears for about an hour after a blocked
+launch, so if it is not there, try opening the app again first. (macOS 15
+removed the old right-click, Open shortcut, so this is the GUI route now.)
+
+**Build from source** (needs the Xcode Command Line Tools). This is the
+zero-friction option: an app you compiled locally is never quarantined, so
+Gatekeeper never appears at all.
 
 ```bash
 git clone https://github.com/maz0x/burndown && cd burndown
@@ -494,9 +508,12 @@ GitHub (a version number, for updates). The full policy is short and
 worth reading: [docs/PRIVACY.md](docs/PRIVACY.md).
 
 **Why does macOS warn me on first open?**
-Releases are ad-hoc signed until a Developer ID certificate lands.
-Right-click, Open, Open gets past it once and macOS remembers. Building
-from source avoids the warning entirely.
+Releases are ad-hoc signed until a Developer ID certificate lands. macOS 15
+removed the old right-click, Open shortcut, so use one of the routes under
+[Install](#install): install through Homebrew with
+`HOMEBREW_CASK_OPTS="--no-quarantine"`, clear the flag with `xattr -d
+com.apple.quarantine`, or click Open Anyway in System Settings, Privacy &
+Security. Building from source avoids the warning entirely.
 
 **Will this get my account banned?**
 Burndown is a read-only monitor: it never runs inference with your token
