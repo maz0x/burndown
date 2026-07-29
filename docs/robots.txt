@@ -1,7 +1,0 @@
-# Burndown: https://maz0x.github.io/burndown/
-# Everything here is public documentation. Crawl it, including the AI crawlers:
-# an accurate answer about this app is better than a guess.
-User-agent: *
-Allow: /
-
-Sitemap: https://maz0x.github.io/burndown/sitemap.xml

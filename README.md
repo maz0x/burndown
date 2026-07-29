@@ -30,8 +30,8 @@ real glass, and a card where every element answers to you.
 for macOS 13 or later, Apple Silicon and Intel. Free and open source.
 It keeps itself up to date from here on.
 
-**[Home page](https://maz0x.github.io/burndown/)** ·
-**[Full guide](https://maz0x.github.io/burndown/guide.html)** ·
+**[Home page](https://burndown-app.pages.dev/)** ·
+**[Full guide](https://burndown-app.pages.dev/guide)** ·
 **[Discussions](https://github.com/maz0x/burndown/discussions)**
 
 > Releases are signed ad hoc for now, so macOS blocks the first open of a
@@ -40,8 +40,8 @@ It keeps itself up to date from here on.
 > building from source avoids the question entirely.
 
 <p align="center">
-  <img src="docs/screenshots/popover.png" width="264" alt="The Burndown card in light mode: session and weekly percentages, per-model caps, live burn rate, and a chart">
-  <img src="docs/screenshots/popover-dark.png" width="264" alt="The same card in dark mode">
+  <img src="site/screenshots/popover.png" width="264" alt="The Burndown card in light mode: session and weekly percentages, per-model caps, live burn rate, and a chart">
+  <img src="site/screenshots/popover-dark.png" width="264" alt="The same card in dark mode">
 </p>
 
 ## The whole picture, one click away
@@ -71,7 +71,7 @@ bottom of the card. It is additive only, never touches the subscription
 gauges, and the key stays on this Mac.
 
 <p align="center">
-  <img src="docs/screenshots/account.png" width="340" alt="The Account window: plan, session and weekly resets, and per-model caps with percent left">
+  <img src="site/screenshots/account.png" width="340" alt="The Account window: plan, session and weekly resets, and per-model caps with percent left">
 </p>
 
 A note on the dollar figures: cost numbers are estimates from public API
@@ -97,7 +97,7 @@ totals:
   spreadsheet or an expense note.
 
 <p align="center">
-  <img src="docs/screenshots/insights.png" width="420" alt="The Insights window: weekly recap, current session by model, biggest chats, projects, history, budget, and export">
+  <img src="site/screenshots/insights.png" width="420" alt="The Insights window: weekly recap, current session by model, biggest chats, projects, history, budget, and export">
 </p>
 
 ## It sees the wall before you hit it
@@ -147,7 +147,7 @@ hours silence the lot on your schedule, and the six alert sounds (Ember,
 Chime, Drop, Pulse, Bloom, Knock) are original chimes made for the app.
 
 <p align="center">
-  <img src="docs/screenshots/settings-alerts.png" width="480" alt="The alerts pane: per-metric thresholds, forecast, burn spike, runaway, budget, quiet hours, and sounds">
+  <img src="site/screenshots/settings-alerts.png" width="480" alt="The alerts pane: per-metric thresholds, forecast, burn spike, runaway, budget, quiet hours, and sounds">
 </p>
 
 ## Two dozen charts, grouped by the question they answer
@@ -161,37 +161,37 @@ and time windows from 30 minutes to all time.
 volume bars, cumulative tokens, and a burn distribution histogram whose
 long tail shows your rare huge bursts.
 
-<img src="docs/screenshots/charts-burn.png" width="610" alt="The Burn charts: burn rate, steps, volume bars, cumulative tokens, and burn distribution">
+<img src="site/screenshots/charts-burn.png" width="610" alt="The Burn charts: burn rate, steps, volume bars, cumulative tokens, and burn distribution">
 
 **Limits: will you make it to the reset.** Session and week burndowns
 against the pace that lasts exactly to the reset, both usage percentages
 on one scale, the pace gauge, and every model cap side by side.
 
-<img src="docs/screenshots/charts-limits.png" width="610" alt="The Limits charts: session and week burndowns, usage percentages, pace gauge, and model limits">
+<img src="site/screenshots/charts-limits.png" width="610" alt="The Limits charts: session and week burndowns, usage percentages, pace gauge, and model limits">
 
 **Breakdown: where did it go.** Tokens by model and by project, cost per
 day, the top chats in the window, and proportional model and project
 mixes.
 
-<img src="docs/screenshots/charts-breakdown.png" width="610" alt="The Breakdown charts: by model, by project, cost per day, top chats, and mix bars">
+<img src="site/screenshots/charts-breakdown.png" width="610" alt="The Breakdown charts: by model, by project, cost per day, top chats, and mix bars">
 
 **Rhythm: when do you work.** Hour-of-day profile, a day-by-hour activity
 heatmap, weekday profile, tokens per day, and every 5-hour session block
 with how hard it was worked.
 
-<img src="docs/screenshots/charts-rhythm.png" width="610" alt="The Rhythm charts: hour of day, activity heatmap, day of week, tokens per day, and session blocks">
+<img src="site/screenshots/charts-rhythm.png" width="610" alt="The Rhythm charts: hour of day, activity heatmap, day of week, tokens per day, and session blocks">
 
 **Detail: what is the traffic made of.** Cache reads against fresh
 tokens, input against output, and running spend with where it lands at
 this rate.
 
-<img src="docs/screenshots/charts-detail.png" width="610" alt="The Detail charts: cache efficiency, input vs output, and spend to date">
+<img src="site/screenshots/charts-detail.png" width="610" alt="The Detail charts: cache efficiency, input vs output, and spend to date">
 
 You never pick blind. The Settings gallery draws every chart before you
 choose it, with realistic sample data or your own live data, so you know
 exactly what each one will look like on your card.
 
-<img src="docs/screenshots/chart-gallery.png" width="660" alt="The chart gallery in Settings, every chart drawn live before you pick it">
+<img src="site/screenshots/chart-gallery.png" width="660" alt="The chart gallery in Settings, every chart drawn live before you pick it">
 
 ## Make it yours
 
@@ -210,7 +210,7 @@ Midnight Ink, Forest Night, Ocean Deep, Espresso, and Electric Plum.
 Here are twelve of them, the same card rendered through the app's own
 palette code:
 
-<img src="docs/screenshots/themes.png" width="675" alt="The same Burndown card rendered in twelve themes: Stone and Clay, Paper White, Sage Linen, Harvest Amber, Sandstone, Honey Oat, Midnight Ink, Forest Night, Ocean Deep, Espresso, Electric Plum, and Arctic Blue">
+<img src="site/screenshots/themes.png" width="675" alt="The same Burndown card rendered in twelve themes: Stone and Clay, Paper White, Sage Linen, Harvest Amber, Sandstone, Honey Oat, Midnight Ink, Forest Night, Ocean Deep, Espresso, Electric Plum, and Arctic Blue">
 
 A separate Theme switch decides how a palette meets macOS: follow the
 system's light and dark, or pin it to either. Several themes are designed
@@ -232,7 +232,7 @@ checkerboard and a gradient, with a real contrast readout underneath
 as you like and know the numbers will survive it. One link resets the
 lot.
 
-<img src="docs/screenshots/settings-appearance.png" width="660" alt="The whole Appearance pane: theme picker, accent, tint by usage, popover size, then the Background block with live glass preview and contrast readout, style, presets, nine sliders, and the number animation picker">
+<img src="site/screenshots/settings-appearance.png" width="660" alt="The whole Appearance pane: theme picker, accent, tint by usage, popover size, then the Background block with live glass preview and contrast readout, style, presets, nine sliders, and the number animation picker">
 
 ### Down to the last element
 
@@ -265,9 +265,9 @@ dot), plain text down to a bare percentage, and twin styles that show
 session and week at once. Number format, time-to-reset, and digit weight
 are all adjustable.
 
-<img src="docs/screenshots/settings-menubar.png" width="660" alt="The menu bar pane: style picker with live previews and format options">
+<img src="site/screenshots/settings-menubar.png" width="660" alt="The menu bar pane: style picker with live previews and format options">
 
-<img src="docs/screenshots/menubar-styles.png" width="750" alt="A contact sheet of the menu bar glyph styles">
+<img src="site/screenshots/menubar-styles.png" width="750" alt="A contact sheet of the menu bar glyph styles">
 
 And yes, the flame. The signature style is a living flame that idles
 quietly, grows and throws sparks as you work, and rages toward white-hot
@@ -289,14 +289,14 @@ it is the charm, not the argument.
 - **A floating card**: the same card as the popover, pinned anywhere on
   your desktop, optionally always on top, with or without a title bar.
 
-<img src="docs/screenshots/widgets.png" width="330" alt="The docked edge widget styles on the Claude Desktop window">
+<img src="site/screenshots/widgets.png" width="330" alt="The docked edge widget styles on the Claude Desktop window">
 
 ## In your terminal
 
 Burndown treats the terminal as a first-class surface, not an
 afterthought.
 
-<img src="docs/screenshots/cli.png" width="750" alt="A terminal running Claude Code with the Burndown statusline gauge, the same line recomposed via BURNDOWN_STATUSLINE to add cost and burn rate, and the output of Burndown --json">
+<img src="site/screenshots/cli.png" width="750" alt="A terminal running Claude Code with the Burndown statusline gauge, the same line recomposed via BURNDOWN_STATUSLINE to add cost and burn rate, and the output of Burndown --json">
 
 **Install Terminal Gauge**, one click in the right-click menu, writes a
 small statusline script and points Claude Code at it, so your live limits
@@ -372,7 +372,7 @@ telemetry and there are no servers of ours.
   [docs/PRIVACY.md](docs/PRIVACY.md) and the Privacy link in About.
 
 <p align="center">
-  <img src="docs/screenshots/about.png" width="300" alt="The About window: version, the one-line privacy promise, and links to the privacy policy and release notes">
+  <img src="site/screenshots/about.png" width="300" alt="The About window: version, the one-line privacy promise, and links to the privacy policy and release notes">
 </p>
 
 ## How live mode works, with full disclosure
@@ -465,7 +465,7 @@ manager (Bartender, Ice, etc.) may be hiding it. To uninstall: quit the
 app, turn off Open at login, delete `Burndown.app` and
 `~/.config/burndown/`.
 
-<img src="docs/screenshots/welcome.png" width="700" alt="The four-page welcome tour">
+<img src="site/screenshots/welcome.png" width="700" alt="The four-page welcome tour">
 
 ## Updates
 
@@ -479,7 +479,7 @@ daily check off any time in Settings, General.
 Because the update is fetched by the app rather than a browser, macOS
 does not quarantine it, so updates install without any Gatekeeper prompt.
 
-<img src="docs/screenshots/settings-general.png" width="660" alt="Settings, General: the daily update check, the current version with its status line, and a link to releases and source">
+<img src="site/screenshots/settings-general.png" width="660" alt="Settings, General: the daily update check, the current version with its status line, and a link to releases and source">
 
 ## FAQ
 

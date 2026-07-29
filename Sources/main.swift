@@ -1270,7 +1270,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     }
 
     @objc private func openGuide() {
-        NSWorkspace.shared.open(URL(string: "https://maz0x.github.io/burndown/guide.html")!)
+        NSWorkspace.shared.open(URL(string: "https://burndown-app.pages.dev/guide")!)
     }
     @objc private func openDiscussions() {
         NSWorkspace.shared.open(URL(string: "https://github.com/maz0x/burndown/discussions")!)

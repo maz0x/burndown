@@ -4,5 +4,5 @@ contact_links:
     url: https://github.com/maz0x/burndown/discussions
     about: Discussions is the friendlier place for questions, setups, and half-formed ideas.
   - name: Documentation
-    url: https://maz0x.github.io/burndown/guide.html
+    url: https://burndown-app.pages.dev/guide
     about: Setup, every feature, the JSON contract, and troubleshooting.
