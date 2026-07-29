@@ -1,5 +1,5 @@
 #!/bin/bash
-# End-to-end proof that auto-update works: builds a deliberately OLD (0.9) copy of the current
+# End-to-end proof that auto-update works: builds a deliberately OLD (0.0.1) copy of the current
 # sources into a throwaway bundle outside the source tree, runs it with CUB_UPDATE_NOW=1, and
 # lets it do the real thing: query GitHub, download the published release, verify the SHA-256,
 # verify the signature, swap itself in place, and relaunch.
@@ -14,9 +14,22 @@ APP="$WORK/Burndown.app"
 SRC="$WORK/src"
 rm -rf "$WORK"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$SRC"
 
-echo "→ Building a 0.9 test build (current code, old version number)"
+# The fake "old" version the throwaway bundle claims to be. It must be strictly LOWER than the
+# published release, or the updater correctly offers nothing and this test fails for the wrong
+# reason. That is exactly what happened when this was hardcoded to 0.9 and the release became
+# v0.9.0: the comparison is numeric, so 0.9 and 0.9.0 are the SAME version and no update is due.
+# Keep it at a version below any real release, and assert that rather than trusting it.
+OLDVER="0.0.1"
+CURVER="$(sed -n 's/^let kAppVersion = "\([^"]*\)".*/\1/p' Sources/Settings.swift)"
+if [ "$(printf '%s\n%s\n' "$OLDVER" "$CURVER" | sort -V | head -1)" != "$OLDVER" ] || [ "$OLDVER" = "$CURVER" ]; then
+    echo "FAIL: test setup is broken. OLDVER ($OLDVER) must be strictly older than the current"
+    echo "      version ($CURVER), otherwise no update is due and this test proves nothing."
+    exit 1
+fi
+
+echo "→ Building a $OLDVER test build (current code, old version number)"
 cp Sources/*.swift "$SRC/"
-sed -i '' 's/^let kAppVersion = "[^"]*"/let kAppVersion = "0.9"/' "$SRC/Settings.swift"
+sed -i '' "s/^let kAppVersion = \"[^\"]*\"/let kAppVersion = \"$OLDVER\"/" "$SRC/Settings.swift"
 swiftc -O -target arm64-apple-macos13.0 \
   -framework AppKit -framework SwiftUI -framework Combine -framework Charts \
   -framework UserNotifications -framework ServiceManagement \
@@ -29,8 +42,8 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <dict>
     <key>CFBundleName</key>            <string>Burndown</string>
     <key>CFBundleIdentifier</key>      <string>com.maz.burndown</string>
-    <key>CFBundleVersion</key>         <string>0.9</string>
-    <key>CFBundleShortVersionString</key> <string>0.9</string>
+    <key>CFBundleVersion</key>         <string>$OLDVER</string>
+    <key>CFBundleShortVersionString</key> <string>$OLDVER</string>
     <key>CFBundlePackageType</key>     <string>APPL</string>
     <key>CFBundleExecutable</key>      <string>Burndown</string>
     <key>LSMinimumSystemVersion</key>  <string>13.0</string>
@@ -64,7 +77,7 @@ EXPECTED="$(sed -n 's/^let kAppVersion = "\([^"]*\)".*/\1/p' Sources/Settings.sw
 
 if grep -q "failed" "$LOG"; then echo "FAIL: updater reported a failure"; exit 1; fi
 if [ "$INSTALLED" = "$EXPECTED" ]; then
-    echo "✓ E2E PASS: the 0.9 build updated itself to $INSTALLED in place"
+    echo "✓ E2E PASS: the $OLDVER build updated itself to $INSTALLED in place"
     exit 0
 else
     echo "FAIL: bundle is at '$INSTALLED', expected '$EXPECTED'"
