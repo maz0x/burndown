@@ -328,9 +328,11 @@ export BURNDOWN_ASCII=1   # plain characters instead of the flame and block cell
 <code>~/.config/burndown/burndown-live.json</code> is rewritten on every refresh, so scripts can
 read it without spawning a process.</p>
 <pre><code>{
-  "schemaVersion" : 1,
+  "burnPerMin" : 14000,
   "generatedAt" : "2026-07-26T01:26:30Z",
   "plan" : "Max 20×",
+  "schemaVersion" : 1,
+  "sessionCost" : 112,
   "sessionPct" : 0.46,
   "sessionResetAt" : "2026-07-26T04:00:00Z",
   "weeklyPct" : 0.13,
@@ -340,6 +342,10 @@ read it without spawning a process.</p>
 is byte-stable, so it diffs and caches cleanly. A missing optional field means unknown, never
 zero. <code>schemaVersion</code> only changes on a breaking change, and the contract has its own
 test suite so it will not drift under you.</p>
+<p>One difference between the two doors: <code>burnPerMin</code> and <code>sessionCost</code> are
+live readings, so only the running app knows them. The file carries both. A cold
+<code>Burndown --json</code> reads the cache and reports each as <code>null</code>, which is the
+contract's way of saying unknown, rather than inventing a figure.</p>
 
 <h2 id="files">Files and uninstalling</h2>
 <table>

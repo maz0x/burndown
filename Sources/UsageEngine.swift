@@ -921,6 +921,10 @@ final class UsageEngine: ObservableObject {
         writeBurndownContract()
     }
 
+    /// Tokens/min over the last 60s, pushed in by the app layer (which owns LiveActivity).
+    /// The engine cannot compute it: it is a streaming reading, not a cumulative API figure.
+    var liveBurnPerMin: Double = 0
+
     /// Stable machine-readable contract for external tools (Raycast / Stream Deck / scripts /
     /// statuslines): mirrors the live numbers into ~/.config/burndown/burndown-live.json
     /// using the versioned BurndownLive shape (Sources/LiveContract.swift).
@@ -936,7 +940,8 @@ final class UsageEngine: ObservableObject {
             sonnetPct: snapshot.apiSonnet?.pct,
             sessionResetAt: snapshot.sessionResetAt.map { iso.string(from: $0) },
             weeklyResetAt: snapshot.weeklyResetAt.map { iso.string(from: $0) },
-            burnPerMin: nil
+            burnPerMin: liveBurnPerMin > 0 ? liveBurnPerMin : nil,
+            sessionCost: snapshot.sessionCost > 0 ? snapshot.sessionCost : nil
         )
         let url = cacheURL.deletingLastPathComponent().appendingPathComponent("burndown-live.json")
         try? encodeBurndownLive(live).data(using: .utf8)?.write(to: url)

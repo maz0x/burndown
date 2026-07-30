@@ -21,7 +21,8 @@ let full = BurndownLive(
     sonnetPct: 0.18,
     sessionResetAt: "2026-06-28T17:00:00Z",
     weeklyResetAt: "2026-07-01T00:00:00Z",
-    burnPerMin: 1234.5
+    burnPerMin: 1234.5,
+    sessionCost: 4.75
 )
 let minimal = BurndownLive(
     schemaVersion: 1,
@@ -33,7 +34,8 @@ let minimal = BurndownLive(
     sonnetPct: nil,
     sessionResetAt: nil,
     weeklyResetAt: nil,
-    burnPerMin: nil
+    burnPerMin: nil,
+    sessionCost: nil
 )
 
 print("encode (valid JSON / required keys):")
@@ -80,8 +82,16 @@ check(decodedBare?.sessionPct == 0.5 && decodedBare?.plan == nil, "object with o
 // Boundary pct values 0 and 1 survive the round trip exactly.
 let edge = BurndownLive(schemaVersion: 1, generatedAt: "2026-06-28T00:00:00Z", plan: nil,
                         sessionPct: 0.0, weeklyPct: 1.0, opusPct: 1.0, sonnetPct: 0.0,
-                        sessionResetAt: nil, weeklyResetAt: nil, burnPerMin: 0.0)
+                        sessionResetAt: nil, weeklyResetAt: nil, burnPerMin: 0.0, sessionCost: 0.0)
 check(decodeBurndownLive(encodeBurndownLive(edge)) == edge, "boundary pct values (0 and 1) round-trip exactly")
+
+// sessionCost was added after schemaVersion 1 shipped, so it must behave like every other
+// optional: present when known, absent when not, and a consumer written against the original
+// shape must still decode a payload that carries it.
+check(fullJSON.contains("\"sessionCost\""), "sessionCost is emitted when known")
+check(!minJSON.contains("\"sessionCost\""), "sessionCost is omitted when nil, not sent as 0")
+check(decodedBare?.sessionCost == nil, "a payload without sessionCost decodes with it nil")
+check(decodeBurndownLive(fullJSON)?.sessionCost == 4.75, "sessionCost round-trips by value")
 
 print(failures == 0 ? "\nALL LIVECONTRACT TESTS PASSED" : "\n\(failures) FAILURE(S)")
 exit(failures == 0 ? 0 : 1)

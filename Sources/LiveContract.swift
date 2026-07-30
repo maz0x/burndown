@@ -23,7 +23,12 @@ struct BurndownLive: Codable, Equatable {
     let sonnetPct: Double?
     let sessionResetAt: String?
     let weeklyResetAt: String?
+    /// Tokens per minute over the last 60s, and the session's estimated API-list cost. Both are
+    /// LIVE readings, so only the running app knows them: a cold `Burndown --json` reads a cache
+    /// and correctly reports null for each rather than inventing a figure. Optional, so adding
+    /// sessionCost does not break a consumer written against the original shape.
     let burnPerMin: Double?
+    let sessionCost: Double?
 }
 
 /// Encode a BurndownLive to a pretty-printed, sorted-keys UTF8 JSON string. Sorted keys make the output

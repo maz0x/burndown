@@ -831,6 +831,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         let t = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
             guard let self else { return }
             self.liveActivity.recordUsage(session: self.engine.snapshot.sessionPct, weekly: self.engine.snapshot.weeklyPct)
+            self.engine.liveBurnPerMin = self.liveActivity.rate
         }
         RunLoop.main.add(t, forMode: .common); usageTimer = t
     }
@@ -2010,7 +2011,11 @@ if CommandLine.arguments.contains("--json") {
         sonnetPct: pct("seven_day_sonnet"),
         sessionResetAt: reset("five_hour"),
         weeklyResetAt: reset("seven_day"),
-        burnPerMin: nil
+        // A cold read of the cache cannot know a live rate or an in-flight session cost.
+        // Null is the contract's "unknown"; the running app writes both into
+        // ~/.config/burndown/burndown-live.json, which is what statuslines read.
+        burnPerMin: nil,
+        sessionCost: nil
     )
     print(encodeBurndownLive(live))
     exit(0)

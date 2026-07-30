@@ -313,7 +313,7 @@ variable picks and orders them; a second strips the line down for
 terminals without emoji or block glyphs:
 
 ```bash
-export BURNDOWN_STATUSLINE=bar,pct,resets,week  # pick and order the segments
+export BURNDOWN_STATUSLINE=bar,pct,resets,week,cost,rate  # default: bar,pct,resets,week
 export BURNDOWN_ASCII=1   # plain * and # / - instead of the flame and block cells
 ```
 
@@ -324,7 +324,8 @@ custom statuslines can read it with no process to spawn. Both speak the
 same documented, versioned contract: `schemaVersion` (bumped only on a
 breaking change), your plan, session and weekly usage as fractions
 between 0 and 1, per-model fractions where your plan has them, both
-reset times in ISO 8601. Keys are sorted and
+reset times in ISO 8601, and, while the app is running, the current burn
+rate and session cost. Keys are sorted and
 the output is byte-stable, so it diffs and caches cleanly; a missing
 optional field means "unknown", never zero. The contract has its own
 headless test suite, so it will not drift under you.
