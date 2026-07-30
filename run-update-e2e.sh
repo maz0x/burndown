@@ -19,7 +19,7 @@ rm -rf "$WORK"; mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$SRC"
 # reason. That is exactly what happened when this was hardcoded to 0.9 and the release became
 # v0.9.0: the comparison is numeric, so 0.9 and 0.9.0 are the SAME version and no update is due.
 # Keep it at a version below any real release, and assert that rather than trusting it.
-OLDVER="0.0.1"
+OLDVER="${OLDVER:-0.0.1}"   # override to test a specific upgrade path, e.g. OLDVER=0.9.0 ./run-update-e2e.sh
 CURVER="$(sed -n 's/^let kAppVersion = "\([^"]*\)".*/\1/p' Sources/Settings.swift)"
 if [ "$(printf '%s\n%s\n' "$OLDVER" "$CURVER" | sort -V | head -1)" != "$OLDVER" ] || [ "$OLDVER" = "$CURVER" ]; then
     echo "FAIL: test setup is broken. OLDVER ($OLDVER) must be strictly older than the current"
