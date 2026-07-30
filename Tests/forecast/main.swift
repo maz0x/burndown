@@ -41,7 +41,7 @@ check(LiveState.est.isLive == false, ".est is not live")
 check(LiveState.stale.isLive == false, ".stale is not live")
 
 // Scenario A: steady rise, no reset. slope 0.0001/s over the last 2000s; current 0.6 -> 4000s (66.67m).
-print("forecastToLimit / forecastMinutes — rising trend:")
+print("forecastToLimit / forecastMinutes, rising trend:")
 let riseA = [at(-2000, 0.4), at(-1000, 0.5), at(0, 0.6)]
 check(forecastToLimit(riseA, current: 0.6, resetAt: nil, now: t0) == "~1h 6m to limit",
       "A: 4000s ETA formats as ~1h 6m to limit")

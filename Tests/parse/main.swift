@@ -1,7 +1,7 @@
 import Foundation
 
 // Golden-fixture tests for the REAL Foundation-pure parsers in Sources/Parsing.swift
-// (compiled together by run-parse-tests.sh). No network, no token, no live API — hardcoded
+// (compiled together by run-parse-tests.sh). No network, no token, no live API: hardcoded
 // fixtures only. Reverting parseISO/clampPct in Parsing.swift must make these fail.
 
 var failures = 0

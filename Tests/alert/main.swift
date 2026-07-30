@@ -1,7 +1,7 @@
 import Foundation
 
 // Behavioral tests for the REAL alert decision logic in Sources/AlertLogic.swift (compiled together
-// by run-alert-tests.sh). No UNUserNotificationCenter, no AppSettings, no notifications fired —
+// by run-alert-tests.sh). No UNUserNotificationCenter, no AppSettings, no notifications fired,
 // pure state transitions on synthetic inputs. Reverting AlertLogic.swift must make these fail.
 
 var failures = 0
