@@ -97,10 +97,10 @@ func secondaryNSColor(accent: NSColor, mode: ColorMode) -> NSColor {
     }
 }
 
-// MARK: - Fire palette (spec 2.2) - emissive brand constants, theme-independent.
+// MARK: - Fire palette - emissive brand constants, theme-independent.
 // TYPOGRAPHIC HEAT ONLY: burning numbers, the Ember Line, blooms. This palette NEVER recolors the
 // FlameMark, which keeps the app-icon hues verbatim (FFF6D6/F9A825/E2510B/A0341A). That split is the
-// ratified "two registers, one family" color canon (prompt area 1). Redline red inside any fire
+// "two registers, one family" color rule. Redline red inside any fire
 // execution is the overLimit token (dark value, emissive rule), not a private hex.
 enum Fire {
     static let charLight = "3A2A22"   // spent material on a LIGHT menu bar
@@ -117,7 +117,7 @@ enum Fire {
 
 extension NSColor {
     /// Shift HSL lightness by `deltaL` percentage points (of 0...100), preserving hue and saturation.
-    /// Backs the session numeral gradient ink (spec 2.3: the session color at L+7 and L-7).
+    /// Backs the session numeral gradient ink: the session color at L+7 and L-7.
     func lightnessShifted(_ deltaL: CGFloat) -> NSColor {
         guard let c = usingColorSpace(.sRGB) else { return self }
         let r = c.redComponent, g = c.greenComponent, b = c.blueComponent, a = c.alphaComponent
@@ -150,7 +150,7 @@ extension NSColor {
 }
 
 extension Color {
-    /// The session numeral gradient ink (spec 2.3): the one permanent gradient in the product,
+    /// The session numeral gradient ink: the one permanent gradient in the product,
     /// vertical, the session color at HSL lightness +7 (top) to -7 (bottom).
     static func sessionGradientInk(_ session: Color) -> LinearGradient {
         let ns = NSColor(session)

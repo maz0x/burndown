@@ -181,7 +181,7 @@ moving or renaming the app.</p>
     <td><b>Estimate</b><br>the default on a fresh install</td>
     <td>The session logs Claude Code keeps under <code>~/.claude</code>. Token counts are exact;
     the percentage against your cap is inferred from your own history.</td>
-    <td>None at all</td>
+    <td>None, apart from the daily update check</td>
   </tr>
   <tr>
     <td><b>Live</b><br>opt-in</td>
@@ -334,8 +334,7 @@ read it without spawning a process.</p>
   "sessionPct" : 0.46,
   "sessionResetAt" : "2026-07-26T04:00:00Z",
   "weeklyPct" : 0.13,
-  "weeklyResetAt" : "2026-07-29T09:30:00Z",
-  "burnPerMin" : 14000
+  "weeklyResetAt" : "2026-07-29T09:30:00Z"
 }</code></pre>
 <p>Percentages are fractions between 0 and 1. Times are ISO 8601. Keys are sorted and the output
 is byte-stable, so it diffs and caches cleanly. A missing optional field means unknown, never
@@ -359,8 +358,9 @@ maz0x/tap/burndown</code> does all of it.</p>
 <h2 id="updates">Updates</h2>
 <p>Burndown checks GitHub once a day for a newer version, and shows it at the top of the
 right-click menu and in Settings, General. One click installs it: the download is checked
-against its published SHA-256, its signature is verified, the app is replaced in place, and it
-restarts. Because the app fetches the update itself rather than a browser, macOS does not
+against its published SHA-256 and its code signature is checked for integrity, the app is
+replaced in place, and it restarts. Both checks catch a corrupted download; neither proves
+origin the way notarization would, since the signature is still ad hoc. Because the app fetches the update itself rather than a browser, macOS does not
 quarantine it, so there is no Gatekeeper prompt on updates.</p>
 <p>Turn the daily check off in Settings, General. Nothing installs without you clicking.</p>
 

@@ -5,7 +5,7 @@ func check(_ cond: Bool, _ msg: String) {
     print((cond ? "  ok   " : "  FAIL ") + msg); if !cond { failures += 1 }
 }
 
-// Tier ladder (spec 7.2)
+// Tier ladder
 check(BurnClock.tier(usage: 0.4, over: false, burnRatio: 0, threshold: 0.85, tokensFlowing: false) == .idle, "no tokens -> idle")
 check(BurnClock.tier(usage: 0.4, over: false, burnRatio: 0.3, threshold: 0.85, tokensFlowing: true) == .low, "flowing, low burn -> low")
 check(BurnClock.tier(usage: 0.4, over: false, burnRatio: 1.0, threshold: 0.85, tokensFlowing: true) == .mid, "mid burn -> mid")
@@ -24,8 +24,8 @@ check(abs(c.breath) < 0.001, "breath at phase 0 is ~0")
 c.elapsed = 1.2   // half of 2.4s -> phase 0.5 -> breath peak = amplitude (1.5)
 check(abs(c.breath - 1.5) < 0.001, "breath at phase 0.5 is amplitude")
 
-// Spec 7.2: "Tempo changes interpolate over one full current cycle with phase preserved ...
-// never snap." The period changes with the tier, so a naive `elapsed mod period` discontinuously
+// Contract: tempo changes interpolate over one full current cycle with phase preserved, and
+// never snap. The period changes with the tier, so a naive `elapsed mod period` discontinuously
 // jumps on every retier. Lock the continuity in.
 print("phase continuity across a tempo change:")
 var t = BurnClock()
@@ -43,7 +43,7 @@ let held = t.phase                                 // a retier to the SAME tier 
 t.retier(usage: 0.90, over: false, burnRatio: 0, threshold: 0.85, tokensFlowing: true)
 check(abs(t.phase - held) < 1e-12, "re-tiering to the same tier does not move phase")
 
-// Spec 7.2: hard oscillation ceiling of 2.5 Hz, everywhere, no exceptions.
+// Hard oscillation ceiling of 2.5 Hz, everywhere, no exceptions.
 print("2.5 Hz oscillation ceiling:")
 for tier in BurnTier.allCases {
     check(tier.flameFlick.hz <= BurnTier.hzCeiling, "\(tier.rawValue) flame flick <= 2.5 Hz")
@@ -52,13 +52,13 @@ for tier in BurnTier.allCases {
     check(tier.seamHz <= BurnTier.hzCeiling, "\(tier.rawValue) burnfront seam <= 2.5 Hz")
     check(tier.smolderBreathHz <= BurnTier.hzCeiling, "\(tier.rawValue) smolder breath <= 2.5 Hz")
 }
-// Spec 3.1: the idle contract - no idle motion cycle completes in under 4s (idle freqs <= 0.25 Hz).
+// The idle contract - no idle motion cycle completes in under 4s (idle freqs <= 0.25 Hz).
 check(BurnTier.idle.flameFlick.hz <= 0.25 && BurnTier.idle.flameSway.hz <= 0.25
       && BurnTier.idle.seamHz <= 0.25 && BurnTier.idle.smolderBreathHz <= 0.25,
       "idle contract: every idle fire frequency is at or below 0.25 Hz")
-// Spec 3.1: the heat ladder.
+// The heat ladder.
 check(BurnTier.idle.heat == 0.15 && BurnTier.low.heat == 0.30 && BurnTier.mid.heat == 0.50
       && BurnTier.heavy.heat == 0.85 && BurnTier.redline.heat == 1.0 && BurnTier.overLimit.heat == 0.10,
-      "heat ladder matches spec 3.1")
+      "heat ladder matches the BurnTier table")
 
 if failures == 0 { print("\nALL PASS") } else { print("\n\(failures) FAILED"); exit(1) }

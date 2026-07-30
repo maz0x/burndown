@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds Burndown.app from the Swift sources — no Xcode project required.
+# Builds Burndown.app from the Swift sources, no Xcode project required.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -13,14 +13,17 @@ echo "→ Preparing build (in place)"
 mkdir -p "$MACOS_DIR" "$APP/Contents/Resources"
 
 echo "→ Compiling Swift sources"
+# Build for THIS machine. Hardcoding arm64 here meant an Intel Mac compiled, signed and printed
+# "Built" while producing a binary it could not run. release.sh is the one that builds both
+# slices and lipos them into the universal bundle that ships.
 swiftc -O \
-  -target arm64-apple-macos13.0 \
+  -target "$(uname -m)-apple-macos13.0" \
   -framework AppKit -framework SwiftUI -framework Combine -framework Charts -framework UserNotifications -framework ServiceManagement \
   -o "$MACOS_DIR/$BIN" \
   Sources/*.swift
 
 echo "→ Writing Info.plist"
-# Single source of truth for the version: kAppVersion in Sources/Settings.swift (audit M8).
+# Single source of truth for the version: kAppVersion in Sources/Settings.swift.
 VERSION="$(sed -n 's/^let kAppVersion = "\([^"]*\)".*/\1/p' Sources/Settings.swift)"
 VERSION="${VERSION:-1.0}"
 cat > "$APP/Contents/Info.plist" <<PLIST
@@ -67,10 +70,10 @@ cp Sounds/*.wav "$APP/Contents/Resources/" 2>/dev/null || true
 cp docs/RELEASE_NOTES.md docs/PRIVACY.md "$APP/Contents/Resources/" 2>/dev/null || true
 
 echo "→ Ad-hoc code signing"
-# The bundle lives in Google Drive, which sprays extended attributes (resource forks / Finder
-# info / drivefs metadata) onto files. codesign rejects those ("resource fork ... not allowed")
-# and a bundle that signs with stale/partial resources gets SIGKILL'd at launch with
-# "Code Signature Invalid". Strip xattrs first so the signature is always clean and valid.
+# Cloud-sync folders and some tools attach extended attributes (resource forks, Finder info)
+# to files. codesign rejects those ("resource fork ... not allowed"), and a bundle signed with
+# stale or partial resources is killed at launch with "Code Signature Invalid". Strip xattrs
+# first so the signature is always clean and valid.
 xattr -cr "$APP" 2>/dev/null || true
 codesign --force --sign - --identifier com.maz.burndown "$APP" 2>/dev/null || echo "  (codesign skipped)"
 codesign -v "$APP" 2>/dev/null && echo "  signature valid" || echo "  WARNING: signature did not verify"

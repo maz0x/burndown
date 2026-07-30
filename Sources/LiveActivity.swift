@@ -112,7 +112,7 @@ final class LiveActivity: ObservableObject {
         add("session_pct", usageSamples)
         add("weekly_pct", weeklySamples)
         let df = DateFormatter(); df.dateFormat = "yyyyMMdd-HHmmss"
-        let name = "claude-usage-\(df.string(from: Date())).csv"
+        let name = "burndown-history-\(df.string(from: Date())).csv"
         let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads/\(name)")
         do { try rows.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8); return url }
         catch { return nil }

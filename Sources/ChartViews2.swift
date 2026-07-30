@@ -186,7 +186,7 @@ struct ModelCapsChart: View {
                 if rows.count < 3 { Spacer(minLength: 0) }
             }
             // minHeight, not height: the API can report several per-model caps, and a fixed frame
-            // would clip the fourth row (audit L6). The card grows with the rows instead.
+            // would clip the fourth row. The card grows with the rows instead.
             .frame(minHeight: kChartH, alignment: .top)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Weekly limits")
@@ -307,7 +307,7 @@ struct ShareSplitChart: View {
                 .accessibilityLabel(byModel ? "Model mix" : "Project mix")
                 .accessibilityValue(shown.map { "\($0.name) \(Int($0.v * 100)) percent" }.joined(separator: ", "))
             }
-            statLine(sel.map { "\(Int(($0.v * 100).rounded()))%" } ?? "\(shown.count) \(byModel ? "models" : "projects")",
+            statLine(sel.map { "\(Int(($0.v * 100).rounded()))%" } ?? "\(shown.count) \(shown.count == 1 ? (byModel ? "model" : "project") : (byModel ? "models" : "projects"))",
                      sel.map { "· \($0.name)" } ?? "· share of window", p)
         }
     }

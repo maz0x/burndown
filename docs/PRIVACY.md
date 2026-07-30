@@ -15,7 +15,9 @@ Everything stays on this Mac. Never synced, never uploaded.
 
 - It never sends your data anywhere. The only servers it ever talks to are
   Anthropic's (`claude.ai`, `api.anthropic.com`, `console.anthropic.com`),
-  and only when live usage is on.
+  and only when you have turned on live usage or added a Developer API key.
+  That optional Admin key is stored on this Mac at
+  `~/.config/burndown/api-admin-key.json`, readable only by your user.
 - One exception, and it carries nothing about you or your usage: the updater
   asks `api.github.com` for the latest version number (once a day if automatic
   updates are on, otherwise only when you press Check now), and downloads the
@@ -31,7 +33,8 @@ Everything stays on this Mac. Never synced, never uploaded.
   out. Signing out also stops Burndown from borrowing the Claude Code
   sign-in until you explicitly reconnect.
 - Diagnostic logs: `~/.config/burndown/*.log`, private to your user,
-  size-capped, never contain your token, and emptied on sign-out. You can
+  size-capped, and never contain your token. The live log is emptied on
+  sign-out. You can
   also clear everything from Settings, Charts, "Reset chart history and
   logs".
 

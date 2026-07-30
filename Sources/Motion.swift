@@ -1,8 +1,9 @@
 import SwiftUI
 
-// The One Pulse motion tokens (spec 7.1). FOUR curves, the only four, and ONE duration ladder.
+// The One Pulse motion tokens. FOUR curves, the only four, and ONE duration ladder.
 // Anything that animates in this product picks a curve from here and a duration from `Dur`.
-// Ad-hoc `.easeInOut(duration: 0.35)` calls are the thing this file exists to delete.
+// New animation code picks a curve from here and a duration from `Dur`; a few older ad-hoc
+// timing curves remain in Views.swift and Onboarding.swift and are being migrated.
 
 extension Animation {
     /// Default property changes: color, opacity, layout, hovers, expands.
@@ -15,7 +16,7 @@ extension Animation {
     static func drain(_ d: Double) -> Animation { .linear(duration: d) }
 }
 
-/// The duration ladder (spec 7.1): the ONLY allowed values, in seconds.
+/// The duration ladder: the ONLY allowed values, in seconds.
 /// The universal reduce-motion cross-fade is `Dur.crossFade` (240ms).
 enum Dur {
     static let d120 = 0.120
@@ -29,11 +30,11 @@ enum Dur {
 
     /// The universal reduce-motion cross-fade.
     static let crossFade = d240
-    /// Over-limit entry, "bank the fire" (spec 7.5).
+    /// Over-limit entry, "bank the fire".
     static let bankTheFire = d1440
 }
 
-/// Minimum re-fire intervals for one-shots (spec 7.6.2). Every one-shot has an id and a floor.
+/// Minimum re-fire intervals for one-shots. Every one-shot has an id and a floor.
 enum OneShot {
     static let heartbeat: TimeInterval = 5             // 5s: the second heartbeat is swallowed
     static let milestone: TimeInterval = 10 * 60       // 10 min dedup on milestone crossings

@@ -40,9 +40,12 @@ enum APIAccount {
     }
     static func saveKey(_ k: String) {
         let dir = keyURL.deletingLastPathComponent()
-        // Created private (0600 inside a 0700 dir), never chmod'd after the fact.
+        // The key file is CREATED 0600, so there is no window at a looser mode. The directory
+        // mode is set explicitly because createDirectory ignores `attributes` when the directory
+        // already exists, and the diagnostic log can create it first.
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true,
                                                  attributes: [.posixPermissions: 0o700])
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
         if let d = try? JSONSerialization.data(withJSONObject: ["adminKey": k]) {
             FileManager.default.createFile(atPath: keyURL.path, contents: d,
                                            attributes: [.posixPermissions: 0o600])

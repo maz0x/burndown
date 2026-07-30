@@ -58,12 +58,12 @@ enum PalettePreset: String, CaseIterable, Identifiable {
 let kDefaultAccent = "D97757"   // Claude brand orange
 let kLiveGreen = "43B97F"       // the LIVE indicator is always this friendly green (online/recording feel)
 
-// The one trust sentence (spec 2.6), used verbatim on every surface that mentions privacy: the
+// The one trust sentence, used verbatim on every surface that mentions privacy: the
 // popover signed-out footnote, the Account footer, and the About privacy line. The chmod detail
 // lives in exactly ONE place, the About privacy-line tooltip; it appears in no user-facing copy.
 let kTrustSentence = "Everything stays on this Mac. Never synced, never uploaded."
 
-// Ember Line styles (spec area 5): eight edge-meter treatments, Ember Line the default.
+// Ember Line styles: eight edge-meter treatments, Ember Line the default.
 enum EmberLineStyle: String, CaseIterable, Identifiable {
     case emberLine, filament, segmented, comet, taper, pulseBeads, sparkFront, minimalNode
     var id: String { rawValue }
@@ -81,7 +81,7 @@ enum EmberLineStyle: String, CaseIterable, Identifiable {
     }
 }
 
-// Ember Line adjust (spec C5): thickness, spark liveliness, and which displays carry it.
+// Ember Line adjust: thickness, spark liveliness, and which displays carry it.
 enum TideThickness: String, CaseIterable, Identifiable {
     case hairline, standard, bold
     var id: String { rawValue }
@@ -100,24 +100,25 @@ enum TideDisplays: String, CaseIterable, Identifiable {
     var label: String { switch self { case .all: return "All"; case .main: return "Main only"; case .claude: return "With Claude" } }
 }
 
-// Menu-bar number format (spec area 2): the percentage sign, bare number, or S/W-labeled.
+// Menu-bar number format: the percentage sign, bare number, or S/W-labeled.
 enum MenuNumberFormat: String, CaseIterable, Identifiable {
     case sign, bare, labeled
     var id: String { rawValue }
     var label: String { switch self { case .sign: return "46%"; case .bare: return "46"; case .labeled: return "S46 W13" } }
 }
 
-// FLAME ADJUST (owner request, deliberate deviation from spec 3.5's spark policy). "Redline" is
-// the spec behaviour: sparks only at the redline tier. "Always" and the smoke toggle exist because
-// at the idle tier the spec's flame is ~5x7pt with no sparks and no smoke, which is unreadable on
-// a real menu bar. Standard size + Redline sparks + smoke off == the spec exactly.
+// FLAME ADJUST: a deliberate deviation from the original spark policy. "Redline" is that
+// original behaviour, sparks only at the redline tier. "Always" and the smoke toggle exist
+// because at the idle tier the original draws a ~5x7pt flame with no sparks and no smoke, which
+// is unreadable on a real menu bar. Standard size + Redline sparks + smoke off reproduces the
+// original exactly.
 enum FlameSparks: String, CaseIterable, Identifiable {
     case off, redline, always
     var id: String { rawValue }
     var label: String { switch self { case .off: return "Off"; case .redline: return "Redline"; case .always: return "Always" } }
 }
 
-// Harvested chat titles are long; how the popover / Insights truncate them (spec area 5).
+// Harvested chat titles are long; how the popover / Insights truncate them.
 enum ChatTruncation: String, CaseIterable, Identifiable {
     case middle, end, full
     var id: String { rawValue }
@@ -186,11 +187,11 @@ let kAppName = "Burndown"           // app name (floating window title + About).
 let kAppVersion = "0.9.1"           // bump on release builds; 1.0 is reserved for Developer ID signing + multi-provider
 let kMinWindowAlpha = 0.45          // most see-through the windows go at 100% transparency (keeps text legible)
 
-// A curated set,every style earns its place, all keep a small footprint (most are
+// A curated set: every style earns its place, all keep a small footprint (most are
 // tiny / horizontally compact; the spark/equalizer ones stay narrow), none look like
 // a laptop battery.
 enum MenuBarStyle: String, CaseIterable, Identifiable {
-    case smolder, burnfront, kiln  // fire family v2 (spec 3): the canonical burning-number styles
+    case smolder, burnfront, kiln  // the burning-number family; kiln is archived, see isRetired
     case pulse, pace, burn, roll, bars, signal, ember, flame, inferno, ignite, charred, molten, coals, comet  // live,react to real-time token flow
     case stack, ring, orbit, mini, arc, pie, dual, dot, dial  // static,usage / time at a glance
     case twins, splitArc, halfGauge, coPie, vsplit, heatRows, weeklyClock // BOTH-only,session + weekly
@@ -210,7 +211,7 @@ enum MenuBarStyle: String, CaseIterable, Identifiable {
         switch self {
         case .smolder:   return "Hearth (live)"
         case .burnfront: return "Burnfront (live)"
-        case .kiln:      return "Kiln (live)"   // archived (rev 11); hidden from the picker via isRetired
+        case .kiln:      return "Kiln (live)"   // archived; hidden from the picker via isRetired
         case .pulse:  return "Pulse (live)"
         case .pace:   return "Pace (live)"
         case .burn:   return "Burn rate (live)"
@@ -263,7 +264,7 @@ enum MenuBarStyle: String, CaseIterable, Identifiable {
     /// Fire styles that stay gently alive even when no tokens flow - the app keeps the
     /// 30fps animator running for these so the fire never freezes.
     var burnsIdle: Bool {
-        // The fire family's IDLE CONTRACT (spec 3.1): every fire style must show visible motion within
+        // The fire family's IDLE CONTRACT: every fire style must show visible motion within
         // any 10s window at idle. If a style is missing here the animator parks once things settle and
         // the glyph freezes on screen - which is exactly what happened to Hearth/Burnfront/Kiln.
         switch self {
@@ -288,7 +289,8 @@ enum MenuBarStyle: String, CaseIterable, Identifiable {
     var isCore: Bool {
         switch self { case .smolder, .burnfront, .flame, .pulse, .pace, .ring, .arc, .stack: return true; default: return false }
     }
-    /// Fire styles retired / archived (rev 11: Kiln archived; v1 six migrated); hidden from the picker.
+    /// Fire styles retired or archived (Kiln archived, and the six v1 styles migrated onto the
+    /// canonical set); hidden from the picker.
     var isRetired: Bool {
         switch self { case .kiln, .inferno, .ignite, .charred, .molten, .coals: return true; default: return false }
     }
@@ -303,7 +305,7 @@ enum MenuBarStyle: String, CaseIterable, Identifiable {
     func desc(_ show: MenuBarShow) -> String {
         let second = show == .both ? "weekly %" : "time left"
         switch self {
-        case .smolder:   return "Hearth: charcoal-warm digits lit from the coals, breathing. The calm default."
+        case .smolder:   return "Charcoal-warm digits lit from the coals, breathing. The calm default."
         case .burnfront: return "The number burns left to right. The seam is your usage."
         case .kiln:      return "Heat convects inside the digits. Faster as you burn."
         case .pulse:  return show == .both
@@ -352,8 +354,8 @@ enum MenuBarStyle: String, CaseIterable, Identifiable {
 // token burn rate; no dollar figures here,cost lives once, honestly framed, in the
 // Session block.)
 // The visual treatment of the popover monitor chart (applies to both Burn and Usage modes).
-// Only styles the chart bodies actually implement are offered (audit H9: the old Bars and
-// Zones options were selectable no-ops; their legacy values migrate to Area in init).
+// Only styles the chart bodies actually implement are offered: the old Bars and Zones
+// options were selectable no-ops, and their legacy values migrate to Area in init.
 enum ChartStyle: String, CaseIterable, Identifiable {
     case area, hairline, gradient, minimal
     var id: String { rawValue }
@@ -376,9 +378,8 @@ enum ChartStyle: String, CaseIterable, Identifiable {
 }
 
 // Which series the popover monitor chart shows (toggle lives in the chart header).
-// The chart catalogue lives in ChartKinds.swift (enum ChartKind, twelve selectable views).
+// The chart catalogue lives in ChartKinds.swift (enum ChartKind, twenty-four selectable views).
 
-enum MenuBarMetric: String { case session, weekly }   // legacy key migration
 
 // The popover's stackable modules. The "Claude … usage" header, Session block, monitor
 // Chart, and This-week block can each be reordered and shown/hidden; the app-name footer
@@ -517,7 +518,7 @@ final class AppSettings: ObservableObject {
     // so resizing the Claude window never moves the widget. edgePx < 0 means auto-center.
     @Published var edgePx: Double { didSet { d.set(edgePx, forKey: "edgePx") } }
     @Published var edgeFromEnd: Bool { didSet { d.set(edgeFromEnd, forKey: "edgeFromEnd") } }   // anchored to bottom/right vs top/left
-    @Published var dockLocked: Bool { didSet { d.set(dockLocked, forKey: "dockLocked") } }   // freeze the widget where the user placed it (spec 6.2)
+    @Published var dockLocked: Bool { didSet { d.set(dockLocked, forKey: "dockLocked") } }   // freeze the widget where the user placed it
     @Published var widgetStyle: WidgetStyle { didSet { d.set(widgetStyle.rawValue, forKey: "widgetStyle") } }
     @Published var widgetScale: Double { didSet { d.set(widgetScale, forKey: "widgetScale") } }   // docked widget size, 0.7…1.8
     @Published var pendingTab: String? = nil   // transient: a settings tab to jump to on open (e.g. from the chart gear)
@@ -537,11 +538,11 @@ final class AppSettings: ObservableObject {
     @Published var glassCornerRadius: Double { didSet { d.set(glassCornerRadius, forKey: "glassCornerRadius") } }    // 6…22 pt
     @Published var glassShadow: Double { didSet { d.set(glassShadow, forKey: "glassShadow") } }               // 0…100 %
     @Published var numberStyle: NumberStyle { didSet { d.set(numberStyle.rawValue, forKey: "numberStyle") } }
-    // Menu-bar rows (spec area 2).
+    // Menu-bar rows.
     @Published var menuNumberFormat: MenuNumberFormat { didSet { d.set(menuNumberFormat.rawValue, forKey: "menuNumberFormat") } }
     @Published var menuTimeToReset: Bool { didSet { d.set(menuTimeToReset, forKey: "menuTimeToReset") } }
     @Published var menuBoldDigits: Bool { didSet { d.set(menuBoldDigits, forKey: "menuBoldDigits") } }   // Semibold vs Regular
-    @Published var showDockIcon: Bool { didSet { d.set(showDockIcon, forKey: "showDockIcon") } }   // spec 5.2: LSUIElement / activation policy
+    @Published var showDockIcon: Bool { didSet { d.set(showDockIcon, forKey: "showDockIcon") } }   // LSUIElement / activation policy
     @Published var menuShowPct: Bool { didSet { d.set(menuShowPct, forKey: "menuShowPct") } }   // area 2: percentage on/off (Flame -> flame-only)
     @Published var smolderIntensity: Double { didSet { d.set(smolderIntensity, forKey: "smolderIntensity") } }   // x0.75 / x1.0 / x1.25
     @Published var smolderBreathSlow: Bool { didSet { d.set(smolderBreathSlow, forKey: "smolderBreathSlow") } }   // halve tier frequency
@@ -550,7 +551,7 @@ final class AppSettings: ObservableObject {
     @Published var flameSize: Double { didSet { d.set(flameSize, forKey: "flameSize") } }        // 0.8x ... 2.0x (the menu bar height caps it above that)
     @Published var flameSparks: FlameSparks { didSet { d.set(flameSparks.rawValue, forKey: "flameSparks") } }
     @Published var flameSmoke: Bool { didSet { d.set(flameSmoke, forKey: "flameSmoke") } }
-    // Per-element popover visibility (spec area 3). Each gates ONE popover element; a hidden element
+    // Per-element popover visibility. Each gates ONE popover element; a hidden element
     // drops and the card content-hugs to a shorter height with no gaps. All default true unless noted.
     @Published var showTimeRing: Bool { didSet { d.set(showTimeRing, forKey: "showTimeRing") } }
     @Published var showForecastLine: Bool { didSet { d.set(showForecastLine, forKey: "showForecastLine") } }
@@ -568,7 +569,7 @@ final class AppSettings: ObservableObject {
     @Published var chatsExpanded: Bool { didSet { d.set(chatsExpanded, forKey: "chatsExpandedByDefault") } }
     @Published var modelsExpanded: Bool { didSet { d.set(modelsExpanded, forKey: "modelsExpanded") } }
     @Published var chatTruncation: ChatTruncation { didSet { d.set(chatTruncation.rawValue, forKey: "chatTruncation") } }
-    // Popover chrome switches (spec area 3 CHROME card).
+    // Popover chrome switches (the CHROME card in Settings).
     @Published var popoverDividers: Bool { didSet { d.set(popoverDividers, forKey: "popoverDividers") } }
     @Published var popoverEyebrows: Bool { didSet { d.set(popoverEyebrows, forKey: "popoverEyebrows") } }
     @Published var popoverCompact: Bool { didSet { d.set(popoverCompact, forKey: "popoverCompact") } }
@@ -602,14 +603,14 @@ final class AppSettings: ObservableObject {
     @Published var quietFrom: Double { didSet { d.set(quietFrom, forKey: "quietFrom") } }   // hour 0…23
     @Published var quietTo: Double { didSet { d.set(quietTo, forKey: "quietTo") } }          // hour 0…23
     @Published var glassTint: GlassTint { didSet { d.set(glassTint.rawValue, forKey: "glassTint") } }
-    // ── Self-imposed spend budget + the two newer alert toggles (FEATURE_IDEAS.md #3, #4) ──
+    // ── Self-imposed spend budget + the two newer alert toggles ──
     @Published var budgetEnabled: Bool { didSet { d.set(budgetEnabled, forKey: "budgetEnabled") } }
     @Published var budgetMetric: String { didSet { d.set(budgetMetric, forKey: "budgetMetric") } }   // "usd" or "tokens"
     @Published var budgetPeriod: String { didSet { d.set(budgetPeriod, forKey: "budgetPeriod") } }   // "day" or "week"
     @Published var budgetLimit: Double { didSet { d.set(budgetLimit, forKey: "budgetLimit") } }       // dollars or tokens
     @Published var alertBudget: Bool { didSet { d.set(alertBudget, forKey: "alertBudget") } }
     @Published var alertRunaway: Bool { didSet { d.set(alertRunaway, forKey: "alertRunaway") } }
-    // C8 moment 4: the weekly digest is OPT-IN and posts once on a Monday.
+    // Notification moment 4: the weekly digest is OPT-IN and posts once on a Monday.
     @Published var weeklyDigest: Bool { didSet { d.set(weeklyDigest, forKey: "weeklyDigest") } }
 
     // Order + visibility of the popover modules (header/session/chart/week).
@@ -627,7 +628,7 @@ final class AppSettings: ObservableObject {
         sectionOrder.swapAt(i, j)
     }
 
-    /// Are alert quiet-hours muting right now? (mirrors Alerts.quietNow, spec 4.6 / area 3.)
+    /// Are alert quiet-hours muting right now? (mirrors Alerts.quietNow.)
     func quietHoursActive(_ now: Date = Date()) -> Bool {
         guard quietHours else { return false }
         let h = Calendar.current.component(.hour, from: now)
@@ -679,10 +680,10 @@ final class AppSettings: ObservableObject {
         popoverExplain = (d.object(forKey: "popoverExplain") as? Bool) ?? true
         refreshSeconds = (d.object(forKey: "refreshSeconds") as? Int) ?? 60   // 60s recommended (rate-limit friendly)
         // Burning numbers are the product's identity, so the DEFAULT menu-bar style is a fire style
-        // (Hearth). Fire v2 migration (spec 3.7): retire v1's styles onto the canonical set.
+        // (Hearth). Fire v2 migration: retire v1's styles onto the canonical set.
         var mbs = MenuBarStyle(rawValue: d.string(forKey: "menuBarStyle") ?? "") ?? .smolder
         switch mbs {
-        case .inferno, .coals, .molten, .ignite, .kiln: mbs = .smolder   // Kiln archived (rev 11) -> Hearth
+        case .inferno, .coals, .molten, .ignite, .kiln: mbs = .smolder   // Kiln archived -> Hearth
         case .charred:                                  mbs = .burnfront
         default: break
         }
@@ -701,7 +702,7 @@ final class AppSettings: ObservableObject {
         colorMode = ColorMode(rawValue: d.string(forKey: "colorMode") ?? "") ?? (oldMono ? .flat : .level)
         accentHex = d.string(forKey: "accentHex") ?? kDefaultAccent   // Claude orange
         // Default to the design's clean soft-area. Legacy "bars"/"zones" values (removed as
-        // selectable no-ops, audit H9) fail rawValue parsing and land on Area automatically.
+        // selectable no-ops) fail rawValue parsing and land on Area automatically.
         chartStyle = ChartStyle(rawValue: d.string(forKey: "chartStyle") ?? "") ?? .area
         smartRefresh = (d.object(forKey: "smartRefresh") as? Bool) ?? true
         floatingShown = (d.object(forKey: "floatingShown") as? Bool) ?? false
@@ -722,7 +723,7 @@ final class AppSettings: ObservableObject {
         chartHover = (d.object(forKey: "chartHover") as? Bool) ?? true
         dockEdge = DockEdge(rawValue: d.string(forKey: "dockEdge") ?? "") ?? .off
         tideLine = (d.object(forKey: "tideLine") as? Bool) ?? false
-        tideEdge = DockEdge(rawValue: d.string(forKey: "tideEdge") ?? "") ?? .bottom   // spec C5: default to the bottom edge
+        tideEdge = DockEdge(rawValue: d.string(forKey: "tideEdge") ?? "") ?? .bottom   // default to the bottom edge
         tideStyle = EmberLineStyle(rawValue: d.string(forKey: "tideStyle") ?? "") ?? .emberLine
         tideFlames = (d.object(forKey: "tideFlames") as? Int) ?? 2
         tideGlow = (d.object(forKey: "tideGlow") as? Double) ?? 1.0

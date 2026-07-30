@@ -3,14 +3,14 @@ import SwiftUI
 // Selectable looks for the edge widget. Each renders a slim vertical card (Left/Right dock)
 // and a short horizontal bar (Top/Bottom dock). All are intentionally compact.
 enum WidgetStyle: String, CaseIterable, Identifiable {
-    case meters, bigTile, rings, arcs, twinTanks, pills   // CORE first (spec 6.2), then LEGACY
+    case meters, bigTile, rings, arcs, twinTanks, pills   // CORE first, then LEGACY
     var id: String { rawValue }
     var label: String {
         switch self {
         case .meters:    return "Meters"
         case .bigTile:   return "Big numbers"
         case .rings:     return "Rings"
-        case .arcs:      return "Twin arcs (legacy)"
+        case .arcs:      return "Twin arcs"
         case .twinTanks: return "Twin tanks (legacy)"
         case .pills:     return "Pills (legacy)"
         }
@@ -65,7 +65,7 @@ private func cap(_ t: String, _ c: Color) -> some View {
 @ViewBuilder
 func widgetContent(_ style: WidgetStyle, _ d: WData, horizontal: Bool, scale: CGFloat = 1) -> some View {
     let tk = d.p.track
-    // Spec 6.2 reflow ladder: S/W spell out at large scale; weekly and eyebrows drop at small scale.
+    // Reflow ladder: S/W spell out at large scale; weekly and eyebrows drop at small scale.
     let words = scale >= 1.3
     let tiny = scale < 0.85
     let sLab = words ? "SESSION" : "S", wLab = words ? "WEEK" : "W"
@@ -92,7 +92,7 @@ func widgetContent(_ style: WidgetStyle, _ d: WData, horizontal: Bool, scale: CG
                 hbar(v, c, tk, w: horizontal ? 42 : 38, h: 3)
             })
         }
-        // Below 0.85x the weekly meter drops so the widget stays compact (spec 6.2).
+        // Below 0.85x the weekly meter drops so the widget stays compact.
         if horizontal { HStack(spacing: 11) { block(sLab, d.s, d.sc); if !tiny { block(wLab, d.w, d.wc) } } }
         else { VStack(alignment: .leading, spacing: 7) { block(sLab, d.s, d.sc); if !tiny { block(wLab, d.w, d.wc) } } }
     case .rings:

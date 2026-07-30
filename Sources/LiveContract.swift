@@ -1,6 +1,6 @@
 import Foundation
 
-// Stable JSON contract for Burndown's live numbers (the CLI / JSON local API, feature #10), so external
+// Stable JSON contract for Burndown's live numbers (the CLI / JSON local API), so external
 // tools (Raycast, Stream Deck, statuslines, scripts) can read a documented, versioned shape instead of
 // scraping the UI. Foundation-pure (no AppKit / SwiftUI / Combine / network) so the headless harness
 // (run-livecontract-tests.sh) can compile the real encode / decode round-trip with no UI.

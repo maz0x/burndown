@@ -2,11 +2,11 @@ import SwiftUI
 import AppKit
 
 // The Insights window. It surfaces the analytics that build on the usage-aggregation layer
-// (see FEATURE_IDEAS.md): live session attribution (#1), per-project usage (#2), a spend
+// underneath: live session attribution (#1), per-project usage (#2), a spend
 // budget (#3), weekly pacing (#5), history and trends (#6), model-mix advice (#7), export
 // (#8), and the weekly recap (#9). It is read-only on the engine; the only writes are the
 // user-triggered file exports. Kept in a separate window so the tuned popover stays untouched.
-// The shared card token for Insights sections (spec 5.1/5.3): track 45% fill, divider 0.5 stroke, r12,
+// The shared card token for Insights sections: track 45% fill, divider 0.5 stroke, r12,
 // 16pt internal padding, no shadow.
 struct InsightsCard: ViewModifier {
     let p: Palette
@@ -80,7 +80,7 @@ struct InsightsView: View {
 
     private func stack(_ p: Palette) -> some View {
             VStack(alignment: .leading, spacing: 22) {
-                // Hero band FLATTENED (spec 5.3): the shared card token, a STATIC FlameMark, no
+                // Hero band FLATTENED: the shared card token, a STATIC FlameMark, no
                 // gradient wash and no idle motion - the earned-by-data law applies here too.
                 HStack(spacing: 12) {
                     FlameMark(size: 28)
@@ -96,7 +96,7 @@ struct InsightsView: View {
                         .fill(p.track.opacity(0.45))
                         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(p.divider, lineWidth: 0.5))
                 )
-                // Every section wraps in the shared card token (spec 5.3).
+                // Every section wraps in the shared card token.
                 recapCard.modifier(InsightsCard(p: p))
                 advisories
                 attribution.modifier(InsightsCard(p: p))
@@ -116,7 +116,7 @@ struct InsightsView: View {
                 ZStack {
                     p.bg.opacity(0.6).ignoresSafeArea()
                     VStack(spacing: 12) {
-                        LivingFlameMark(size: 36)   // the one loading exception where the mark may breathe (spec 5.3)
+                        LivingFlameMark(size: 36)   // the one loading exception where the mark may breathe
                         // Indeterminate session sweep over track, no spinner.
                         TimelineView(.animation(minimumInterval: 1.0 / 15.0)) { ctx in   // cap at 15fps
                             let t = ctx.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.44) / 1.44
@@ -137,7 +137,7 @@ struct InsightsView: View {
                 }
     }
 
-    // MARK: This week recap (#9)
+    // MARK: This week recap
     private var recapCard: some View {
         let r = recap(weekRecs, label: "This week")
         return VStack(alignment: .leading, spacing: 6) {
@@ -151,7 +151,7 @@ struct InsightsView: View {
         }
     }
 
-    // MARK: Advisory lines (#5 pacing, #7 model-mix, #3 budget)
+    // MARK: Advisory lines (pacing, model-mix, budget)
     private var advisories: some View {
         VStack(alignment: .leading, spacing: 8) {
             if let p = pacingLine { advisoryRow("clock", p) }
@@ -193,7 +193,7 @@ struct InsightsView: View {
                             elapsedFraction: elapsed)
     }
 
-    // MARK: Current session attribution (#1)
+    // MARK: Current session attribution
     private var attribution: some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle("Current session")
@@ -274,11 +274,11 @@ struct InsightsView: View {
         }
     }
     private func shortDate(_ d: Date) -> String {
-        let f = DateFormatter(); f.dateFormat = "MMM d"; f.timeZone = TimeZone(identifier: "UTC")
+        let f = DateFormatter(); f.dateFormat = "MMM d"
         return f.string(from: d)
     }
 
-    // MARK: History (#6)
+    // MARK: History
     private var history: some View {
         let days = rollupByDay(recordsInWindow(records, since: now.addingTimeInterval(-14 * 86_400),
                                                until: now.addingTimeInterval(1)))
@@ -318,7 +318,7 @@ struct InsightsView: View {
         }
     }
 
-    // MARK: Budget controls (#3)
+    // MARK: Budget controls
     private var budgetControls: some View {
         VStack(alignment: .leading, spacing: 8) {
             sectionTitle("Budget")
@@ -334,7 +334,7 @@ struct InsightsView: View {
                 }
                 HStack(spacing: 8) {
                     Text("Limit")
-                    TextField("limit", value: $settings.budgetLimit, format: .number)
+                    TextField("Amount", value: $settings.budgetLimit, format: .number)
                         .frame(width: 90).textFieldStyle(.roundedBorder)
                     Text(settings.budgetMetric == "usd" ? "USD" : "tokens").foregroundStyle(.secondary)
                 }
@@ -345,7 +345,7 @@ struct InsightsView: View {
         }
     }
 
-    // MARK: Export (#8)
+    // MARK: Export
     private var exportRow: some View {
         VStack(alignment: .leading, spacing: 8) {
             sectionTitle("Export")
@@ -354,7 +354,7 @@ struct InsightsView: View {
                 Button("JSON") { saveExport(exportJSON(records), "burndown-usage.json") }
                 Button("Markdown") { saveExport(exportMarkdownByDay(records), "burndown-usage.md") }
             }
-            Text("Saved to your Downloads folder.").font(.caption2).foregroundStyle(.tertiary)
+            Text("Saves to your Downloads folder.").font(.caption2).foregroundStyle(.tertiary)
         }
     }
     private func saveExport(_ text: String, _ name: String) {
@@ -385,7 +385,7 @@ struct InsightsView: View {
         }
     }
     private func sectionTitle(_ t: String) -> some View {
-        // The one eyebrow token (spec 2.3): SF 11pt semibold, +1.4 tracking, sub, uppercase.
+        // The one eyebrow token: SF 11pt semibold, +1.4 tracking, sub, uppercase.
         Text(t.uppercased()).font(.system(size: 11, weight: .semibold)).foregroundStyle(Palette.of(scheme).sub).tracking(1.4)
     }
     private func stat(_ value: String, _ label: String) -> some View {
@@ -399,15 +399,5 @@ struct InsightsView: View {
             Image(systemName: symbol).foregroundStyle(.secondary).frame(width: 16)
             Text(text).font(.callout).fixedSize(horizontal: false, vertical: true)
         }
-    }
-    // Turn a ~/.claude/projects encoded folder name into a shorter readable path.
-    private func prettyProjectName(_ key: String) -> String {
-        if key.isEmpty { return "(unknown)" }
-        if key == "(unknown)" { return key }
-        var s = key
-        if s.hasPrefix("-") { s.removeFirst() }
-        let parts = s.split(separator: "-").map(String.init)
-        if parts.count > 3, parts.first == "Users" { return parts.dropFirst(2).joined(separator: "/") }
-        return parts.joined(separator: "/")
     }
 }

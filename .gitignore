@@ -1,16 +1,4 @@
 Burndown.app/
+dist/
 *.tar.gz
 .DS_Store
-
-# moved-in safety backups (not part of source)
-/backups/
-/_identity_backup/
-
-# Google Drive conflict artifacts + local archives (never ship these)
-.drive-conflicts/
-burnbar-rename/
-* 2.*
-/1
-docs/README-draft.md
-dist/
-.publish-guard

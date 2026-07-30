@@ -92,7 +92,8 @@ totals:
   lifetime totals underneath.
 - **A weekly recap in words**, a 14-day history, and advisory lines for
   pacing, model mix, and budget when they have something worth saying.
-- **One-click export** of every usage record to CSV, JSON, or Markdown,
+- **One-click export** of every usage record to CSV or JSON, or a per-day
+  Markdown table,
   saved to Downloads. Deterministic output, stable columns, ready for a
   spreadsheet or an expense note.
 
@@ -210,7 +211,7 @@ Midnight Ink, Forest Night, Ocean Deep, Espresso, and Electric Plum.
 Here are twelve of them, the same card rendered through the app's own
 palette code:
 
-<img src="site/screenshots/themes.png" width="675" alt="The same Burndown card rendered in twelve themes: Stone and Clay, Paper White, Sage Linen, Harvest Amber, Sandstone, Honey Oat, Midnight Ink, Forest Night, Ocean Deep, Espresso, Electric Plum, and Arctic Blue">
+<img src="site/screenshots/themes.png" width="675" alt="Twelve Burndown themes, each shown on its own card: Stone and Clay, Paper White, Sage Linen, Harvest Amber, Sandstone, Honey Oat, Midnight Ink, Forest Night, Ocean Deep, Espresso, Electric Plum, and Arctic Blue">
 
 A separate Theme switch decides how a palette meets macOS: follow the
 system's light and dark, or pin it to either. Several themes are designed
@@ -312,7 +313,7 @@ variable picks and orders them; a second strips the line down for
 terminals without emoji or block glyphs:
 
 ```bash
-export BURNDOWN_STATUSLINE=bar,pct,resets,week,cost,rate  # default: bar,pct,resets,week
+export BURNDOWN_STATUSLINE=bar,pct,resets,week  # pick and order the segments
 export BURNDOWN_ASCII=1   # plain * and # / - instead of the flame and block cells
 ```
 
@@ -323,7 +324,7 @@ custom statuslines can read it with no process to spawn. Both speak the
 same documented, versioned contract: `schemaVersion` (bumped only on a
 breaking change), your plan, session and weekly usage as fractions
 between 0 and 1, per-model fractions where your plan has them, both
-reset times in ISO 8601, and the current burn rate. Keys are sorted and
+reset times in ISO 8601. Keys are sorted and
 the output is byte-stable, so it diffs and caches cleanly; a missing
 optional field means "unknown", never zero. The contract has its own
 headless test suite, so it will not drift under you.
@@ -548,7 +549,7 @@ say what you saw. That is the fastest way to make it better for everyone.
 ## Development
 
 - `bash build.sh`, then look for `✓ Built`.
-- Sixteen headless test suites: `run-tests.sh` plus `run-*-tests.sh`
+- Seventeen headless test suites: `run-tests.sh` plus `run-*-tests.sh`
   (forecast, parsing, alerts, formats, chart data, pricing, aggregation,
   budget, runaway, pacing, model mix, export, recap, live contract, burn
   clock, update logic). `run-update-e2e.sh` additionally builds an
@@ -556,12 +557,14 @@ say what you saw. That is the fastest way to make it better for everyone.
 - QA renders (no screen needed): `CUB_SNAP_POP`, `CUB_SNAP_CHARTS` +
   `CUB_PART=0..3`, `CUB_SNAP_SETTINGS` + `CUB_TAB=...`,
   `CUB_SNAP_ACCOUNT`, `CUB_SNAP_WELCOME`, each with optional `CUB_DARK=1`.
+  These are internal QA hooks for regenerating the screenshots, not part of
+  normal use; the ones that matter to users all start with `BURNDOWN_`.
 
 ## Prior art
 
 Burndown follows a trail the community blazed first: claude-meter,
 minhvoio/ai-usage-monitors, thiswillbeyourgithub/claude_usage, ccusage,
-and the Claude-Code-Usage-Monitor #202 writeup. If you live in the
+and the Claude-Code-Usage-Monitor limit writeups. If you live in the
 terminal, those tools are good; use them.
 
 ## License

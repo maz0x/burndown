@@ -63,7 +63,7 @@ enum StyleSheet {
     static func renderBurners(to path: String) {
         let clay = NSColor(hex: "D97757") ?? .orange
         let styles: [MenuBarStyle] = [.smolder, .burnfront, .kiln, .flame]
-        // (label, tier, pct). The fire's amplitude/frequency comes from the tier tables (spec 3.1-3.5).
+        // (label, tier, pct). The fire's amplitude/frequency comes from the BurnTier tables.
         let states: [(String, BurnTier, Double)] = [
             ("idle", .idle, 0.46), ("mid", .mid, 0.46), ("heavy", .heavy, 0.72), ("REDLINE", .redline, 0.95),
         ]
@@ -463,7 +463,10 @@ enum StyleSheet {
                 guard let slot = cal.date(bySettingHour: h, minute: 10, second: 0, of: day), slot <= now else { continue }
                 let m = models[(back + h) % models.count]
                 let pr = projects[(h / 3 + back) % projects.count]
-                let chats = ["Draft the launch plan", "Debug the importer", "Plan the research trip", "Refactor the parser"]
+                // Ordered to line up with `projects` above, which is indexed identically: a sample
+                // chat should sit in a project its title would plausibly belong to.
+                let chats = ["Draft the launch plan", "Plan the research trip",
+                             "Debug the importer", "Rewrite the onboarding copy"]
                 out.append(UsageRecord(date: slot, model: m, project: pr, session: chats[(h / 3 + back) % chats.count],
                                        input: Int(w * 38_000), output: Int(w * 8_000),
                                        cache5m: Int(w * 11_000), cache1h: 0, cacheRead: Int(w * 90_000)))
@@ -672,17 +675,24 @@ enum StyleSheet {
         snap.sessionFresh = 3_000_000; snap.weeklyFresh = 29_000_000
         engine.snapshot = snap
         let p = Palette.of(dark ? .dark : .light)
-        // Sample conversations, matching the sample records' projects, so the attribution
-        // sections have something honest-looking to show. No real titles ever.
+        // The attribution rows are DERIVED from the same sample records that drive the recap and
+        // the 14-day bars, never hand-written alongside them. A separate hand-written list drifted
+        // out of step and published a screenshot where "this week" was larger than "all time" and
+        // the recap named a different top project than the chart under it.
         let recs = qaChartRecords()
-        let titles = [("Draft the launch plan", "website", 512_000, 6.40),
-                      ("Debug the importer", "api-server", 388_000, 4.85),
-                      ("Plan the research trip", "research", 240_000, 3.10),
-                      ("Refactor the parser", "api-server", 196_000, 2.45),
-                      ("Rewrite the onboarding copy", "writing", 88_000, 1.10)]
-        let sessions = titles.enumerated().map { i, t in
-            SessionUsage(id: "sample-\(i)", title: t.0, project: t.1,
-                         date: Date().addingTimeInterval(-Double(i) * 7200), tokens: t.2, cost: t.3)
+        var perChat: [String: (project: String, tokens: Int, date: Date)] = [:]
+        for r in recs {
+            let tokens = r.input + r.output + r.cache5m + r.cache1h + r.cacheRead
+            if var e = perChat[r.session] {
+                e.tokens += tokens; e.date = max(e.date, r.date); perChat[r.session] = e
+            } else {
+                perChat[r.session] = (r.project, tokens, r.date)
+            }
+        }
+        let sessions = perChat.sorted { $0.value.tokens > $1.value.tokens }.enumerated().map { i, kv in
+            SessionUsage(id: "sample-\(i)", title: kv.key, project: kv.value.project,
+                         date: kv.value.date, tokens: kv.value.tokens,
+                         cost: Double(kv.value.tokens) / 1_000_000 * 12.5)
         }
         let view = InsightsView(engine: engine, settings: settings, preview: (recs, sessions))
             .frame(width: 640, height: 1500, alignment: .topLeading)

@@ -1,10 +1,10 @@
 import SwiftUI
 import Charts
 
-// The chart catalogue. Twelve selectable views over the same underlying data, grouped by the question
+// The chart catalogue. Twenty-four selectable views over the same underlying data, grouped by the question
 // they answer, plus the shared hover/scrub readout every one of them uses.
 //
-// Design note (DESIGN_HANDOFF/CHARTS_WIDGETS_UIUX_PROMPT.md §1): burn data is extremely spiky - long
+// Design note: burn data is extremely spiky - long
 // flat stretches punctuated by bursts - so no single treatment suits every question. Rate views show
 // intensity, volume views show totals, burndowns show whether you will make it to the reset, and the
 // breakdown views answer "where did it go". The user picks; nothing is hard-coded.
@@ -287,7 +287,7 @@ func costPerDay(_ records: [UsageRecord], days: Int, now: Date = Date()) -> [Cat
         }
     }
     // Labels are the categorical x values, so they MUST be unique: past 31 days a bare
-    // day-of-month repeats and Swift Charts would merge unrelated days into one bar (audit H7).
+    // day-of-month repeats and Swift Charts would merge unrelated days into one bar.
     let f = DateFormatter(); f.dateFormat = days > 31 ? "M/d" : (days > 9 ? "d" : "EEE")
     return (0..<days).reversed().compactMap { back in
         guard let d = cal.date(byAdding: .day, value: -back, to: today) else { return nil }
@@ -354,7 +354,7 @@ func dailyTokens(_ records: [UsageRecord], days: Int, now: Date = Date()) -> [Ca
         }
     }
     // Labels are the categorical x values, so they MUST be unique: past 31 days a bare
-    // day-of-month repeats and Swift Charts would merge unrelated days into one bar (audit H7).
+    // day-of-month repeats and Swift Charts would merge unrelated days into one bar.
     let f = DateFormatter(); f.dateFormat = days > 31 ? "M/d" : (days > 9 ? "d" : "EEE")
     return (0..<days).reversed().compactMap { back in
         guard let d = cal.date(byAdding: .day, value: -back, to: today) else { return nil }

@@ -1,6 +1,6 @@
 import Foundation
 
-// The One Pulse motion system (spec 7.2). The whole app's heart rate: every periodic motion samples
+// The One Pulse motion system. The whole app's heart rate: every periodic motion samples
 // this single clock rather than a free-running timer. Foundation-pure so the tier ladder is unit-testable
 // (run-burnclock-tests.sh); the app advances `elapsed` from its one 30 Hz animator and calls `retier`.
 
@@ -28,11 +28,11 @@ enum BurnTier: String, CaseIterable {
     }
 }
 
-// ── Fire motion tables (spec 3.1-3.5). Every fire frequency in the product lives HERE, in Hz, and is
+// ── Fire motion tables. Every fire frequency in the product lives HERE, in Hz, and is
 // evaluated against BurnClock.elapsed as sin(2*pi*f*elapsed). Nothing derives motion from burn rate
 // directly, and nothing uses the wrapped phase (that was the drafts' discontinuity bug).
 extension BurnTier {
-    /// spec 3.1: the single `heat` scalar. Renderers lerp toward this at 0.06/frame.
+    /// The single `heat` scalar every fire renderer reads. Renderers lerp toward this at 0.06/frame.
     var heat: Double {
         switch self {
         case .idle: return 0.15
@@ -46,7 +46,7 @@ extension BurnTier {
     /// Halo (3.5 L1) and Smolder's wandering warmth (3.2 L4) are "mid+" only.
     var isMidPlus: Bool { self == .mid || self == .heavy || self == .redline }
 
-    static let hzCeiling: Double = 2.5   // spec 7.2: hard oscillation ceiling, everywhere, no exceptions
+    static let hzCeiling: Double = 2.5   // hard oscillation ceiling, everywhere, no exceptions
 
     /// The fastest thing this tier animates, in Hz. The render rate is derived from THIS rather than
     /// guessed: sampling at ~14x the motion's own frequency is far above Nyquist and reads as perfectly
@@ -56,7 +56,7 @@ extension BurnTier {
     /// Frames per second needed for this tier's motion to look continuous (clamped to a sane band).
     var renderFPS: Double { min(30, max(10, fastestHz * 14)) }
 
-    /// spec 3.5 flame height flick: (amplitude pt, Hz)
+    /// Flame height flick: (amplitude pt, Hz)
     var flameFlick: (amp: Double, hz: Double) {
         switch self {
         case .idle:      return (0.30, 0.20)
@@ -67,7 +67,7 @@ extension BurnTier {
         case .overLimit: return (0.15, 0.10)   // the 2pt stub breathes on the overLimit tier
         }
     }
-    /// spec 3.5: heavy/redline add a secondary flick.
+    /// Heavy and redline tiers add a secondary flick.
     var flameFlick2: (amp: Double, hz: Double)? {
         switch self {
         case .heavy:   return (0.25, 2.40)
@@ -75,7 +75,7 @@ extension BurnTier {
         default:       return nil
         }
     }
-    /// spec 3.5 flame tip sway: (amplitude pt, Hz)
+    /// Flame tip sway: (amplitude pt, Hz)
     var flameSway: (amp: Double, hz: Double) {
         switch self {
         case .idle:      return (0.60, 0.125)
@@ -86,7 +86,7 @@ extension BurnTier {
         case .overLimit: return (0.25, 0.08)
         }
     }
-    /// spec 3.2 Smolder: baseline-smolder breath Hz, and the L3 peak alpha.
+    /// Smolder style: baseline-smolder breath Hz, and the L3 peak alpha.
     var smolderBreathHz: Double {
         switch self {
         case .idle: return 0.12
@@ -107,7 +107,7 @@ extension BurnTier {
         case .overLimit: return 0.26
         }
     }
-    /// spec 3.3 Burnfront: seam-filament Hz.
+    /// Burnfront style: seam-filament Hz.
     var seamHz: Double {
         switch self {
         case .idle: return 0.15
@@ -118,7 +118,7 @@ extension BurnTier {
         case .overLimit: return 0.12
         }
     }
-    /// spec 3.3 L5: one spark alive at a time; cycle seconds. nil = no sparks at this tier.
+    /// Burnfront L5: one spark alive at a time; cycle seconds. nil = no sparks at this tier.
     var seamSparkCycle: Double? {
         switch self {
         case .heavy: return 2.4
@@ -126,7 +126,7 @@ extension BurnTier {
         default: return nil
         }
     }
-    /// spec 3.4 Kiln: convection band speed, pt/s. Redline runs two bands.
+    /// Kiln style: convection band speed, pt/s. Redline runs two bands.
     var kilnBandSpeed: Double {
         switch self {
         case .idle: return 1.2
@@ -142,7 +142,7 @@ extension BurnTier {
 struct BurnClock {
     var elapsed: TimeInterval = 0          // monotonic seconds; all Hz formulas use THIS
     private(set) var tier: BurnTier = .idle
-    /// Spec 7.2: "Tempo changes interpolate ... with phase preserved ... never snap." Changing the
+    /// Contract: tempo changes interpolate with phase preserved, and never snap. Changing the
     /// period would otherwise make `elapsed mod period` jump discontinuously on every retier, so we
     /// carry an origin that is re-anchored at each tier change to hold the phase steady across it.
     private var phaseOrigin: TimeInterval = 0

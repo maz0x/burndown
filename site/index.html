@@ -38,7 +38,7 @@
   "url": "https://burndown-app.pages.dev/",
   "downloadUrl": "https://github.com/maz0x/burndown/releases/latest",
   "installUrl": "https://github.com/maz0x/burndown/releases/latest",
-  "softwareVersion": "0.9.0",
+  "softwareVersion": "0.9.1",
   "license": "https://www.apache.org/licenses/LICENSE-2.0",
   "isAccessibleForFree": true,
   "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"},
@@ -73,7 +73,7 @@
     {"@type":"Question","name":"Does it work on Claude Pro, or only Max?","acceptedAnswer":{"@type":"Answer","text":"Both. Burndown does not hardcode plan shapes. It shows whatever limits your account reports, including any per-model caps, and the Account window can re-read your plan on the spot after an upgrade."}},
     {"@type":"Question","name":"I only use Claude in the browser or the desktop app. Does it still work?","acceptedAnswer":{"@type":"Answer","text":"Live mode, yes. Your limits are account-wide server-side numbers, so percentages, resets, forecasts and alerts all work no matter where you use Claude. Estimate mode and the attribution features are built from the logs Claude Code writes, so those cover Claude Code sessions."}},
     {"@type":"Question","name":"Does it run on Intel Macs?","acceptedAnswer":{"@type":"Answer","text":"Yes. Releases are universal binaries covering Apple Silicon and Intel, and macOS 13 or later is required."}},
-    {"@type":"Question","name":"How do updates work?","acceptedAnswer":{"@type":"Answer","text":"Burndown checks GitHub once a day for a newer version and tells you in the menu when one exists. One click installs it: the download is verified against its published SHA-256 checksum and its signature, the app is replaced in place, and it restarts. You can turn the daily check off."}}
+    {"@type":"Question","name":"How do updates work?","acceptedAnswer":{"@type":"Answer","text":"Burndown checks GitHub once a day for a newer version and tells you in the menu when one exists. One click installs it: the download is checked against its published SHA-256 checksum and its code signature is checked for integrity, the app is replaced in place, and it restarts. Both catch a corrupted download; neither proves origin the way notarization would, because the signature is still ad hoc. You can turn the daily check off."}}
   ]
 }
 </script>
@@ -276,7 +276,7 @@
         efficiency, spend. Each one drawn with real data before you choose it.</p>
       </div>
       <div class="card illus">
-        <img src="screenshots/f-themes.png" width="330" alt="Several colour themes of the card shown side by side">
+        <img src="screenshots/f-themes.png" width="330" alt="Several color themes of the card shown side by side">
         <h3>Yours to shape</h3>
         <p>Twenty-plus themes, real Liquid Glass, a couple dozen menu bar glyphs, and a card you can
         rebuild element by element.</p>
@@ -425,9 +425,9 @@
       </tr>
       <tr>
         <td>Other providers too: OpenAI, Gemini, xAI and friends</td>
-        <td>Burndown goes deepest on Claude today, and support for other providers is actively
-        in development. If you need several providers in one pane this week, a multi-tool
-        tracker covers the gap; if you can wait, this is where Burndown is heading.</td>
+        <td>Burndown goes deepest on Claude today, and nothing else. Other providers are on the
+        roadmap but not built, so if you need several providers in one pane, a multi-tool
+        tracker is the right choice today.</td>
       </tr>
       <tr>
         <td>Depth: where the tokens went, what happens next, and a UI you can shape</td>
@@ -609,9 +609,10 @@
 
     <details><summary>How do updates work?</summary>
       <p>Burndown checks GitHub once a day for a newer version and tells you in the menu when one
-      exists. One click installs it: the download is verified against its published SHA-256
-      checksum and its signature, the app is replaced in place, and it restarts. You can turn the
-      daily check off.</p></details>
+      exists. One click installs it: the download is checked against its published SHA-256
+      checksum and its code signature is checked for integrity, the app is replaced in place, and
+      it restarts. Both catch a corrupted download; neither proves origin the way notarization
+      would, because the signature is still ad hoc. You can turn the daily check off.</p></details>
   </div>
 </section>
 

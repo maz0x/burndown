@@ -12,7 +12,7 @@ extension View {
 }
 
 /// The whole self-explanation affordance: one faint 8.5pt question dot whose tooltip carries the
-/// plain-English note. Subtle by design (owner rule: explanations take no space). Gated by the
+/// plain-English note. Subtle by design: explanations take no space. Gated by the
 /// "Explain each section" setting; the tooltip on the label itself works even when the dot is off.
 struct ExplainDot: View {
     var text: String
@@ -53,14 +53,14 @@ struct Palette {
     var bg, ink, sub, faint, track, divider, live, session, weekly, warning, overLimit, raisedBg: Color
     // The selected whole-app palette. AppSettings keeps this in sync; views read it via of().
     static var current: PalettePreset = .stoneClay
-    // raisedBg (spec 2.1): inner chart-card / raised-surface fill. Derived per preset as bg blended
+    // raisedBg: inner chart-card / raised-surface fill. Derived per preset as bg blended
     // 30% toward track in the same scheme, unless an explicit anchor hex is passed (Stone & Clay).
     private static func pal(_ bg: String, _ ink: String, _ sub: String, _ faint: String, _ track: String, _ divider: String, _ live: String, _ session: String, _ weekly: String, _ warning: String, _ overLimit: String, _ raised: String? = nil) -> Palette {
         let raisedC: Color = raised.map { Color(hex: $0) }
             ?? Color(nsColor: (NSColor(hex: bg) ?? .windowBackgroundColor).blended(to: NSColor(hex: track) ?? .windowBackgroundColor, 0.30))
         return Palette(bg: Color(hex: bg), ink: Color(hex: ink), sub: Color(hex: sub), faint: Color(hex: faint), track: Color(hex: track), divider: Color(hex: divider), live: Color(hex: live), session: Color(hex: session), weekly: Color(hex: weekly), warning: Color(hex: warning), overLimit: Color(hex: overLimit), raisedBg: raisedC)
     }
-    // Theme generator (spec area 7 mk()): derive the neutral roles from a bg/ink pair + two hero hues,
+    // Theme generator (mk()): derive the neutral roles from a bg/ink pair + two hero hues,
     // so a new theme needs only four hexes per scheme. sub/faint/track/divider fall out by blending; live,
     // warning, and overLimit use the shared scheme-aware role constants, keeping the role contract intact.
     private static func gen(_ bg: String, _ ink: String, _ session: String, _ weekly: String, dark: Bool) -> Palette {
@@ -92,7 +92,7 @@ struct Palette {
         case .tealMist:        return dark ? pal("0F1A18", "E3F1ED", "86A8A0", "4E6B64", "1A2925", "22332F", "3FB7A1", "DE8158", "4FC0AA", "E0A23F", "D2553A") : pal("EDF5F3", "152824", "4F6E68", "8AA8A2", "DCEAE6", "CCE0DB", "1E8472", "C2633E", "1E8472", "B8801C", "A0341A")
         case .carbonLime:      return dark ? pal("121309", "EDEFE2", "9DA486", "5C6147", "1E2012", "272A18", "A6E22E", "A6E22E", "8FA3C0", "E0A23F", "D2553A") : pal("F3F4EE", "1C1F14", "5E6450", "979C82", "E4E6DA", "D8DBCB", "6F9913", "6F9913", "5E7186", "B8801C", "A0341A")
         case .porcelainIndigo: return dark ? pal("13141C", "ECEDF4", "9499B8", "585D7C", "1F2130", "282A3C", "7385F0", "DB7551", "7385F0", "E0A23F", "D2553A") : pal("F6F5F1", "1A1C2B", "555A78", "9398B4", "E7E6E0", "DCDBD3", "3848BE", "C2603A", "3848BE", "B8801C", "A0341A")
-        // Generator-derived presets (spec area 7): bg, ink, session, weekly - the neutrals fall out.
+        // Generator-derived presets: bg, ink, session, weekly - the neutrals fall out.
         case .rosewood:     return dark ? gen("1C1614", "F2E7E4", "D9765F", "B29098", dark: true) : gen("FBF3F1", "2B1F1E", "B04A3E", "8A6E74", dark: false)
         case .forestNight:  return dark ? gen("121A14", "E6EFE6", "E0975C", "6FB07E", dark: true) : gen("F0F4EE", "1B241B", "C2703A", "4C7A55", dark: false)
         case .oceanDeep:    return dark ? gen("0E181F", "E4EEF4", "E0805F", "56B0CC", dark: true) : gen("EEF3F6", "16232B", "C65A44", "2E7A96", dark: false)
@@ -133,11 +133,11 @@ func windowEdgeLabel(_ date: Date, window: TimeInterval) -> String {
 
 struct HBar: View {
     var pct: Double; var color: Color; var track: Color; var height: CGFloat = 9
-    /// 0 at rest, ramping to 1 at the cap. Spec 4.2 DELETES the permanent progress-bar glow:
+    /// 0 at rest, ramping to 1 at the cap. There is no permanent progress-bar glow:
     /// the bar is a FLAT fill at rest and only earns its glow (and the overLimit tint) at redline.
     var redline: Double = 0
     var overLimit: Color? = nil
-    var a11yLabel: String? = nil       // spec 4.8: bars announce their value + updatesFrequently
+    var a11yLabel: String? = nil       // bars announce their value + updatesFrequently
     @Environment(\.accessibilityReduceMotion) private var reduce
     var body: some View {
         GeometryReader { g in
@@ -258,7 +258,7 @@ struct TimeRing: View {
                     .frame(width: lw * 1.3, height: lw * 1.3)
                     .offset(y: -size / 2)
                     .rotationEffect(.degrees(360 * f))
-                    // Spec 4.4.2: the end dot is the arc's own tip - arc color, no halo, no glow, ever.
+                    // The end dot is the arc's own tip - arc color, no halo, no glow, ever.
             }
             VStack(spacing: 0) {
                 Text(big).font(.system(size: size * 0.30, weight: .medium, design: .serif)).foregroundStyle(ink)
@@ -275,7 +275,7 @@ struct DetailCard: View {
     @ObservedObject var settings: AppSettings
     @ObservedObject var live: LiveActivity
     var refreshAnchor: Date = Date()
-    var heartbeat: Int = 0          // spec 7.4: the gated refresh heartbeat (0 in QA harnesses)
+    var heartbeat: Int = 0          // the gated refresh heartbeat (0 in QA harnesses)
     var period: Double = 30
     var signedIn: Bool = true            // false to show the inline sign-in card
     var loading: Bool = false            // true on cold start, before any data (skeleton)
@@ -289,13 +289,13 @@ struct DetailCard: View {
     @Environment(\.accessibilityReduceMotion) private var reduce
     @State private var milestonePulse = false      // one heartbeat when crossing 25/50/75/threshold
     @State private var lastSessionPct: Double = 0
-    @State private var milestoneFiredAt: [Int: Date] = [:]   // spec 7.5: 10-minute dedup per milestone
+    @State private var milestoneFiredAt: [Int: Date] = [:]   // 10-minute dedup per milestone
     // BY MODEL disclosure state lives in settings (not @State) so it survives the popover teardown on
     // close and reopens the way it was left. QA renders drive it via CUB_MODELS in qaSettings().
 
     @ViewBuilder
     private func eyebrow(_ t: String, _ p: Palette, note: String? = nil) -> some View {
-        // The one eyebrow token (spec 2.3): SF 11pt semibold, +1.4 tracking, sub, uppercase.
+        // The one eyebrow token: SF 11pt semibold, +1.4 tracking, sub, uppercase.
         // Chrome-gated: the eyebrows-off switch (area 3) drops every section label.
         // The self-explanation layer is a single faint dot beside the label; the plain-English
         // note lives in its hover tooltip, so it costs zero space and zero attention.
@@ -326,7 +326,7 @@ struct DetailCard: View {
             }
             return ("Reconnecting", p.sub)
         }
-        // Spec 4.6 over-limit: the reset time is the non-color cue (the OverPill above carries the
+        // Over-limit: the reset time is the non-color cue (the OverPill above carries the
         // "Limit reached" label, so the caption adds the reset detail without repeating it).
         if snapshot.over {
             if let r = snapshot.sessionResetAt { return ("Resets in \(weekLeftString(r))", p.overLimit) }
@@ -407,13 +407,13 @@ struct DetailCard: View {
     @ViewBuilder
     private func liveCard(p: Palette, title: String, sColor: Color, wColor: Color, ringC: Color,
                           liveAccent: Color, liveDot: Color, liveState: LiveState, reauth: Bool) -> some View {
-        // The chart element folds the whole chart section away (spec area 3), dropping its divider too.
+        // The chart element folds the whole chart section away, dropping its divider too.
         let sections = settings.visibleSections().filter { $0 != .chart || settings.showBurnChart }
         VStack(alignment: .leading, spacing: 0) {
             if reauth { reauthBanner(p).padding(.bottom, 13) }
             ForEach(Array(sections.enumerated()), id: \.element) { idx, sec in
                 if idx > 0, settings.popoverDividers {
-                    // Flat 1px divider hairline (spec 4.2: gradient dividers CUT). Chrome-gated;
+                    // Flat 1px divider hairline (gradient dividers were cut). Chrome-gated;
                     // when off, the 12pt block spacing alone separates sections.
                     Rectangle().fill(p.divider).frame(height: 1)
                         .padding(.vertical, settings.popoverCompact ? 10 : 12)
@@ -428,7 +428,7 @@ struct DetailCard: View {
                             Text("usage").font(.system(size: 16, weight: .semibold)).foregroundStyle(p.faint)
                         }.lineLimit(1).minimumScaleFactor(0.6).layoutPriority(1)
                         Spacer(minLength: 6)
-                        // Quiet-hours moon (spec 4.6 / area 3): a crescent leading the badge, text in the
+                        // Quiet-hours moon: a crescent leading the badge, text in the
                         // tooltip so the header title keeps its room; distinct from the connection state
                         // (data can be LIVE while alerts are muted).
                         if settings.quietHoursActive() {
@@ -442,7 +442,7 @@ struct DetailCard: View {
                                     tipAbove: (sections.firstIndex(of: .header) ?? 0) * 2 >= sections.count)
                             .fixedSize()
                     }
-                    // Header aura CUT (spec 4.2): its attention job transfers to the redline bloom.
+                    // Header aura CUT: its attention job transfers to the redline bloom.
                     .zIndex(1)   // keep the badge's hover tooltip above the following divider/section
                 case .session:
                     sessionSection(p: p, sColor: sColor, ringC: ringC, liveState: liveState)
@@ -452,7 +452,7 @@ struct DetailCard: View {
                     weekSection(p: p, wColor: wColor, ringC: ringC)
                 }
             }
-            // Developer API spend (spec area 4): one opt-in line at the very bottom, only when a key is
+            // Developer API spend: one opt-in line at the very bottom, only when a key is
             // configured. No key -> neither this line nor its hairline exist, layout byte-for-byte unchanged.
             if settings.showDeveloperApiLine, apiSpend.configured, apiSpend.error == nil {
                 Rectangle().fill(p.divider).frame(height: 1).padding(.vertical, settings.popoverCompact ? 10 : 12)
@@ -484,7 +484,7 @@ struct DetailCard: View {
             // full-width beneath so they share the left edge with the bar and never get boxed/truncated.
             HStack(alignment: .top, spacing: 10) {
                 HStack(alignment: .firstTextBaseline, spacing: 1) {
-                    // Hero numeral (design rev 11): INK at rest, warming to the session L+-7 gradient FROM the
+                    // Hero numeral: INK at rest, warming to the session L+-7 gradient FROM the
                     // heavy tier, flat overLimit past 100%. There is no permanent gradient - the card is a cool
                     // instrument until you burn hot.
                     let warmth = snapshot.over ? 1.0 : max(0, min(1, (snapshot.sessionPct - (settings.alertSessionAt - 0.15)) / 0.15))
@@ -498,7 +498,7 @@ struct DetailCard: View {
                         .scaleEffect(milestonePulse ? 1.035 : 1, anchor: .leading)
                     Text("%").font(.system(size: 28, weight: .regular, design: .serif)).foregroundStyle(p.sub)
                 }
-                // Spec 4.8: the session block reads as ONE element with the full sentence.
+                // The session block reads as ONE element with the full sentence.
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("Session")
                 .accessibilityValue({
@@ -508,7 +508,7 @@ struct DetailCard: View {
                     return s
                 }())
                 .accessibilityAddTraits(.updatesFrequently)
-                // Milestone pulse (spec 7.5): UPWARD crossings of 25 / 50 / 75 / the user's threshold.
+                // Milestone pulse: UPWARD crossings of 25 / 50 / 75 / the user's threshold.
                 // Numeral only, scale 1.0 -> 1.035 -> 1.0 on a 480ms settle, deduped for 10 minutes so a
                 // value oscillating across a line does not strobe.
                 .onChange(of: snapshot.sessionPct) { new in
@@ -534,7 +534,7 @@ struct DetailCard: View {
                     // "hold on, a fresh window is close."
                     let secsLeft = snapshot.sessionResetAt.map { $0.timeIntervalSince(ctx.date) } ?? .infinity
                     let breathe = secsLeft > 0 && secsLeft < 10 * 60 && !reduce
-                    // One Pulse (spec 7.2): breathe on the BurnClock tier period, not a free-running rate.
+                    // One Pulse: breathe on the BurnClock tier period, not a free-running rate.
                     let tier = BurnClock.tier(usage: snapshot.sessionPct, over: snapshot.over,
                                               burnRatio: min(2, live.norm * 2), threshold: settings.alertSessionAt,
                                               tokensFlowing: live.active)
@@ -557,7 +557,7 @@ struct DetailCard: View {
                 Text(st.0).font(.system(size: 13, weight: .medium)).foregroundStyle(st.1).padding(.top, 2).lineLimit(1)
                     .help("Session status: time to limit, approaching limit, offline, or a fresh window.")
             }
-            // Spec 4.2/4.4.3: flat fill at rest; the glow and the overLimit tint are redline-only.
+            // Flat fill at rest; the glow and the overLimit tint are redline-only.
             HBar(pct: snapshot.sessionPct, color: sColor, track: p.track, height: 7,
                  redline: snapshot.over ? 1 : max(0, (min(1, snapshot.sessionPct) - 0.85) / 0.15),
                  overLimit: p.overLimit, a11yLabel: "Session usage").padding(.top, 13)
@@ -694,7 +694,7 @@ struct DetailCard: View {
                 Image(systemName: "key.fill").font(.system(size: 11))
                 Text("Sign-in expired").font(.system(size: 12, weight: .semibold)).lineLimit(1)
                 Spacer(minLength: 6)
-                Text("Re-auth").font(.system(size: 11, weight: .semibold)).lineLimit(1)
+                Text("Sign in").font(.system(size: 11, weight: .semibold)).lineLimit(1)
             }
             .foregroundStyle(p.overLimit)
             .padding(.horizontal, 11).padding(.vertical, 9)
@@ -717,14 +717,14 @@ struct DetailCard: View {
             }.padding(.bottom, 13)
             Rectangle().fill(p.divider).frame(height: 1)
             VStack(spacing: 0) {
-                LivingFlameMark(size: 34).padding(.top, 16).padding(.bottom, 12)   // spec area 1: living in the sign-in card
+                LivingFlameMark(size: 34).padding(.top, 16).padding(.bottom, 12)   // living in the sign-in card
                 Text("Connect your plan").font(.system(size: 19, weight: .semibold, design: .serif)).foregroundStyle(p.ink)
                 Text("See your session and weekly usage the moment you sign in.")
                     .font(.system(size: 13)).foregroundStyle(p.sub).multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true).frame(maxWidth: 200)
                     .padding(.top, 4).padding(.bottom, 16)
                 Button(action: onSignIn) {
-                    Text("Sign in to Claude").font(.system(size: 13.5, weight: .semibold)).foregroundStyle(.white)
+                    Text("Sign in with Claude").font(.system(size: 13.5, weight: .semibold)).foregroundStyle(.white)
                         .frame(maxWidth: .infinity).padding(.vertical, 10)
                         .background(RoundedRectangle(cornerRadius: 9).fill(p.session))
                 }.buttonStyle(.plain)
@@ -743,7 +743,7 @@ struct DetailCard: View {
     private func skeletonCard(_ p: Palette) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
-                Text("Claude").font(.system(size: 16, weight: .bold)).foregroundStyle(p.ink)
+                Text(kAppName).font(.system(size: 16, weight: .bold)).foregroundStyle(p.ink)
                 Text("usage").font(.system(size: 16, weight: .semibold)).foregroundStyle(p.faint)
                 Spacer()
                 HStack(spacing: 5) {
@@ -787,7 +787,7 @@ struct StatusBadge: View {
     var updated: Date?
     var period: Double = 30
     var anchor: Date = Date()      // when the current refresh cycle started (pings the dot)
-    var heartbeat: Int = 0         // spec 7.4: bumped ONLY by a gated refresh heartbeat
+    var heartbeat: Int = 0         // bumped ONLY by a gated refresh heartbeat
     var onTap: () -> Void = {}
     var tipAbove: Bool = false     // show the tooltip above the badge (when the header sits low in the card)
     @State private var pingID = 0
@@ -812,7 +812,7 @@ struct StatusBadge: View {
     private var label: String {
         switch kind {
         case .live: return "Live"; case .est: return "Est"
-        case .stale:                                   // spec 4.6: STALE shows its age
+        case .stale:                                   // STALE shows its age
             if let u = updated {
                 let s = max(0, Date().timeIntervalSince(u))
                 return "Stale " + (s < 3600 ? "\(Int(s / 60))m" : "\(Int(s / 3600))h")
@@ -846,14 +846,14 @@ struct StatusBadge: View {
     private func fire() {
         pingID += 1
         guard !reduce else { return }   // reduce motion: no dot bump
-        // Spec 7.4 @T+80: scale 1.0 -> 1.35 -> 1.0 on the flare curve, 720ms total.
+        // Heartbeat flare at T+80: scale 1.0 -> 1.35 -> 1.0 on the flare curve, 720ms total.
         withAnimation(.flare(Dur.d240)) { bump = true }
         DispatchQueue.main.asyncAfter(deadline: .now() + Dur.d240) {
             withAnimation(.emberEase(Dur.d480)) { bump = false }
         }
     }
     private var tipText: String {
-        // Every state explains itself in plain English (audit M4): the badge is jargon to a
+        // Every state explains itself in plain English: the badge is jargon to a
         // stranger, so the tooltip says what the state means and what to do about it.
         let age: String? = updated.map {
             let s = max(0, Date().timeIntervalSince($0))
@@ -883,7 +883,7 @@ struct StatusBadge: View {
             if kind == .live {
                 ZStack {
                     PingRing(color: c).id(pingID)
-                    // Spec 7.3: between heartbeats the LIVE dot breathes 0.80 + 0.20b on the tier
+                    // Between heartbeats the LIVE dot breathes 0.80 + 0.20b on the tier
                     // period; its ping scales 1.0 -> 1.35 -> 1.0 (7.4).
                     // Driven by CORE ANIMATION, not a TimelineView. A TimelineView re-runs SwiftUI and
                     // re-commits the ENTIRE popover window (chart layers and all) on every tick - that
@@ -926,7 +926,7 @@ struct StatusBadge: View {
                 }
             } else { hoverToken = UUID(); withAnimation(.easeOut(duration: 0.1)) { hoverTip = false } }
         }
-        // Spec 7.4: the heartbeat fires only when the refreshed data actually changed what is
+        // The heartbeat fires only when the refreshed data actually changed what is
         // displayed (gated + 5s rate-limited in UsageEngine). A silent refresh is silent.
         .onChange(of: heartbeat) { _ in if kind == .live { fire() } }
         .accessibilityElement(children: .ignore)
@@ -965,7 +965,7 @@ struct MonitorChart: View {
     var chartHover: Bool = true
     var showChats = true
     // Bound (not @State) so the chats list reopens the way the user left it: the popover discards its
-    // content view on close, which would reset any local state (ADDENDUM C area 3).
+    // content view on close, which would reset any local state.
     @Binding var chatsOpen: Bool
     var truncation: ChatTruncation = .middle
     var records: [UsageRecord] = []   // per-call usage records (spike attribution on hover)
@@ -1026,14 +1026,14 @@ struct MonitorChart: View {
                         }
                     }
             }
-            // Chats burning now (spec 4.4.5 / addendum 3): calm single-line rows, set off from the
+            // Chats burning now: calm single-line rows, set off from the
             // chart by its own hairline with 12pt of air. Ranked ember dot + middle-truncated name +
             // rate. No per-row share bars. Roomy 12pt gaps.
             if showChats, !live.activeStreams.isEmpty {
                 Rectangle().fill(p.divider).frame(height: 1).padding(.top, 12)
                 VStack(alignment: .leading, spacing: 12) {
-                    // Eyebrow row: the count lives IN the eyebrow (spec 4.4.5); the whole row is the
-                    // collapse control (ADDENDUM C area 3), and its chevron reflects the state.
+                    // Eyebrow row: the count lives IN the eyebrow; the whole row is the
+                    // collapse control, and its chevron reflects the state.
                     Button {
                         withAnimation(.emberEase(Dur.d240)) { chatsOpen.toggle() }
                     } label: {
@@ -1071,7 +1071,7 @@ struct MonitorChart: View {
                         .accessibilityLabel(chatNames.display(s.name))
                         .accessibilityValue("\(fmtTok(s.tok)) tokens per minute")
                     }
-                    // Spec 4.3: max 3 rows, then the overflow is named in `faint`.
+                    // Max 3 rows, then the overflow is named in `faint`.
                     if live.activeStreams.count > 3 {
                         Text("+ \(live.activeStreams.count - 3) more")
                             .font(.system(size: 11.5)).foregroundStyle(p.faint)
@@ -1199,28 +1199,6 @@ struct OverPill: View {
     }
 }
 
-// The Burndown mark: four descending steps on a baseline (remaining allowance burning down left to
-// right). Pure SwiftUI shapes so it renders in ImageRenderer too. Fill is the active session role.
-struct BurndownMark: View {
-    var size: CGFloat
-    var fill: Color
-    var track: Color
-    private func bar(_ x: CGFloat, _ y: CGFloat, _ h: CGFloat, _ op: Double, _ u: CGFloat) -> some View {
-        RoundedRectangle(cornerRadius: 1 * u).fill(fill.opacity(op))
-            .frame(width: 3.6 * u, height: h * u).offset(x: x * u, y: y * u)
-    }
-    var body: some View {
-        let u = size / 24
-        ZStack(alignment: .topLeading) {
-            RoundedRectangle(cornerRadius: 0.7 * u).fill(track).frame(width: 20 * u, height: 1.4 * u).offset(x: 2 * u, y: 20.3 * u)
-            bar(3, 6, 15, 1.0, u)
-            bar(8.2, 10, 11, 0.82, u)
-            bar(13.4, 13.5, 7.5, 0.64, u)
-            bar(18.6, 16.5, 4.5, 0.46, u)
-        }.frame(width: size, height: size, alignment: .topLeading)
-    }
-}
-
 // A static placeholder block for the warming-up skeleton (no shimmer, so it is reduce-motion safe).
 struct Skeleton: View {
     var w: CGFloat?
@@ -1243,32 +1221,8 @@ struct Skeleton: View {
 // Transparent margin around the card so its drop shadow never clips at the panel edge.
 let kEdgePad: CGFloat = 14
 
-// A bottom-anchored vertical fill bar (side card).
-struct VBar: View {
-    var frac: Double; var color: Color; var track: Color
-    var body: some View {
-        GeometryReader { g in
-            ZStack(alignment: .bottom) {
-                Capsule().fill(track)
-                Capsule().fill(color).frame(height: max(3, g.size.height * min(1, max(0, frac))))
-            }
-        }.frame(width: 7)
-    }
-}
-
-// A leading-anchored horizontal fill bar (top/bottom bar).
-struct HFill: View {
-    var frac: Double; var color: Color; var track: Color; var width: CGFloat
-    var body: some View {
-        ZStack(alignment: .leading) {
-            Capsule().fill(track)
-            Capsule().fill(color).frame(width: max(4, width * min(1, max(0, frac))))
-        }.frame(width: width, height: 5)
-    }
-}
-
-// Session / weekly colors for the dock, on the shared role palette so the widget recolors with the
-// theme exactly like the popover (weekly was previously a fixed slate that ignored the palette).
+// Session and weekly colours for the docked widget: a custom accent drives the session hue,
+// and either bar flips to the over-limit role once its window is past 100%.
 private func dockColors(_ s: UsageSnapshot, _ settings: AppSettings, _ p: Palette) -> (s: Color, w: Color) {
     let custom = settings.accentHex.uppercased() != kDefaultAccent.uppercased()
     let accent = NSColor(hex: settings.accentHex) ?? NSColor(srgbRed: 0.85, green: 0.47, blue: 0.34, alpha: 1)
@@ -1276,72 +1230,6 @@ private func dockColors(_ s: UsageSnapshot, _ settings: AppSettings, _ p: Palett
     return (s.over ? p.overLimit : sBase, s.weeklyOver ? p.overLimit : p.weekly)
 }
 
-// Vertical side card (Left / Right): % over twin vertical bars (Session + Weekly).
-struct EdgeWidget: View {
-    @ObservedObject var engine: UsageEngine
-    @ObservedObject var settings: AppSettings
-    @Environment(\.colorScheme) private var scheme
-    var body: some View {
-        let s = engine.snapshot, p = Palette.of(scheme), c = dockColors(s, settings, p)
-        VStack(spacing: 6) {
-            Text("\(Int((s.sessionPct * 100).rounded()))%")
-                .font(.system(size: 12, weight: .semibold, design: .serif)).foregroundStyle(c.s).lineLimit(1).fixedSize()
-            HStack(alignment: .bottom, spacing: 6) {
-                VBar(frac: s.sessionPct, color: c.s, track: p.track)
-                VBar(frac: s.weeklyPct, color: c.w, track: p.track)
-            }.frame(height: 78)
-            HStack(spacing: 6) {
-                Text("S").font(.system(size: 7, weight: .bold)).foregroundStyle(p.faint).frame(width: 7)
-                Text("W").font(.system(size: 7, weight: .bold)).foregroundStyle(p.faint).frame(width: 7)
-            }
-        }
-        .padding(.vertical, 9).padding(.horizontal, 9).frame(width: 42)
-        .background(RoundedRectangle(cornerRadius: 12).fill(p.bg))
-        // Heat wash: nearing the session cap warms the card - a rust tint + glowing border,
-        // so the docked widget itself signals "close to the limit" from across the room.
-        .background {
-            let heat = s.over ? 1.0 : max(0, (min(1, s.sessionPct) - 0.85) / 0.15)
-            RoundedRectangle(cornerRadius: 12).fill(p.overLimit.opacity(0.10 * heat))
-        }
-        .overlay {
-            let heat = s.over ? 1.0 : max(0, (min(1, s.sessionPct) - 0.85) / 0.15)
-            RoundedRectangle(cornerRadius: 12).stroke(heat > 0 ? p.overLimit.opacity(0.25 + 0.4 * heat) : p.divider,
-                                                      lineWidth: heat > 0 ? 1 : 0.6)
-        }
-        .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
-        .padding(kEdgePad)
-    }
-}
-
-// Slim horizontal bar (Top / Bottom): Session + Weekly progress; blends at the window edge.
-struct EdgeBar: View {
-    @ObservedObject var engine: UsageEngine
-    @ObservedObject var settings: AppSettings
-    @Environment(\.colorScheme) private var scheme
-    var body: some View {
-        let s = engine.snapshot, p = Palette.of(scheme), c = dockColors(s, settings, p)
-        HStack(spacing: 10) {
-            metric("S", s.sessionPct, c.s, p)
-            Rectangle().fill(p.divider).frame(width: 0.6, height: 14)
-            metric("W", s.weeklyPct, c.w, p)
-        }
-        .padding(.vertical, 6).padding(.horizontal, 12)
-        .background(Capsule().fill(p.bg))
-        .overlay(Capsule().stroke(p.divider, lineWidth: 0.6))
-        .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
-        .padding(kEdgePad)
-    }
-    private func metric(_ label: String, _ frac: Double, _ color: Color, _ p: Palette) -> some View {
-        HStack(spacing: 6) {
-            Text(label).font(.system(size: 8, weight: .bold)).foregroundStyle(p.faint)
-            HFill(frac: frac, color: color, track: p.track, width: 60)
-            Text("\(Int((frac * 100).rounded()))%").font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(color).frame(width: 30, alignment: .leading).lineLimit(1)
-        }
-    }
-}
-
-// Adaptive container - bar for Top/Bottom, card for Left/Right.
 // Shared UI state for the edge-dock widget (the lost/rescan state lives in AppKit, the view reads it).
 final class EdgeState: ObservableObject {
     @Published var lost = false
@@ -1358,7 +1246,7 @@ struct EdgeDockView: View {
         if edgeState.lost { lostPlaque } else { widget }
     }
 
-    // Spec 6.2 lost state: a 160x44 plaque when Claude is running but its window can't be found.
+    // Lost state: a 160x44 plaque when Claude is running but its window can't be found.
     private var lostPlaque: some View {
         let p = Palette.of(scheme)
         return Button(action: edgeState.onRescan) {
@@ -1393,7 +1281,7 @@ struct EdgeDockView: View {
             .frame(width: natSize.width * scale, height: natSize.height * scale)
             .onPreferenceChange(WidgetSizeKey.self) { natSize = $0 }
             .padding(kEdgePad)
-            // Spec 6.2: right-click position presets along the docked edge, plus a lock.
+            // Right-click position presets along the docked edge, plus a lock.
             .contextMenu {
                 let vertical = !settings.dockEdge.horizontal
                 Button(vertical ? "Top" : "Start") { settings.edgePx = 0; settings.edgeFromEnd = false }
@@ -1411,18 +1299,14 @@ private struct WidgetSizeKey: PreferenceKey {
     static func reduce(value: inout CGSize, nextValue: () -> CGSize) { let n = nextValue(); if n != .zero { value = n } }
 }
 
-// MARK: - Settings (in-popover, themed)
-
-// MARK: - About
-
 // The Living Ember brand mark: Burndown's flame, drawn in code so it scales anywhere.
 // A teardrop flame with a white-hot core over a warm coal glow - matches the menu-bar Flame glyph.
 struct FlameMark: View {
     var size: CGFloat
     var body: some View {
         let u = size / 100
-        // C1 (the ratified flame canon, Option C): the MARK uses the app-icon hues VERBATIM. The
-        // spec 2.2 fire palette is reserved for typographic heat and never recolors the mark.
+        // Flame canon: the MARK uses the app-icon hues VERBATIM. The fire palette is
+        // reserved for typographic heat and never recolors the mark.
         // Anatomy: teardrop + warm radial gradient from the heart, a nested cream core at 94% in
         // the lower belly, THREE embers above the crown, over a soft warm halo. Never smoke.
         // Degradation: below 20pt the mark drops its sparks; below 14pt it also drops the core.
@@ -1432,7 +1316,7 @@ struct FlameMark: View {
             // soft warm halo
             Ellipse().fill(Color(hex: "E2510B").opacity(0.25))
                 .frame(width: 62 * u, height: 26 * u).offset(y: 34 * u).blur(radius: 4 * u)
-            // outer teardrop, radial gradient from the heart point (stops per C1)
+            // outer teardrop, radial gradient from the heart point
             FlameShape()
                 .fill(RadialGradient(stops: [.init(color: Color(hex: "FFF6D6"), location: 0.0),
                                              .init(color: Color(hex: "F9A825"), location: 0.34),
@@ -1475,7 +1359,7 @@ struct FlameShape: Shape {
     }
 }
 
-// The FlameMark, alive (spec area 1 / addendum B.1): the same silhouette on a LOCKED outline, breathing
+// The FlameMark, alive: the same silhouette on a LOCKED outline, breathing
 // in scale about its centroid with a breathing warm halo behind it, so it always reads as the logo. Used
 // in exactly two places: About and the signed-out "Connect your plan" card. Reduce motion: the static mark.
 struct LivingFlameMark: View {
@@ -1487,7 +1371,7 @@ struct LivingFlameMark: View {
         } else {
             TimelineView(.animation(minimumInterval: 1.0 / 6.0)) { ctx in   // 6fps: a slow breath needs no more
                 let t = ctx.date.timeIntervalSinceReferenceDate
-                let breath = 0.5 - 0.5 * cos(t * 2 * .pi / 4)   // 4s breath (spec 3.5 halo cadence)
+                let breath = 0.5 - 0.5 * cos(t * 2 * .pi / 4)   // 4s breath (the halo cadence)
                 ZStack {
                     Circle()
                         .fill(RadialGradient(colors: [Color(hex: Fire.glow).opacity(0.24 + 0.12 * breath), .clear],
@@ -1514,7 +1398,7 @@ struct AboutView: View {
     var body: some View {
         let p = Palette.of(scheme)
         VStack(spacing: 0) {
-            // The living FlameMark (spec area 1): breathing on a locked outline with its own warm halo.
+            // The living FlameMark: breathing on a locked outline with its own warm halo.
             LivingFlameMark(size: 42).padding(.top, 28)
             Text(kAppName).font(.system(size: 26, weight: .semibold, design: .serif)).tracking(-0.2)
                 .foregroundStyle(p.ink).padding(.top, 14)
@@ -1568,7 +1452,7 @@ struct AboutView: View {
             .padding(.top, 1)
             .onHover { kindled = $0 }
             .animation(.easeOut(duration: 0.28), value: kindled)
-            // Links row (spec 5.5): middle-dot separated, accent, hover underline. Every link works:
+            // Links row: middle-dot separated, accent, hover underline. Every link works:
             // What's new + Privacy open docs bundled with the app; the tour reopens onboarding.
             HStack(spacing: 6) {
                 aboutLink("What's new") { openBundledDoc("RELEASE_NOTES") }
@@ -1600,7 +1484,7 @@ private struct ContentHeightKey: PreferenceKey {
 
 // MARK: - Account (its own window - opened from the menu; not in Settings)
 
-/// Hold-to-copy (spec 5.4): press 0.35s, the value fills accent 12 percent (radius 4), a "Copied"
+/// Hold-to-copy: press 0.35s, the value fills accent 12 percent (radius 4), a "Copied"
 /// chip fades in 120ms, holds 960ms, fades 240ms. Reduce motion: no fades. VoiceOver custom action.
 struct HoldToCopy<Label: View>: View {
     var value: String
@@ -1665,7 +1549,7 @@ struct AccountView: View {
         let s = max(0, Date().timeIntervalSince(d))
         return s < 60 ? "just now" : s < 3600 ? "\(Int(s / 60))m ago" : "\(Int(s / 3600))h ago"
     }
-    // The ONE eyebrow token (spec 2.3): 11pt semibold, +1.4 tracking, `sub`.
+    // The ONE eyebrow token: 11pt semibold, +1.4 tracking, `sub`.
     private func eyebrow(_ t: String, _ p: Palette) -> some View {
         Text(t).font(.system(size: 11, weight: .semibold)).tracking(1.4).foregroundStyle(p.sub)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -1700,7 +1584,7 @@ struct AccountView: View {
     // One per-model weekly cap (limits[]): name, usage bar, and how much is LEFT. The binding limit
     // (`active`) gets an ember dot + the session hue.
 
-    // DEVELOPER API card (C2 / area 4): a distinct login, in the shared card token.
+    // DEVELOPER API card: a distinct login, in the shared card token.
     @ViewBuilder private func apiCard(_ p: Palette, _ coral: Color) -> some View {
         let spend = engine.apiSpend
         card(p) {
@@ -1748,7 +1632,10 @@ struct AccountView: View {
                 Text("A separate pay-as-you-go account. The key stays on this Mac and reads only your own spend. It needs an Admin key beginning sk-ant-admin, created by an org owner at console.anthropic.com under Settings, Admin keys.")
                     .font(.system(size: 11.5)).foregroundStyle(p.sub).fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 6) {
-                    TextField("sk-ant-admin-...", text: $apiKeyField)
+                    // SecureField, not TextField: this is a long-lived org-scoped credential and
+                    // the copy above tells the user to paste it in, which is exactly when a
+                    // screen share or a recording is most likely to be capturing the window.
+                    SecureField("sk-ant-admin-...", text: $apiKeyField)
                         .textFieldStyle(.plain).font(.system(size: 13, design: .monospaced)).lineLimit(1)
                         .padding(.horizontal, 8).padding(.vertical, 6)
                         .background(RoundedRectangle(cornerRadius: 8).fill(p.track))
@@ -1798,7 +1685,7 @@ struct AccountView: View {
     @ViewBuilder private func content(_ p: Palette) -> some View {
         let coral = Color(hex: settings.accentHex)
         VStack(alignment: .leading, spacing: 16) {
-                // Masthead (spec 5.1 shared chrome + 5.4).
+                // Masthead (the shared Account and Settings chrome).
                 VStack(alignment: .leading, spacing: 3) {
                     Text("Account").font(.system(size: 22, weight: .semibold, design: .serif)).foregroundStyle(p.ink)
                     Text("Your Claude subscription connection.").font(.system(size: 11)).foregroundStyle(p.sub)
@@ -1814,7 +1701,7 @@ struct AccountView: View {
 
                 apiCard(p, coral)   // the Developer API is a coequal source, always shown
 
-                // Privacy footer (spec 5.4): lock + trust sentence, no chmod here; logs link below.
+                // Privacy footer: lock + trust sentence, no chmod here; logs link below.
                 VStack(alignment: .leading, spacing: 8) {
                     HStack(spacing: 5) {
                         Image(systemName: "lock.fill").font(.system(size: 9))
@@ -1981,7 +1868,7 @@ struct AccountView: View {
     }
 }
 
-/// Spec 5.2.7: the Appearance live glass preview + AA contrast readout. Shows the current glass
+/// The Appearance live glass preview + AA contrast readout. Shows the current glass
 /// settings over a checker + a warm/cool sample, with sample text, and reports the WCAG contrast of
 /// `ink` against the synthetic worst-case backing (white in light, black in dark) at the chosen
 /// opacity, warning below 4.5:1.
@@ -2052,7 +1939,7 @@ struct Checker: View {
     }
 }
 
-/// A small daily-cost bar sparkline (C2: 14-day API spend history, session clay).
+/// A small daily-cost bar sparkline: 14-day API spend history, session clay.
 struct DailyCostSpark: View {
     var values: [Double]; var color: Color
     var body: some View {
@@ -2073,7 +1960,7 @@ struct DailyCostSpark: View {
     }
 }
 
-/// A quiet text button that underlines on hover (spec 5.4 "Sign out" etc.).
+/// A quiet text button that underlines on hover ("Sign out" etc.).
 struct HoverUnderline: View {
     let title: String; var size: CGFloat; var color: Color; var action: () -> Void
     @State private var hover = false
@@ -2087,7 +1974,7 @@ struct HoverUnderline: View {
     }
 }
 
-/// One OAuth step dot (spec 5.4): 18pt circle, tri-state, with its label beneath.
+/// One OAuth step dot: 18pt circle, tri-state, with its label beneath.
 struct OAuthStep: View {
     enum State { case upcoming, active, done }
     var index: Int; var label: String; var state: State; var p: Palette; var accent: Color
@@ -2295,7 +2182,7 @@ struct SettingsView: View {
                 Toggle("", isOn: $settings.usageAPI).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(coral)
             }
             div(p)
-            row("Refresh every", p, info: "How often to check your usage. One minute is plenty: the live burn animation rides a separate fast tracker, so a slower poll costs nothing visually and is gentler on the rate limited usage API.") {
+            row("Refresh every", p, info: "How often to check your usage. One minute is plenty: the live burn animation rides a separate fast tracker, so a slower poll costs nothing visually and is gentler on the rate-limited usage API.") {
                 Segmented(options: [("2s", 2), ("5s", 5), ("10s", 10), ("30s", 30), ("1m", 60), ("5m", 300)],
                           selection: $settings.refreshSeconds, p: p)
             }
@@ -2551,7 +2438,7 @@ struct SettingsView: View {
                 Segmented(options: MenuNumberFormat.allCases.map { ($0.label, $0) }, selection: $settings.menuNumberFormat, p: p)
             }
             div(p)
-            row("Time to reset", p, info: "Append a short reset countdown to the fire styles (Smolder, Burnfront, Kiln, Flame).") {
+            row("Time to reset", p, info: "Append a short reset countdown to the fire styles (Hearth, Burnfront, Flame).") {
                 Toggle("", isOn: $settings.menuTimeToReset).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(Color(hex: settings.accentHex))
             }
             div(p)
@@ -2566,7 +2453,7 @@ struct SettingsView: View {
         if settings.menuBarStyle == .flame {
             subhead("Flame adjust", p)
             card(p) {
-                row("Size", p, info: "How big the flame is drawn. 1.0x is the design's size. Above that the flame grows until it fills the menu bar, which physically caps its height, so the largest sizes mainly help at low usage.") {
+                row("Size", p, info: "How big the flame is drawn. 1.0x is the standard size. Above that the flame grows until it fills the menu bar, which physically caps its height, so the largest sizes mainly help at low usage.") {
                     HStack(spacing: 8) {
                         Slider(value: $settings.flameSize, in: 0.8...2.0)
                             .frame(width: 132).controlSize(.small).tint(Color(hex: settings.accentHex))
@@ -2586,7 +2473,7 @@ struct SettingsView: View {
             }
         }
         if settings.menuBarStyle == .smolder {
-            subhead("Smolder adjust", p)
+            subhead("Hearth adjust", p)
             card(p) {
                 row("Intensity", p, info: "How bright the ember glow burns. The tier caps still hold.") {
                     Segmented(options: [("Soft", 0.75), ("Standard", 1.0), ("Bright", 1.25)], selection: $settings.smolderIntensity, p: p)
@@ -2663,7 +2550,7 @@ struct SettingsView: View {
         }
         subhead("Background", p)
         card(p) {
-            // Spec 5.2.7: a live glass preview over a checker + sample, and an AA contrast readout that
+            // A live glass preview over a checker + sample, and an AA contrast readout that
             // computes ink-on-backing against the synthetic worst case (white in light, black in dark).
             GlassPreview(settings: settings, p: p, scheme: scheme)
             div(p)
@@ -2691,7 +2578,7 @@ struct SettingsView: View {
                 }
             }
             div(p)
-            gslider("Glass opacity", p, $settings.glassOpacity, 55...100, "%", "How opaque the glass layer is behind text. Clamped at 55 percent so text stays legible over any desktop (spec 5.2.7).")
+            gslider("Glass opacity", p, $settings.glassOpacity, 55...100, "%", "How opaque the glass layer is behind text. Clamped at 55 percent so text stays legible over any desktop.")
             div(p)
             gslider("Blur radius", p, $settings.glassBlur, 0...40, "pt", "Extra blur on top of the material. 0 keeps the material's native blur; higher softens the backdrop more.")
             div(p)
@@ -2753,7 +2640,7 @@ struct SettingsView: View {
                 Toggle("", isOn: $settings.showTokens).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(coral)
             }
         }
-        // Per-element visibility (spec area 3): grouped eye toggles. Each hides one popover element and
+        // Per-element visibility: grouped eye toggles. Each hides one popover element and
         // the card content-hugs to a shorter height with no gaps.
         subhead("Session", p)
         card(p) {
@@ -2788,7 +2675,7 @@ struct SettingsView: View {
         }
     }
 
-    // One eye/switch visibility row for the Popover pane (spec area 3).
+    // One eye/switch visibility row for the Popover pane.
     @ViewBuilder private func visRow(_ label: String, _ bind: Binding<Bool>, _ info: String, _ p: Palette, _ coral: Color) -> some View {
         row(label, p, info: info) {
             Toggle("", isOn: bind).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(coral)
@@ -2915,7 +2802,7 @@ struct SettingsView: View {
             }
             div(p)
             windowPicker("Time window", p, $settings.burnSpan,
-                         "How far back the rolling charts reach, from 30 minutes up to all of your retained history. Applies to the Burn, Steps, Volume, Cumulative, Spread, Usage %, By model, By project, Top chats, the two Mix bars, Cache efficiency, and Input vs output.")
+                         "How far back the rolling charts reach, from 30 minutes up to all of your retained history. Applies to Burn rate, Burn steps, Volume bars, Cumulative tokens, Burn distribution, Session + week %, By model, By project, Top chats, Model mix, Project mix, Cache efficiency, and Input vs output.")
             div(p)
             row("Day span", p, info: "How many days the day-scale charts cover: Cost per day, Hour of day, Day of week, Tokens per day, Session blocks, Spend to date, and the Activity heatmap (the heatmap always shows the most recent 7).") {
                 DropPicker(options: [("7 days", 7), ("14 days", 14), ("30 days", 30), ("90 days", 90)],
@@ -2947,7 +2834,7 @@ struct SettingsView: View {
             } label: {
                 HStack(spacing: 6) {
                     Image(systemName: "square.and.arrow.up").font(.system(size: 11))
-                    Text("Export history as CSV…").font(.system(size: 12.5, weight: .medium))
+                    Text("Export history as CSV").font(.system(size: 12.5, weight: .medium))
                     Spacer()
                 }.foregroundStyle(p.ink).frame(height: 32)
             }.buttonStyle(.plain)
@@ -3191,7 +3078,7 @@ struct SettingRow<C: View>: View {
     }
 }
 
-/// C10: ONE reusable info affordance, identical everywhere. A 13pt circle with a 1px `faint`
+/// ONE reusable info affordance, identical everywhere. A 13pt circle with a 1px `faint`
 /// border and an 8.5pt sans semibold "i" in `sub` (NOT an SF Symbol), help cursor; click opens a
 /// 240ms card (radius 10, `raisedBg`, max 240pt, body 11.5 / line spacing 1.5). It replaces every
 /// ad-hoc info glyph in Settings and Account. Budget: 3 per card, about 20 app-wide.
@@ -3423,11 +3310,11 @@ extension View {
     }
 }
 
-// Feature 14 (Redline): a warm glow that rises over the popover as the session nears its cap -
+// Redline: a warm glow that rises over the popover as the session nears its cap -
 // a smoldering border + heat blooming up from the top where the big Session % sits. 0 below 85%.
-/// Spec 4.6 redline recipe: a 1pt `overLimit` border at 35 percent and a bloom fading 8 -> 0
-/// percent over 110pt, the bloom BREATHING 8 to 12 percent on the redline tier's 2.4s period
-/// (spec 7.3). The colour is the `overLimit` role token, never a hardcoded hex (spec 7.6).
+/// The redline recipe: a 1pt `overLimit` border at 35 percent and a bloom fading 8 -> 0
+/// percent over 110pt, the bloom BREATHING 8 to 12 percent on the redline tier's 2.4s period.
+/// The colour is the `overLimit` role token, never a hardcoded hex.
 struct RedlineOverlay: View {
     var heat: Double
     var radius: CGFloat
@@ -3477,7 +3364,7 @@ struct MenuCard: View {
     var body: some View {
         let p = Palette.of(scheme)
         let scale = max(0.7, min(1.6, settings.textScale))
-        // Redline heat (feature 14): the whole card smolders as the session nears its cap.
+        // Redline heat: the whole card smolders as the session nears its cap.
         let s = engine.snapshot
         let heat = s.over ? 1.0 : max(0, (min(1, s.sessionPct) - 0.85) / 0.15)
         DetailCard(snapshot: engine.snapshot, settings: settings, live: live,

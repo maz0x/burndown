@@ -1,6 +1,6 @@
 import Foundation
 
-// Foundation-pure adaptive runaway-burn detection (FEATURE_IDEAS.md feature #4). Replaces the old
+// Foundation-pure adaptive runaway-burn detection. Replaces the old
 // fixed 30k / 60k / 100k tokens-per-minute thresholds with a learned baseline: we take the median
 // of recent burn-rate samples (robust to the odd spike) and flag the current rate as elevated or
 // runaway when it is a multiple of that personal normal. This keeps the alert meaningful whether a

@@ -121,7 +121,7 @@ final class UsageEngine: ObservableObject {
     @Published var snapshot = UsageSnapshot()
     @Published var ready = false
     @Published var refreshAnchor = Date()   // when the current refresh cycle started (drives the LIVE countdown)
-    /// Spec 7.4, the refresh heartbeat GATE. Bumped ONLY when a refresh succeeded AND it actually
+    /// The refresh heartbeat GATE. Bumped ONLY when a refresh succeeded AND it actually
     /// changed what is displayed (a rendered numeral differs after rounding, or session/week moved
     /// at least 0.5 points), and never within 5s of the last beat. A silent refresh is silent; a
     /// failed refresh never fakes a pulse. The countdown ring refills off `refreshAnchor` regardless.
@@ -143,7 +143,7 @@ final class UsageEngine: ObservableObject {
     }
     @Published var refreshPeriod: Double = 30   // current effective refresh interval (adapts to activity)
     // Normalized per-call usage records (last ~30d) + the active 5h block start, feeding the
-    // attribution / per-project / history / export / recap features (see FEATURE_IDEAS.md).
+    // attribution / per-project / history / export / recap features.
     @Published var records: [UsageRecord] = []
     @Published var activeBlockStart: Date? = nil
     @Published var apiSpend = APISpend()     // developer API account spend (separate from the subscription)
@@ -275,7 +275,7 @@ final class UsageEngine: ObservableObject {
                 self.snapshot = s; self.ready = true
                 // MERGE the fresh window into the record store instead of replacing it: the quick
                 // scan only covers ~7 days, and overwriting would snap every 14/30/90-day chart
-                // back to a week of data until the next deep scan (audit B5).
+                // back to a week of data until the next deep scan.
                 let tail = self.records.filter { $0.date < scanStart }
                 self.records = tail + Self.recordsFrom(entries)
                 self.activeBlockStart = activeStart
@@ -491,7 +491,14 @@ final class UsageEngine: ObservableObject {
             guard code == 200, let data = data,
                   let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let a = o["access_token"] as? String else {
-                if let data = data, let b = String(data: data, encoding: .utf8) { dbg("signin@\(url.host ?? "")=\(code) \(b.prefix(120))") } else { dbg("signin@\(url.host ?? "")=\(code)") }
+                // Only an ERROR body may be logged. Reaching here with a 200 means the response
+                // parsed as something other than the expected token pair, so the body is still
+                // the credential; the log is written for users to paste into a public issue.
+                if code == 200 {
+                    dbg("signin@\(url.host ?? "")=200 but the body was not a token pair")
+                } else if let data = data, let b = String(data: data, encoding: .utf8) {
+                    dbg("signin@\(url.host ?? "")=\(code) \(b.prefix(120))")
+                } else { dbg("signin@\(url.host ?? "")=\(code)") }
                 return
             }
             let rt = (o["refresh_token"] as? String) ?? ""
@@ -546,7 +553,7 @@ final class UsageEngine: ObservableObject {
                 }
                 self.snapshot = s
                 self.ready = true
-                self.considerHeartbeat(s, succeeded: ok)   // spec 7.4 gate
+                self.considerHeartbeat(s, succeeded: ok)   // heartbeat gate: only a real data change counts
                 completion?(ok)
             }
         }
@@ -636,7 +643,7 @@ final class UsageEngine: ObservableObject {
                            sevenDaySonnet: win("seven_day_sonnet"), sevenDayOpus: win("seven_day_opus"),
                            modelLimits: scoped.sorted { $0.pct > $1.pct })
         // A 200 whose shape we no longer recognize must NOT zero the live windows and overwrite the
-        // good cache (audit M6): treat "parsed nothing meaningful" as a soft failure so the last
+        // good cache: treat "parsed nothing meaningful" as a soft failure so the last
         // good numbers survive an API shape change until a build understands the new shape.
         guard api.fiveHour != nil || api.sevenDay != nil || !api.modelLimits.isEmpty else {
             dbg("usage=200 but unrecognized shape; keeping last good data")
@@ -715,8 +722,8 @@ final class UsageEngine: ObservableObject {
 
     /// Derive the plan label from the LIVE ~/.claude.json oauthAccount, which reflects the account
     /// currently signed into Claude Code/Desktop. This is authoritative. The Keychain
-    /// "subscriptionType" can be a stale, dead credential from an older CLI login (it was frozen on
-    /// "pro" here even after the account was upgraded to Max 5x), so we prefer this source.
+    /// "subscriptionType" can be a stale, dead credential from an older CLI login (it can stay
+    /// frozen on "pro" after an account is upgraded to Max), so we prefer this source.
     static func planFromClaudeJson() -> String? {
         let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".claude.json")
         guard let d = try? Data(contentsOf: url),
@@ -798,7 +805,10 @@ final class UsageEngine: ObservableObject {
             guard code == 200, let data = data,
                   let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let a = o["access_token"] as? String else {
-                if let data = data, let b = String(data: data, encoding: .utf8) {
+                // Same rule as the sign-in path: a 200 body here is the rotated token pair.
+                if code == 200 {
+                    dbg("refreshHTTP=200 but the body was not a token pair")
+                } else if let data = data, let b = String(data: data, encoding: .utf8) {
                     dbg("refreshHTTP=\(code) body=\(b.prefix(140))")
                 } else { dbg("refreshHTTP=\(code)") }
                 return
@@ -913,7 +923,7 @@ final class UsageEngine: ObservableObject {
 
     /// Stable machine-readable contract for external tools (Raycast / Stream Deck / scripts /
     /// statuslines): mirrors the live numbers into ~/.config/burndown/burndown-live.json
-    /// using the versioned BurndownLive shape (Sources/LiveContract.swift). Feature #10.
+    /// using the versioned BurndownLive shape (Sources/LiveContract.swift).
     private func writeBurndownContract() {
         let iso = ISO8601DateFormatter()
         let live = BurndownLive(
@@ -954,7 +964,7 @@ final class UsageEngine: ObservableObject {
         if let pl = obj["plan"] as? String { snapshot.plan = pl }
         if let em = obj["email"] as? String { snapshot.accountEmail = em }
         if let og = obj["org"] as? String { snapshot.accountOrg = og }
-        // Restore the cache's own age (audit H6): without it, a relaunch shows hours-old numbers
+        // Restore the cache's own age: without it, a relaunch shows hours-old numbers
         // under a fresh LIVE badge. With it, the existing stale threshold engages immediately.
         snapshot.liveUpdated = (obj["updated"] as? String).flatMap(parseISO)
     }

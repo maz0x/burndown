@@ -5,7 +5,7 @@ import ApplicationServices
 import UserNotifications
 import ServiceManagement
 
-// MARK: - Tide line (feature 13)
+// MARK: - Tide line (the Ember Line)
 
 let kTideThick: CGFloat = 12   // Ember Line canvas: a ~2.5pt meter line at the edge + room for the burn-front cluster
 
@@ -13,10 +13,10 @@ let kTideThick: CGFloat = 12   // Ember Line canvas: a ~2.5pt meter line at the 
 /// always drawn (a dim warm track) so it reads edge-to-edge; the BRIGHT segment = remaining session
 /// budget and recedes as you drain. Hue warms with burn rate and reddens near the cap. Click-through.
 /// `horizontal` = top/bottom edges (fills along X); otherwise left/right (fills along Y).
-// The Ember Line (spec 6.3): the fuse of the burning-number identity along the screen edge. The line
+// The Ember Line: the fuse of the burning-number identity along the screen edge. The line
 // nearly disappears (ash track); the burn front is the jewel. Overlays use the DARK-scheme role values
 // (emissive-token rule) blended with the theme-independent fire palette.
-// The Ember Line (spec 6.3 + area 5): eight edge-meter styles with a breathing burn-front cluster.
+// The Ember Line: eight edge-meter styles with a breathing burn-front cluster.
 // Drawing is done in a normalized space (the line runs left->right along the bottom, interior upward);
 // a per-edge context transform maps it to whichever screen edge the panel hugs.
 final class TideLineView: NSView {
@@ -30,9 +30,9 @@ final class TideLineView: NSView {
     var style: EmberLineStyle = .emberLine
     var flames = 2
     var glowMul: CGFloat = 1.0
-    var thickness: CGFloat = 2.5     // C5: Hairline / Standard / Bold
-    var sparkRate: Double = 1.0      // C5: Off(0) / Calm(1) / Lively(2.2)
-    var smoke = true                 // C5: smoke wisps off the burn front
+    var thickness: CGFloat = 2.5     // Hairline / Standard / Bold
+    var sparkRate: Double = 1.0      // Off(0) / Calm(1) / Lively(2.2)
+    var smoke = true                 // smoke wisps off the burn front
     var sessionCol: NSColor = NSColor(hex: "DB7551") ?? .orange   // session (dark value)
     var overCol: NSColor = NSColor(hex: "D2553A") ?? .red         // overLimit (dark value)
     override var isOpaque: Bool { false }
@@ -91,7 +91,7 @@ final class TideLineView: NSView {
         let base = sessionCol.blended(to: fGlow, 0.6 * h).blended(to: overCol, r)
         let breath = 0.75 + 0.25 * CGFloat((sin(phase * 2 * .pi / max(1, clockPeriod)) + 1) / 2)
         let frac = max(0, min(1, remaining))
-        let mt = min(T, thickness)   // C5 thickness
+        let mt = min(T, thickness)   // configured line thickness
         let fx = max(0.5, min(L - 0.5, L * frac))
         let coreCol = base.blended(to: .white, 0.4 + 0.3 * h).withAlphaComponent(0.95)
 
@@ -176,7 +176,7 @@ final class TideLineView: NSView {
             p2.close()
             fCore.withAlphaComponent(0.7 * breath).setFill(); p2.fill()
         }
-        // C5: lifting sparks off the burn front, count/liveliness from the Sparks control.
+        // Lifting sparks off the burn front, count/liveliness from the Sparks control.
         if sparkRate > 0 {
             let n = sparkRate >= 2 ? 3 : 2
             for i in 0..<n {
@@ -186,13 +186,13 @@ final class TideLineView: NSView {
                 dot(sx, sy, 0.7 - 0.3 * CGFloat(t), fCore.withAlphaComponent(max(0, (1 - CGFloat(t)) * 0.7 * breath)))
             }
         }
-        if smoke, h > 0.3 {   // thin rising smoke (C5 toggle)
+        if smoke, h > 0.3 {   // thin rising smoke (Smoke toggle)
             dot(fx + CGFloat(sin(phase)) * 1.5, mt + (4 + 4 * h) * breath, 1.0, inkDark.withAlphaComponent(0.10 * breath))
         }
     }
 }
 
-// C5 peek readout capsule: "46% left · 4h 30m" over the Ember Line.
+// Peek readout capsule: "46% left · 4h 30m" over the Ember Line.
 struct TidePeekView: View {
     var text: String
     var body: some View {
@@ -312,9 +312,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private var settingsWindow: NSWindow!
     private var floatingPanel: NSPanel?
     private var edgePanel: NSPanel?          // small widget docked to the Claude Desktop window edge
-    let edgeState = EdgeState()               // shared lost/rescan state for the widget (spec 6.2)
-    private var tidePanels: [NSPanel] = []   // screen-edge tide line, one overlay per display (feature 13)
-    // C5 peek: a hover readout. The tide panels are click-through, so a global mouse monitor watches
+    let edgeState = EdgeState()               // shared lost/rescan state for the widget
+    private var tidePanels: [NSPanel] = []   // screen-edge tide line, one overlay per display
+    // Peek: a hover readout. The tide panels are click-through, so a global mouse monitor watches
     // for the cursor entering the line's band and shows a tiny capsule; the line itself never eats clicks.
     private var tidePeekPanel: NSPanel?
     private var tidePeekMonitor: Any?
@@ -336,11 +336,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private var animTimer: Timer?
     private var displayNeedle: Double = 0      // eased toward liveActivity.norm
     private var animPhase: Double = 0          // ever-advancing seconds (flame flicker / spark motion)
-    private var burnClock = BurnClock()        // the One Pulse clock (spec 7.2): elapsed + tier + breath
+    private var burnClock = BurnClock()        // the One Pulse clock: elapsed + tier + breath
     private var lastAnimUptime: TimeInterval = 0   // monotonic, for real-dt frame advance (adaptive rate)
     private var glyphLayer: CALayer?          // the menu-bar glyph, driven via CA (never button.image)
     private var lastTideUptime: TimeInterval = 0   // the full-width tide redraws at its own slow cap
-    private var displayHeat: Double = BurnTier.idle.heat   // spec 3.1: lerps toward tier.heat at 0.06/frame
+    private var displayHeat: Double = BurnTier.idle.heat   // lerps toward tier.heat at 0.06/frame
     private var lastTokText = ""
     private var rollFrom = ""
     private var rollPhase: Double = 1          // 1 = settled
@@ -536,7 +536,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         axObserver = nil; axPID = 0
     }
 
-    // MARK: - Tide line (feature 13): a luminous filament hugging a chosen screen edge, on EVERY
+    // MARK: - Tide line: a luminous filament hugging a chosen screen edge, on EVERY
     // screen. It spans the full edge; the bright segment = REMAINING session budget (recedes as you
     // drain), warming with burn rate and reddening near the cap. Rebuilds when displays change.
     private func syncTideLine() {
@@ -568,7 +568,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         return panel
     }
 
-    // Frame flush to the given edge of a screen. `length` (C5) spans a centered fraction of the edge.
+    // Frame flush to the given edge of a screen. `length` spans a centered fraction of the edge.
     private func tideFrame(_ edge: DockEdge, _ f: NSRect, length: CGFloat = 1) -> NSRect {
         let t = kTideThick, len = max(0.4, min(1, length))
         switch edge {
@@ -580,7 +580,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         }
     }
 
-    /// C5 Displays picker: which screens carry the Ember Line.
+    /// Displays picker: which screens carry the Ember Line.
     private func tideShows(_ screen: NSScreen) -> Bool {
         switch settings.tideDisplays {
         case .all:    return true
@@ -612,18 +612,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         for (i, screen) in screens.enumerated() {
             let panel = tidePanels[i]
             panel.setFrame(tideFrame(edge, screen.frame, length: CGFloat(settings.tideLength)), display: false)
-            panel.alphaValue = tideShows(screen) ? CGFloat(settings.tideOpacity) : 0   // C5 displays + transparency
+            panel.alphaValue = tideShows(screen) ? CGFloat(settings.tideOpacity) : 0   // displays + transparency
             if let v = panel.contentView as? TideLineView {
                 v.horizontal = edge.horizontal
                 v.edge = edge
                 v.style = settings.tideStyle
                 v.flames = settings.tideFlames
                 v.glowMul = CGFloat(settings.tideGlow)
-                v.thickness = settings.tideThickness.points   // C5
-                v.sparkRate = settings.tideSparks.rate         // C5
-                v.smoke = settings.tideSmoke                   // C5
+                v.thickness = settings.tideThickness.points
+                v.sparkRate = settings.tideSparks.rate
+                v.smoke = settings.tideSmoke
                 v.remaining = rem; v.heat = heat; v.redline = red
-                // Spec 7.3: all elements share phase EXCEPT the tide line, which lags 0.25 phase
+                // All elements share phase EXCEPT the tide line, which lags 0.25 phase
                 // as a deliberate echo. This is the only sanctioned offset in the product.
                 v.phase = animPhase - 0.25 * burnClock.period
                 v.clockPeriod = burnClock.period
@@ -639,7 +639,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         if settings.tideLine { rebuildTidePanels() }
     }
 
-    // C5 peek readout: install/remove the global hover monitor based on the setting.
+    // Peek readout: install/remove the global hover monitor based on the setting.
     func updateTidePeek() {
         let want = settings.tideLine && settings.tidePeek && settings.tideEdge != .off
         if want, tidePeekMonitor == nil {
@@ -739,7 +739,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private func updateEdgeDock() {
         guard settings.dockEdge != .off else { edgePanel?.orderOut(nil); return }
         guard let win = claudeWindowRect() else {
-            // Spec 6.2 lost state: if Claude is running but its window can't be found, show the
+            // Lost state: if Claude is running but its window can't be found, show the
             // "not found / click to re-scan" plaque at the last position rather than vanishing.
             // If Claude is not running at all, hide entirely.
             let running = NSRunningApplication.runningApplications(withBundleIdentifier: claudeBundleID).contains { !$0.isTerminated }
@@ -757,7 +757,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         edgeState.lost = false
         let panel = ensureEdgePanel()
         if !panel.isVisible { panel.orderFront(nil) }
-        if settings.dockLocked { return }   // spec 6.2: locked → stay where the user placed it
+        if settings.dockLocked { return }   // locked, so stay where the user placed it
         // While the user is hand-dragging it, leave it where they put it; resume tracking shortly after.
         if edgeDragging {
             if Date().timeIntervalSince(edgeDragAt) > 0.35 { edgeDragging = false } else { return }
@@ -1153,9 +1153,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         do {
             try script.write(to: gaugeScriptURL, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: gaugeScriptURL.path)
+            // An existing settings.json that will not parse is a hard stop, never an empty
+            // object: merging into {} and writing it back would replace every setting the user
+            // has with a lone statusLine key. Better to install nothing than to eat their file.
             var obj: [String: Any] = [:]
-            if let d = try? Data(contentsOf: claudeSettingsURL),
-               let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] { obj = o }
+            if FileManager.default.fileExists(atPath: claudeSettingsURL.path) {
+                guard let d = try? Data(contentsOf: claudeSettingsURL),
+                      let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else {
+                    notifLog("gauge install aborted: ~/.claude/settings.json is not readable JSON")
+                    try? FileManager.default.removeItem(at: gaugeScriptURL)
+                    return
+                }
+                obj = o
+            }
             // One-time backup of the pre-Burndown settings (never overwritten on reinstall).
             let bak = claudeSettingsURL.deletingLastPathComponent().appendingPathComponent("settings.json.pre-burndown.bak")
             if FileManager.default.fileExists(atPath: claudeSettingsURL.path),
@@ -1288,7 +1298,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             w.styleMask = [.titled, .closable]
             w.title = "About \(kAppName)"
             w.isReleasedWhenClosed = false
-            w.setContentSize(NSSize(width: 300, height: 360))   // spec 5.5 owner decision: grew from 250
+            w.setContentSize(NSSize(width: 300, height: 360))
             w.appearance = themeAppearance()
             w.center()
             aboutWindow = w
@@ -1370,7 +1380,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                           pLabel: "S", sLabel: "W")
         }
         g.hasSecondary = (settings.menuBarShow == .both)
-        g.digitWeight = settings.menuBoldDigits ? .semibold : .regular      // spec area 2: Semibold / Regular
+        g.digitWeight = settings.menuBoldDigits ? .semibold : .regular      // Semibold / Regular
         g.smolderIntensity = settings.smolderIntensity
         g.smolderBreathSlow = settings.smolderBreathSlow
         g.smolderWarmthWander = settings.smolderWarmthWander
@@ -1393,8 +1403,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         g.rollPhase = rollPhase
         g.spark = liveActivity.history
         g.phase = animPhase          // BurnClock.elapsed: monotonic seconds, what every fire Hz samples
-        g.tier = burnClock.tier      // spec 3.1: fire tiers ARE the BurnClock tiers
-        g.heat = displayHeat         // spec 3.1: tier.heat, lerped at 0.06/frame (~1.1s settle)
+        g.tier = burnClock.tier      // fire tiers ARE the BurnClock tiers
+        g.heat = displayHeat         // tier.heat, lerped at 0.06/frame (~1.1s settle)
         // Refresh flare: 1 right after a fetch cycle starts, fading over ~0.9s (drawn by flame).
         g.flare = max(0, 1 - Date().timeIntervalSince(engine.refreshAnchor) / 0.9)
         // Heat: 0 below 85%, ramping to 1 at the cap (over = full). Drives the flame's rage
@@ -1406,7 +1416,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         case .both:    g.redline = max(heat(s.sessionPct, s.over), heat(s.weeklyPct, s.weeklyOver))
         }
         // Brand-new install with nothing to show: a quiet "--" instead of a burning "0%", so the
-        // glyph never claims a live zero it cannot know (audit M11). Any real data (an estimate
+        // glyph never claims a live zero it cannot know. Any real data (an estimate
         // from local logs counts) flips it back to numbers.
         if !engine.isSignedIn(), s.sessionPct == 0, s.weeklyPct == 0, !liveActivity.active {
             g.pctText = settings.menuBarStyle == .flame ? "" : "--"
@@ -1461,7 +1471,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     // MARK: - Login item
     // SMAppService registers the app bundle by identity, so it survives the app being moved,
     // renamed, or translocated (the raw-plist approach captured the executable path at toggle
-    // time and silently broke in all three cases; audit B7). The legacy plist is still honored
+    // time and silently broke in all three cases). The legacy plist is still honored
     // as "installed" and removed on toggle-off, and remains the fallback if registration fails
     // (e.g. an unsigned dev build in an unusual location).
 
@@ -1691,7 +1701,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         let target = liveActivity.active ? liveActivity.norm : 0.0   // needle falls to rest when idle
         displayNeedle += (target - displayNeedle) * (1 - pow(0.82, frames))   // was 0.18/frame
         if abs(target - displayNeedle) < 0.004 { displayNeedle = target }
-        let heatTarget = burnClock.tier.heat                         // spec 3.1: ~1.1s settle
+        let heatTarget = burnClock.tier.heat                         // ~1.1s settle
         displayHeat += (heatTarget - displayHeat) * (1 - pow(0.94, frames))   // was 0.06/frame
         if abs(heatTarget - displayHeat) < 0.002 { displayHeat = heatTarget }
         if rollPhase < 1 { rollPhase = min(1, rollPhase + 0.07 * frames) }
@@ -1703,7 +1713,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         // burn-front strip; the static remaining-fill repaints on the ~2s data-change sink.
         if settings.tideLine, now - lastTideUptime >= 1.0 / 10.0 {
             lastTideUptime = now
-            let tidePhase = animPhase - 0.25 * burnClock.period   // spec 7.3: the one sanctioned 0.25 lag
+            let tidePhase = animPhase - 0.25 * burnClock.period   // the one sanctioned 0.25 lag
             for p in tidePanels { (p.contentView as? TideLineView)?.advanceBreath(phase: tidePhase, period: burnClock.period) }
         }
 
@@ -1907,9 +1917,9 @@ if ProcessInfo.processInfo.environment["CUB_COST"] != nil {
     UsageEngine().cliDump()
     exit(0)
 }
-// Diagnostic: why isn't the edge dock showing? Prints the frontmost app, the persisted
-// dockEdge, and every on-screen window owned by Claude Desktop (pid/layer/bounds), so we
-// can see whether window detection (which drives placement) actually finds Claude's window.
+// Troubleshooting flag for the docked widget: prints the frontmost app, the persisted
+// dockEdge, and every on-screen window owned by Claude Desktop (pid/layer/bounds), so a
+// user can report whether window detection, which drives placement, finds Claude's window.
 if ProcessInfo.processInfo.environment["CUB_EDGE"] != nil {
     let bundleID = "com.anthropic.claudefordesktop"
     let front = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? "nil"
@@ -1980,17 +1990,9 @@ if ProcessInfo.processInfo.environment["CUB_EDGE"] != nil {
     exit(0)
 }
 
-// Local JSON API (feature #10): `Burndown --json` prints the live numbers in a stable, versioned
+// Local JSON API: `Burndown --json` prints the live numbers in a stable, versioned
 // shape (BurndownLive) read from the live cache, then exits. Lets Raycast / Stream Deck / scripts /
 // custom statuslines consume Burndown without the UI.
-// One-time: rename the config dir claude-usage-bar -> burndown (preserves sign-in, history, settings).
-let cfgHome = FileManager.default.homeDirectoryForCurrentUser
-let oldCfgDir = cfgHome.appendingPathComponent(".config/claude-usage-bar")
-let newCfgDir = cfgHome.appendingPathComponent(".config/burndown")
-if FileManager.default.fileExists(atPath: oldCfgDir.path), !FileManager.default.fileExists(atPath: newCfgDir.path) {
-    try? FileManager.default.moveItem(at: oldCfgDir, to: newCfgDir)
-}
-
 if CommandLine.arguments.contains("--json") {
     let home = FileManager.default.homeDirectoryForCurrentUser
     let cacheURL = home.appendingPathComponent(".config/burndown/live.json")
@@ -2026,5 +2028,5 @@ if CommandLine.arguments.contains("--sessions") {
 let delegate = AppDelegate()
 let app = NSApplication.shared
 app.delegate = delegate
-app.setActivationPolicy(delegate.settings.showDockIcon ? .regular : .accessory)   // spec 5.2: Show Dock icon
+app.setActivationPolicy(delegate.settings.showDockIcon ? .regular : .accessory)   // Show Dock icon setting
 app.run()

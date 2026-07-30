@@ -21,18 +21,18 @@ struct GlyphData {
     var rollPhase: Double = 1    // 0→1 transition (1 = settled)
     var spark: [Double] = []     // recent normalized burn-rate samples - burn / pulse
     var phase: Double = 0        // ever-advancing seconds counter (flame flicker / spark motion)
-    var digitWeight: NSFont.Weight = .semibold   // menu-bar digit weight (spec area 2)
+    var digitWeight: NSFont.Weight = .semibold   // menu-bar digit weight
     var smolderIntensity: Double = 1.0           // Smolder glow multiplier (area 2)
     var smolderBreathSlow = false                // Smolder: halve breath frequency
     var smolderWarmthWander = true               // Smolder: wandering hotspot on/off
     var redline: Double = 0      // 0…1 closeness to the cap - drives the "heat" (flame rages near limit)
     var flare: Double = 0        // 1 right after a data refresh → fades to 0 (glyph refresh flare)
-    // ── the One Pulse fire inputs (spec 3.1 / 7.2). `phase` above carries BurnClock.elapsed
+    // ── the One Pulse fire inputs. `phase` above carries BurnClock.elapsed
     // (monotonic seconds); every fire frequency is evaluated as sin(2*pi*f*elapsed) against it.
-    var tier: BurnTier = .idle   // drives every fire amplitude/frequency via the spec tables
+    var tier: BurnTier = .idle   // drives every fire amplitude/frequency via the BurnTier tables
     var heat: Double = 0.15      // tier.heat, lerped at 0.06/frame (~1.1s settle) by the animator
-    // FLAME ADJUST (owner request). Defaults here reproduce spec 3.5 exactly; the app's defaults
-    // are livelier because the spec's idle flame is unreadable at menu-bar scale.
+    // FLAME ADJUST. The defaults here reproduce the original flame design exactly; the app's
+    // shipped defaults are livelier, because that design's idle flame is unreadable at menu-bar scale.
     var flameSize: Double = 1.0
     var flameSparks: FlameSparks = .redline
     var flameSmoke: Bool = false
@@ -333,7 +333,7 @@ enum MenuBarRenderer {
     private static func flame(_ g: GlyphData) -> NSImage {
         let a = attrs(PRIMARY, .semibold, g.primary)
         let ts = (g.pctText as NSString).size(withAttributes: a)
-        // Geometry (spec 3.5): 13pt slot + 4pt gap + text; cx = 6.5, baseY = 1.5 + botPad.
+        // Geometry: 13pt slot + 4pt gap + text; cx = 6.5, baseY = 1.5 + botPad.
         // FLAME ADJUST scales the flame, so the slot has to widen with it or a big flame clips.
         let sz = CGFloat(max(0.8, min(2.0, g.flameSize)))
         let slot: CGFloat = 13 * max(1, sz * 0.82), gap: CGFloat = 4
@@ -342,21 +342,21 @@ enum MenuBarRenderer {
         let w = slot + gap + ceil(ts.width), h = max(16, ceil(ts.height) + 2) + botPad
 
         let tier = g.tier
-        let heat = CGFloat(max(0, min(1, g.heat)))           // spec 3.1, lerped by the animator
+        let heat = CGFloat(max(0, min(1, g.heat)))           // tier heat, lerped by the animator
         let r = CGFloat(max(0, min(1, g.redline)))           // redline overlay
         let e = g.phase                                      // BurnClock.elapsed (monotonic seconds)
         let over = tier == .overLimit
         /// Every fire frequency in the product: sin(2*pi*f*elapsed). Never the wrapped phase.
         func osc(_ hz: Double) -> CGFloat { CGFloat(sin(2 * .pi * hz * e)) }
 
-        // Fire palette (spec 2.2), emissive and theme-independent. Redline is the overLimit token.
+        // Fire palette, emissive and theme-independent. Redline is the overLimit token.
         let coal = sEmber, outer = sFlame, mid = sGlow, hot = sCore, anger = sRedline
 
         return img(w, h) {
             let cx = slot / 2, baseY: CGFloat = 1.5 + botPad
             let maxH = h - baseY - 1.5
 
-            // Motion straight off the spec 3.5 tier table (amplitude pt, Hz), evaluated on elapsed.
+            // Motion straight off the BurnTier tables (amplitude pt, Hz), evaluated on elapsed.
             // Amplitudes scale with FLAME ADJUST so a bigger flame also moves proportionally more
             // (the 2.5 Hz frequency ceiling is untouched - only amplitude scales).
             let f1 = tier.flameFlick, sw = tier.flameSway
@@ -414,7 +414,7 @@ enum MenuBarRenderer {
                         controlPoint2: NSPoint(x: cx + ww * 0.42, y: b))
                 p.close(); return p
             }
-            // Two shells, not three (spec 3.5 L3 + L4). The core is NESTED IN THE LOWER BELLY - it is
+            // Two shells, not three (layers L3 + L4). The core is NESTED IN THE LOWER BELLY - it is
             // lifted off the foot and kept short, so it reads as a heart of light inside the flame
             // rather than a white wedge filling the bottom.
             outer.blended(to: anger, 0.5 * r).withAlphaComponent(1.0).setFill()
@@ -423,7 +423,7 @@ enum MenuBarRenderer {
             flamePath(bodyW * 0.40, flameH * 0.50, tipSway * 0.6, flameH * 0.10).fill()
 
             // L5 Sparks: max two, 1.8s cycles offset 50 percent, scheduled from elapsed (never a
-            // particle system). Spec 3.5 fires them at redline only; FLAME ADJUST can fire them at
+            // particle system). The default fires them at redline only; FLAME ADJUST can fire them at
             // every tier, where their brightness rides the heat instead of the redline overlay.
             let sparkOn = !over && (g.flameSparks == .always || (g.flameSparks == .redline && r > 0))
             if sparkOn {
@@ -437,7 +437,7 @@ enum MenuBarRenderer {
                     NSBezierPath(ovalIn: NSRect(x: sx - rad, y: sy - rad, width: rad * 2, height: rad * 2)).fill()
                 }
             }
-            // Smoke (FLAME ADJUST; spec 3.5 has none on the glyph): thin wisps drifting off the tip.
+            // Smoke (FLAME ADJUST only; the default glyph has none): thin wisps drifting off the tip.
             if g.flameSmoke, !over {
                 let tipY = baseY + flameH
                 for i in 0..<3 {
@@ -449,7 +449,7 @@ enum MenuBarRenderer {
                     NSBezierPath(ovalIn: NSRect(x: sx - rad, y: sy - rad, width: rad * 2, height: rad * 2)).fill()
                 }
             }
-            // The % beside the flame, in the ordinary metric ink (spec 3.5: the flame is the fire here;
+            // The % beside the flame, in the ordinary metric ink (the flame is the fire here;
             // the burning-number styles are Hearth / Burnfront / Kiln).
             (g.pctText as NSString).draw(at: NSPoint(x: slot + gap, y: botPad + ((h - botPad) - ts.height) / 2),
                                          withAttributes: a)
@@ -489,7 +489,7 @@ enum MenuBarRenderer {
     private static let fCream  = NSColor(hex: "FFF3C4") ?? .white
     private static let fSpark  = NSColor(hex: "FFE9A8") ?? .white
 
-    // Spec 2.2 fire palette (typographic heat). char keys off the bar material; the rest are constants.
+    // The fire palette (typographic heat). char keys off the bar material; the rest are constants.
     // Redline red inside fire is the overLimit token (dark value, emissive rule).
     private static let sEmber   = NSColor(hex: "A63A22") ?? .brown
     private static let sFlame   = NSColor(hex: "D95B2E") ?? .orange
@@ -501,7 +501,7 @@ enum MenuBarRenderer {
     private static func barIsDark() -> Bool { (NSApp?.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) ?? .darkAqua) == .darkAqua }
     private static func sChar() -> NSColor { NSColor(hex: barIsDark() ? "4A2E22" : "3A2A22") ?? .darkGray }
 
-    // SMOLDER (spec 3.2): charcoal-warm ember digits lit from below, breathing. The quiet default.
+    // SMOLDER: charcoal-warm ember digits lit from below, breathing. The quiet default.
     // No sparks, no cracks, ever. All motion derives from g.phase (BurnClock elapsed).
     private static func smolder(_ g: GlyphData) -> NSImage {
         let a = attrs(PRIMARY, g.digitWeight, .white)
@@ -510,7 +510,7 @@ enum MenuBarRenderer {
         let wkH: CGFloat = 2.5, botPad: CGFloat = wk ? wkH + 2.0 : 0
         let W = ceil(ts.width), H = ceil(ts.height) + botPad, th = ceil(ts.height)
         let tier = g.tier
-        let heat = CGFloat(max(0, min(1, g.heat)))                                  // spec 3.1 tier heat, lerped
+        let heat = CGFloat(max(0, min(1, g.heat)))                                  // tier heat, lerped
         let r = CGFloat(max(0, min(1, g.redline))), e = g.phase                     // e = BurnClock.elapsed
         func osc(_ hz: Double) -> CGFloat { CGFloat(sin(2 * .pi * hz * e)) }
         let size = NSSize(width: W, height: H)
@@ -544,7 +544,7 @@ enum MenuBarRenderer {
         }
     }
 
-    // BURNFRONT (spec 3.3): the number is consumed left to right; the burn front IS the usage fraction.
+    // BURNFRONT: the number is consumed left to right; the burn front IS the usage fraction.
     // The whole fire of the style is one incandescent seam hairline.
     private static func burnfront(_ g: GlyphData) -> NSImage {
         let a = attrs(PRIMARY, g.digitWeight, .white)
@@ -554,7 +554,7 @@ enum MenuBarRenderer {
         let th = ceil(ts.height)
         let W = ceil(ts.width), H = th + botPad + 4.5              // headroom: the fire rides high above the top run
         let tier = g.tier
-        let heat = CGFloat(max(0, min(1, g.heat)))                 // spec 3.1 tier heat, lerped
+        let heat = CGFloat(max(0, min(1, g.heat)))                 // tier heat, lerped
         let r = CGFloat(max(0, min(1, g.redline))), e = g.phase    // e = BurnClock.elapsed
         func osc(_ hz: Double) -> CGFloat { CGFloat(sin(2 * .pi * hz * e)) }
         let pct = CGFloat(max(0, min(1, g.pct)))
@@ -567,7 +567,7 @@ enum MenuBarRenderer {
         let barInk = barIsDark() ? NSColor.white : (NSColor(hex: "1C1C1C") ?? .black)   // L1 pinned bar ink (unburned)
         // L2 burned digits: fire/char at alpha 0.92 with a slow smolder, blending toward fire/flame by
         // 0.06 + 0.06*sin(2pi elapsed/10) (amplitude doubles at redline, L6). These deliberately recede:
-        // spec 2.4 grants Burnfront L2 a written CONTRAST EXEMPTION (2:1, below the 3:1 graphics floor),
+        // Burnfront L2 takes a deliberate CONTRAST EXEMPTION (2:1, below the 3:1 graphics floor),
         // because spent budget should recede - the data is carried by the seam and the unburned digits.
         let smAmp: CGFloat = 0.06 * (1 + r)
         let burned = sChar().blended(to: sFlame, 0.06 + smAmp * CGFloat(sin(2 * .pi * e / 10)))
@@ -583,7 +583,7 @@ enum MenuBarRenderer {
             sCore.blended(to: sWhite, r).withAlphaComponent(0.55 + 0.25 * osc(tier.seamHz)).setFill()
             NSRect(x: frontX - seamW / 2, y: botPad, width: seamW, height: th).fill()
         }
-        // C4: every seam CROSSING gets treated by rank. Find the ink runs the cut passes through
+        // Every seam CROSSING gets treated by rank. Find the ink runs the cut passes through
         // (a `4` is cut twice, a `%` up to three times) and rank them top-down: the TOP run carries
         // the full flame lick + spark + a thin smoke wisp, the SECOND run a 0.55-0.6x lick, deeper
         // runs glow only (the L3 falloff above already glows every crossing). Smoke on the burning
@@ -659,7 +659,7 @@ enum MenuBarRenderer {
         }
     }
 
-    // KILN (spec 3.4): metal in a kiln - one warm mass with a single band of interior light convecting up.
+    // KILN: metal in a kiln - one warm mass with a single band of interior light convecting up.
     private static func kiln(_ g: GlyphData) -> NSImage {
         let a = attrs(PRIMARY, g.digitWeight, .white)
         let ts = (g.pctText as NSString).size(withAttributes: a)
@@ -667,13 +667,13 @@ enum MenuBarRenderer {
         let wkH: CGFloat = 2.5, botPad: CGFloat = wk ? wkH + 2.0 : 0
         let W = ceil(ts.width), H = ceil(ts.height) + botPad, th = ceil(ts.height)
         let tier = g.tier
-        let heat = CGFloat(max(0, min(1, g.heat)))                                   // spec 3.1 tier heat, lerped
+        let heat = CGFloat(max(0, min(1, g.heat)))                                   // tier heat, lerped
         let r = CGFloat(max(0, min(1, g.redline))), e = g.phase                      // e = BurnClock.elapsed
         let size = NSSize(width: W, height: H)
         let mask = cachedTextMask(g.pctText, a, size: size, at: NSPoint(x: 0, y: botPad),
                                   key: maskKey(g.pctText, g.digitWeight, size, botPad))
         let bottom = sEmber.blended(to: sRedline, 0.30 * r)
-        let v = tier.kilnBandSpeed                                                   // band speed pt/s (spec 3.4 table)
+        let v = tier.kilnBandSpeed                                                   // band speed pt/s (BurnTier table)
         let span = Double(th + 6)
         // y = (elapsed * v) mod (textH + 6) - 3; scrolls upward and wraps. No sparks, no sway, ever.
         let bandY = botPad + CGFloat((e * v).truncatingRemainder(dividingBy: span)) - 3
@@ -719,7 +719,7 @@ enum MenuBarRenderer {
         "\(str)|\(w.rawValue)|\(Int(size.width))x\(Int(size.height))|\(Int(originY * 2))"
     }
 
-    // ── C4: the Burnfront multi-crossing seam ────────────────────────────────────────────────
+    // ── The Burnfront multi-crossing seam ────────────────────────────────────────────────
     // The seam is a vertical cut. To treat every ink crossing correctly we need the actual ink
     // runs the seam column passes through ("segmentsAt"): a `4` at the seam may be cut twice, a
     // `%` three times. Rasterizing the mask is the only honest way to know. The rep is cached

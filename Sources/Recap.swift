@@ -1,6 +1,6 @@
 import Foundation
 
-// Foundation-pure screen-time recap (feature #9): condenses a window of usage records into a single
+// Foundation-pure screen-time recap: condenses a window of usage records into a single
 // plain-English summary line for the recap card. Builds entirely on Aggregation.swift's rollups and
 // totals plus Pricing.swift's cost math, so it stays AppKit / Combine / SwiftUI free and the headless
 // harness (run-recap-tests.sh) can compile and test it with no UI.

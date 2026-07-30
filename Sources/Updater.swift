@@ -43,7 +43,10 @@ enum UpdateLogic {
               let tag = o["tag_name"] as? String,
               let assets = o["assets"] as? [[String: Any]] else { return nil }
         let version = tag.hasPrefix("v") ? String(tag.dropFirst()) : tag
-        guard !version.isEmpty else { return nil }
+        // The tag is server-supplied and later becomes a temp file name and a literal inside the
+        // generated installer script, so refuse anything that is not a plain version string.
+        let safe = version.allSatisfy { $0.isASCII && ($0.isNumber || $0 == "." || $0 == "-" || $0.isLetter) }
+        guard !version.isEmpty, safe else { return nil }
         func url(suffix: String) -> String? {
             for a in assets {
                 if let name = a["name"] as? String, name.hasSuffix(suffix),
@@ -322,7 +325,7 @@ final class Updater: ObservableObject {
         rm -rf "\(dest.path).old"
         mv "\(dest.path)" "\(dest.path).old" 2>/dev/null
         /usr/bin/ditto "\(newApp.path)" "\(dest.path)"
-        if [ -d "\(dest.path)" ]; then
+        if [ -x "\(dest.path)/Contents/MacOS/Burndown" ]; then
             /usr/bin/xattr -cr "\(dest.path)" 2>/dev/null
             rm -rf "\(dest.path).old"
         else

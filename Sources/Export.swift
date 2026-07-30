@@ -1,6 +1,6 @@
 import Foundation
 
-// Foundation-pure export and audit trail (FEATURE_IDEAS.md feature #8): turns raw UsageRecords into
+// Foundation-pure export and audit trail: turns raw UsageRecords into
 // CSV, JSON, or a per-day Markdown table. Kept AppKit / Combine / SwiftUI free so the headless harness
 // (run-export-tests.sh) can compile it against the real Aggregation and Pricing tables with no UI.
 // Deterministic: same records in, same string out (stable column / key order, day rollups sorted).

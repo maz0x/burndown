@@ -1,6 +1,6 @@
 import Foundation
 
-// Foundation-pure weekly pacing advisor (feature #5): turns the current weekly burn into a
+// Foundation-pure weekly pacing advisor: turns the current weekly burn into a
 // plain-language projection of when the weekly cap is hit and how many sessions are left before
 // the reset. Kept AppKit / Combine / SwiftUI free so the headless harness (run-pacing-tests.sh)
 // can compile and test the real projection math with no UI.

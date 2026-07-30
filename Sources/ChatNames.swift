@@ -1,6 +1,6 @@
 import Foundation
 
-/// Persistent user aliases for harvested chat titles (spec area 5). Stored at
+/// Persistent user aliases for harvested chat titles. Stored at
 /// ~/.config/burndown/names.json (chmod 600), mapping original title -> alias. The alias replaces the
 /// harvested name on every surface (popover chats, Insights); Reset removes it.
 final class ChatNames: ObservableObject {

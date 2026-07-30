@@ -1,6 +1,6 @@
 import Foundation
 
-// Foundation-pure self-imposed spend budgets with pacing guardrails (feature #3). This is
+// Foundation-pure self-imposed spend budgets with pacing guardrails. This is
 // distinct from the Anthropic-limit alerts: those track the plan's hard usage caps, whereas a
 // budget is a soft target the user sets on their own spend (tokens or USD) over a day or a week, with
 // a projection so the menu bar can warn early ("on pace to blow the weekly budget") rather than

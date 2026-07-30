@@ -39,7 +39,8 @@ let runawayHigh = runawayVerdict(history: [100, 100, 100], current: 420)
 check(runawayHigh.level == .runaway, "4.2x is runaway")
 check(runawayHigh.summary.contains("4.2x"), "summary names the multiple")
 check(runawayHigh.summary.contains("runaway"), "runaway summary mentions runaway")
-check(!runawayHigh.summary.contains("-"), "summary has no em-dash")
+check(!runawayHigh.summary.contains("\u{2014}") && !runawayHigh.summary.contains("\u{2013}"),
+      "summary has no em-dash or en-dash")
 
 print("runawayVerdict baseline floor:")
 let empty = runawayVerdict(history: [], current: 50)

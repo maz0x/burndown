@@ -1,6 +1,6 @@
 import Foundation
 
-// Foundation-pure model-mix advisor (feature #7): a gentle nudge to conserve the tighter-capped
+// Foundation-pure model-mix advisor: a gentle nudge to conserve the tighter-capped
 // model (Opus) when its weekly limit is running low, by routing routine work to Sonnet instead.
 // Kept AppKit / Combine / SwiftUI free so the headless harness (run-modelmix-tests.sh) can compile
 // and test the real advice logic with no UI. The app feeds one ModelHeadroom per model family

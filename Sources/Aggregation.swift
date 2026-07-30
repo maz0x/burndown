@@ -2,7 +2,7 @@ import Foundation
 
 // Foundation-pure usage aggregation: rolls raw per-call usage records up by model family,
 // by project, and by day, with estimated cost via Pricing.swift's tokenCost. This is the
-// shared basis for several of the planned features (see FEATURE_IDEAS.md): attribution (#1),
+// shared basis for several features: attribution (#1),
 // per-project (#2), history/trends (#6), export (#8), and the recap card (#9).
 //
 // Kept AppKit / Combine / SwiftUI free so the headless harness (run-aggregation-tests.sh)

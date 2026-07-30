@@ -22,8 +22,8 @@ final class UsageAlerts {
     private var requested = false
     private var soundName = ""                 // which bundled sound to play ("" = system default)
     private var snoozeUntil: Date?             // set by the Snooze action; suppresses all alerts until then
-    private var burnHistory: [Double] = []     // rolling burn-rate samples for adaptive runaway detection (#4)
-    private var lastBudgetLevel: BudgetLevel = .ok   // fire budget alerts only when the level rises (#3)
+    private var burnHistory: [Double] = []     // rolling burn-rate samples for adaptive runaway detection
+    private var lastBudgetLevel: BudgetLevel = .ok   // fire budget alerts only when the level rises
 
     /// Mute every alert for `minutes` (driven by the notification's Snooze button).
     func snooze(_ minutes: Double, now: Date = Date()) { snoozeUntil = now.addingTimeInterval(minutes * 60) }
@@ -130,7 +130,7 @@ final class UsageAlerts {
         }
     }
 
-    /// Self-imposed budget (#3) + adaptive runaway-burn (#4). Called alongside check() each tick.
+    /// Self-imposed budget + adaptive runaway-burn checks. Called alongside check() each tick.
     /// Both rely on post(...)'s dedup-by-title backstop, so they never spam.
     func checkBudgetRunaway(burn: Double, records: [UsageRecord], s: AppSettings, now: Date = Date()) {
         soundName = s.alertSoundName
@@ -167,7 +167,7 @@ final class UsageAlerts {
 
     private func budgetRank(_ l: BudgetLevel) -> Int { l == .over ? 2 : (l == .warn ? 1 : 0) }
 
-    /// C8, the fourth notification moment: an OPT-IN weekly digest, posted once on a Monday.
+    /// The fourth notification moment: an OPT-IN weekly digest, posted once on a Monday.
     /// Quiet hours and snooze suppress it like any other moment; it never fires twice in a week.
     func checkWeeklyDigest(records: [UsageRecord], s: AppSettings, now: Date = Date()) {
         guard s.weeklyDigest else { return }
@@ -197,12 +197,12 @@ final class UsageAlerts {
         case .none: break
         case let .fire(hit, cur):
             if hit >= 100 {
-                // Over-limit carries the ONE number that matters: time to the fresh window (spec 8.4).
+                // Over-limit carries the ONE number that matters: time to the fresh window.
                 let body = reset.map { r -> String in
                     let s = max(0, r.timeIntervalSince(now)); let h = Int(s) / 3600; let m = (Int(s) % 3600) / 60
                     return h > 0 ? "Resets in \(h)h \(m)m." : "Resets in \(m)m."
                 } ?? "A fresh window will start soon."
-                post("\(name) limit reached", body, sound)
+                post("\(noun(name).capitalized) limit reached", body, sound)
             }
             else { post("\(name) at \(hit)%", "Usage is at \(cur)% of your \(noun(name)) allowance.", sound) }
         case let .repeatOver(cur):
@@ -213,7 +213,7 @@ final class UsageAlerts {
     // Burn spikes are noisy → fire once when it rises past the threshold, re-arm only after it falls well below.
     private func evalBurn(_ burn: Double, _ threshold: Double, _ topChat: String?, _ sound: Bool) {
         if alertBurnEval(burn: burn, threshold: threshold, armed: &burnArmed) {
-            // Name the responsible chat when one is clearly burning (spec area 8), else the bare rate.
+            // Name the responsible chat when one is clearly burning, else the bare rate.
             let body = topChat.map { "\($0) is burning \(fmtTok(Int(burn))) tokens/min." }
                 ?? "\(fmtTok(Int(burn))) tokens/min right now."
             post("High burn rate", body, sound)
@@ -234,7 +234,7 @@ final class UsageAlerts {
     }
 
     // "This week" reads wrong possessed ("your this week allowance"); map display names to a noun
-    // that composes into a sentence (audit M3).
+    // that composes into a sentence.
     private func noun(_ name: String) -> String { name == "This week" ? "weekly" : name.lowercased() }
 
     private func post(_ title: String, _ body: String, _ sound: Bool, force: Bool = false) {
@@ -247,7 +247,7 @@ final class UsageAlerts {
             rememberPost(title, now)
         }
         let c = UNMutableNotificationContent()
-        // Spec 8.4: every notification leads with the product name. (Dedup keys off the raw title.)
+        // Every notification leads with the product name. (Dedup keys off the raw title.)
         c.title = title.hasPrefix("Burndown:") ? title : "Burndown: \(title)"
         c.body = body
         c.categoryIdentifier = UsageAlerts.category   // gives the banner the Snooze / Open buttons

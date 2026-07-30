@@ -16,7 +16,8 @@ check(p1.hoursUntilCap == 5, "hoursUntilCap = remaining / ratePerHour = 5")
 check(p1.hitsCapBeforeReset, "5h <= 24h means cap is hit before reset")
 check(abs(p1.sessionsRemaining - 5) < 1e-9, "0.5 / 0.1 = 5 sessions remaining")
 check(p1.summary.contains("reach the weekly cap"), "summary warns about reaching the cap")
-check(!p1.summary.contains("-"), "summary has no em-dash")
+check(!p1.summary.contains("\u{2014}") && !p1.summary.contains("\u{2013}"),
+      "summary has no em-dash or en-dash")
 
 print("weeklyPacing (headroom to the reset):")
 // 20% used, slow 1%/hour burn: 0.8 / 0.01 = 80h to cap, far beyond a 24h reset.
