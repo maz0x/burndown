@@ -118,6 +118,95 @@ enum FlameSparks: String, CaseIterable, Identifiable {
     var label: String { switch self { case .off: return "Off"; case .redline: return "Redline"; case .always: return "Always" } }
 }
 
+// BEACON: what actually winks. The spread runs from "the whole readout changes colour" to marks so
+// quiet you only catch them if you happen to be looking at the icon - which is the interesting end.
+enum BeaconMark: String, CaseIterable, Identifiable {
+    case percent, sign, dot, pip, underline, dotOnly, ringOnly
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .percent:   return "Percent"
+        case .sign:      return "% sign only"
+        case .dot:       return "Trailing dot"
+        case .pip:       return "Corner pip"
+        case .underline: return "Underline"
+        case .dotOnly:   return "Dot only"
+        case .ringOnly:  return "Ring only"
+        }
+    }
+    var blurb: String {
+        switch self {
+        case .percent:   return "The whole number changes colour. The loudest."
+        case .sign:      return "Only the % sign winks; the digits never move. Very quiet."
+        case .dot:       return "A small dot after the number lights up. The number stays put."
+        case .pip:       return "A 2pt pip above the last digit. Peripheral-vision only."
+        case .underline: return "A hairline under the number sweeps in and out."
+        case .dotOnly:   return "No number at all - just a dot that breathes. The minimal one."
+        case .ringOnly:  return "No number - a hollow ring that fills to your usage as it winks."
+        }
+    }
+    /// Marks that draw no digits, so the glyph is a fixed-size dot instead of text.
+    var isBare: Bool { self == .dotOnly || self == .ringOnly }
+}
+
+// BEACON: the shape of the wink over time.
+// Named Beacon tunes. Each is the whole panel in one line, so a look you liked is one click away
+// instead of seven sliders remembered by hand. Applying one writes the real settings - nothing is
+// locked afterwards, so a preset is a starting point you can immediately drift away from.
+enum BeaconPreset: String, CaseIterable, Identifiable {
+    case vitals, blink, whisper, signal, breath
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .vitals:  return "Vitals"
+        case .blink:   return "Blink (original)"
+        case .whisper: return "Whisper"
+        case .signal:  return "Signal"
+        case .breath:  return "Breath"
+        }
+    }
+    var blurb: String {
+        switch self {
+        case .vitals:  return "A bare dot pulsing about once a second at a third strength. No number, no rhythm to learn - it just looks alive."
+        case .blink:   return "The shipped default: the whole percentage snaps to your accent every 3-5s."
+        case .whisper: return "A dot breathing every 9s at a quarter strength. The quietest thing that still says running."
+        case .signal:  return "A double heartbeat on the percentage every 5s, full strength, with a glow. Meant to be noticed."
+        case .breath:  return "The % sign alone, swelling and fading over a second every 6s. The digits never move."
+        }
+    }
+    /// (every, jitter, length, strength, glow, mark, curve)
+    var values: (Double, Double, Double, Double, Double, BeaconMark, BeaconCurve) {
+        switch self {
+        case .vitals:  return (1.39, 0.00, 0.20, 0.35, 0.00, .dotOnly, .pulse)
+        case .blink:   return (4.00, 0.50, 0.42, 1.00, 0.00, .percent, .snap)
+        case .whisper: return (9.00, 0.35, 0.90, 0.25, 0.00, .dotOnly, .pulse)
+        case .signal:  return (5.00, 0.30, 0.55, 1.00, 0.60, .percent, .beat)
+        case .breath:  return (6.00, 0.40, 1.10, 0.55, 0.15, .sign,    .pulse)
+        }
+    }
+}
+
+enum BeaconCurve: String, CaseIterable, Identifiable {
+    case snap, pulse, fade, beat
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .snap:  return "Snap"
+        case .pulse: return "Pulse"
+        case .fade:  return "Fade"
+        case .beat:  return "Heartbeat"
+        }
+    }
+    var blurb: String {
+        switch self {
+        case .snap:  return "On instantly, hold, ease off. Reads as a blink."
+        case .pulse: return "Smooth in and out, no hold. Reads as a breath."
+        case .fade:  return "Instant on, slow decay. Reads as a spark landing."
+        case .beat:  return "Two quick blinks, like a pulse. The most alive."
+        }
+    }
+}
+
 // Harvested chat titles are long; how the popover / Insights truncate them.
 enum ChatTruncation: String, CaseIterable, Identifiable {
     case middle, end, full
@@ -184,7 +273,7 @@ enum LiveColor: String, CaseIterable, Identifiable {
     }
 }
 let kAppName = "Burndown"           // app name (floating window title + About). Tagline: "usage monitor for Claude"
-let kAppVersion = "0.9.1"           // bump on release builds; 1.0 is reserved for Developer ID signing + multi-provider
+let kAppVersion = "0.9.2"           // bump on release builds; 1.0 is reserved for Developer ID signing + multi-provider
 let kMinWindowAlpha = 0.45          // most see-through the windows go at 100% transparency (keeps text legible)
 
 // A curated set: every style earns its place, all keep a small footprint (most are
@@ -193,6 +282,7 @@ let kMinWindowAlpha = 0.45          // most see-through the windows go at 100% t
 enum MenuBarStyle: String, CaseIterable, Identifiable {
     case smolder, burnfront, kiln  // the burning-number family; kiln is archived, see isRetired
     case pulse, pace, burn, roll, bars, signal, ember, flame, inferno, ignite, charred, molten, coals, comet  // live,react to real-time token flow
+    case beacon   // native system ink that winks to the accent every few seconds
     case stack, ring, orbit, mini, arc, pie, dual, dot, dial  // static,usage / time at a glance
     case twins, splitArc, halfGauge, coPie, vsplit, heatRows, weeklyClock // BOTH-only,session + weekly
 
@@ -202,7 +292,7 @@ enum MenuBarStyle: String, CaseIterable, Identifiable {
     /// streaming sparkline / bars). The app drives these at ~30fps while tokens flow.
     var isLive: Bool {
         switch self {
-        case .smolder, .burnfront, .kiln, .pulse, .pace, .burn, .roll, .bars, .signal, .ember, .flame, .inferno, .ignite, .charred, .molten, .coals, .comet: return true
+        case .smolder, .burnfront, .kiln, .pulse, .pace, .burn, .roll, .bars, .signal, .ember, .flame, .inferno, .ignite, .charred, .molten, .coals, .comet, .beacon: return true
         default: return false
         }
     }
@@ -226,6 +316,7 @@ enum MenuBarStyle: String, CaseIterable, Identifiable {
         case .molten: return "Molten (live)"
         case .coals: return "Coals (live)"
         case .comet:  return "Comet (live)"
+        case .beacon: return "Beacon (live)"
         case .stack:  return "Stack"
         case .ring:   return "Ring"
         case .orbit:  return "Orbit"
@@ -256,7 +347,7 @@ enum MenuBarStyle: String, CaseIterable, Identifiable {
         // Settings picker filters it out when menuBarShow == .both. The burning-number styles
         // (Hearth/Burnfront/Kiln) render the weekly bar too, so they belong here alongside Flame.
         switch self {
-        case .pulse, .bars, .signal, .smolder, .burnfront, .kiln, .flame, .inferno, .ignite, .charred, .molten, .coals: return true
+        case .pulse, .bars, .signal, .smolder, .burnfront, .kiln, .flame, .inferno, .ignite, .charred, .molten, .coals, .beacon: return true
         default: return false
         }
     }
@@ -268,7 +359,9 @@ enum MenuBarStyle: String, CaseIterable, Identifiable {
         // any 10s window at idle. If a style is missing here the animator parks once things settle and
         // the glyph freezes on screen - which is exactly what happened to Hearth/Burnfront/Kiln.
         switch self {
-        case .smolder, .burnfront, .kiln, .flame, .inferno, .ignite, .charred, .molten, .coals: return true
+        // Beacon is not fire, but it lives by the same contract: its wink is on a 3-5s timer, so the
+        // animator must keep ticking at idle or the glyph parks and the wink never comes.
+        case .smolder, .burnfront, .kiln, .flame, .inferno, .ignite, .charred, .molten, .coals, .beacon: return true
         default: return false
         }
     }
@@ -286,8 +379,9 @@ enum MenuBarStyle: String, CaseIterable, Identifiable {
         switch self { case .stack, .mini: return .text; default: return .gauge }
     }
     /// The curated core set the design surfaces first: one strong, legible template per family.
+    /// Beacon joined 2026-07-31 (it became the daily driver); nothing was demoted to make room.
     var isCore: Bool {
-        switch self { case .smolder, .burnfront, .flame, .pulse, .pace, .ring, .arc, .stack: return true; default: return false }
+        switch self { case .smolder, .burnfront, .flame, .pulse, .pace, .beacon, .ring, .arc, .stack: return true; default: return false }
     }
     /// Fire styles retired or archived (Kiln archived, and the six v1 styles migrated onto the
     /// canonical set); hidden from the picker.
@@ -328,6 +422,9 @@ enum MenuBarStyle: String, CaseIterable, Identifiable {
         case .molten: return "Liquid fire flows upward inside the numerals - a slow smolder at idle, rushing molten rock under heavy burn, with crisp edges always."
         case .coals: return "The numerals glow like banked coals: breathing embers, drifting sparks, calm and warm until the burn picks up."
         case .comet:  return "A comet whose tail streaks longer and brighter the faster you burn, beside the %."
+        case .beacon: return show == .both
+            ? "The % in the menu bar's own ink, winking to your accent color for a fraction of a second every few seconds, with a slim weekly bar beneath."
+            : "The % in the menu bar's own ink, indistinguishable from a system icon, winking to your accent color for a fraction of a second every few seconds."
         case .stack:  return show == .both
             ? "Session % over weekly %, stacked: session larger, weekly beneath."
             : "Two stacked lines: usage over time left. Just text-width wide."
@@ -525,6 +622,11 @@ final class AppSettings: ObservableObject {
     @Published var palette: PalettePreset { didSet { d.set(palette.rawValue, forKey: "palette"); Palette.current = palette } }
     // Scales the popover / floating window text and overall size (0.9 to 1.3).
     @Published var textScale: Double { didSet { d.set(textScale, forKey: "textScale") } }
+    // Corner-grip RESIZE (reflow, not zoom): card width in design points (wider = longer bars and
+    // chat names, same font size), and extra plot height added to every popover chart by a
+    // vertical drag. Both set by the grip; CardResize holds the limits.
+    @Published var cardWidth: Double { didSet { d.set(cardWidth, forKey: "cardWidth") } }
+    @Published var cardChartBoost: Double { didSet { d.set(cardChartBoost, forKey: "cardChartBoost") } }
     @Published var floatingChrome: Bool { didSet { d.set(floatingChrome, forKey: "floatingChrome") } }   // show the floating window title bar
     @Published var glassMaterial: GlassMaterial { didSet { d.set(glassMaterial.rawValue, forKey: "glassMaterial") } }
     // ── Glass / background tuning (all stored in display units; CardSurface converts) ──
@@ -551,6 +653,38 @@ final class AppSettings: ObservableObject {
     @Published var flameSize: Double { didSet { d.set(flameSize, forKey: "flameSize") } }        // 0.8x ... 2.0x (the menu bar height caps it above that)
     @Published var flameSparks: FlameSparks { didSet { d.set(flameSparks.rawValue, forKey: "flameSparks") } }
     @Published var flameSmoke: Bool { didSet { d.set(flameSmoke, forKey: "flameSmoke") } }
+    // BEACON ADJUST: every number in the wink is exposed, with the ranges opened up well past
+    // "tasteful" on purpose - the point is to find where it stops being visible, from both ends.
+    @Published var beaconEvery: Double { didSet { d.set(beaconEvery, forKey: "beaconEvery") } }        // seconds between winks
+    @Published var beaconJitter: Double { didSet { d.set(beaconJitter, forKey: "beaconJitter") } }     // 0…1 randomness on that gap
+    @Published var beaconLength: Double { didSet { d.set(beaconLength, forKey: "beaconLength") } }     // seconds the wink lasts
+    @Published var beaconStrength: Double { didSet { d.set(beaconStrength, forKey: "beaconStrength") } } // 0…1 how far toward the accent
+    @Published var beaconGlow: Double { didSet { d.set(beaconGlow, forKey: "beaconGlow") } }           // 0…1 halo at the peak
+    @Published var beaconMark: BeaconMark { didSet { d.set(beaconMark.rawValue, forKey: "beaconMark") } }
+    @Published var beaconCurve: BeaconCurve { didSet { d.set(beaconCurve.rawValue, forKey: "beaconCurve") } }
+    // The three that make the wink MEAN something rather than just decorate.
+    @Published var beaconFollowsBurn: Bool { didSet { d.set(beaconFollowsBurn, forKey: "beaconFollowsBurn") } }  // cadence rides the live rate
+    @Published var beaconUsageColor: Bool { didSet { d.set(beaconUsageColor, forKey: "beaconUsageColor") } }     // colour rides usage
+    @Published var beaconAlertBeat: Bool { didSet { d.set(beaconAlertBeat, forKey: "beaconAlertBeat") } }        // double-wink near the limit
+
+    /// Which preset the sliders currently sit on, or nil for "Custom". Loose tolerance on purpose:
+    /// a preset you nudged by a hair is still that preset as far as the label is concerned.
+    var matchingBeaconPreset: BeaconPreset? {
+        BeaconPreset.allCases.first { p in
+            let v = p.values
+            return abs(beaconEvery - v.0) < 0.05 && abs(beaconJitter - v.1) < 0.02
+                && abs(beaconLength - v.2) < 0.02 && abs(beaconStrength - v.3) < 0.02
+                && abs(beaconGlow - v.4) < 0.02 && beaconMark == v.5 && beaconCurve == v.6
+        }
+    }
+
+    /// Apply a named tune. Only the seven look knobs - Rhythm / Wink colour / Near the limit are
+    /// behaviour choices, not part of a look, so a preset never silently flips them.
+    func applyBeaconPreset(_ p: BeaconPreset) {
+        let v = p.values
+        beaconEvery = v.0; beaconJitter = v.1; beaconLength = v.2
+        beaconStrength = v.3; beaconGlow = v.4; beaconMark = v.5; beaconCurve = v.6
+    }
     // Per-element popover visibility. Each gates ONE popover element; a hidden element
     // drops and the card content-hugs to a shorter height with no gaps. All default true unless noted.
     @Published var showTimeRing: Bool { didSet { d.set(showTimeRing, forKey: "showTimeRing") } }
@@ -746,6 +880,8 @@ final class AppSettings: ObservableObject {
         widgetScale = (d.object(forKey: "widgetScale") as? Double) ?? 1.0
         palette = PalettePreset(rawValue: d.string(forKey: "palette") ?? "") ?? .stoneClay
         textScale = (d.object(forKey: "textScale") as? Double) ?? 1.0
+        cardWidth = (d.object(forKey: "cardWidth") as? Double) ?? 264
+        cardChartBoost = (d.object(forKey: "cardChartBoost") as? Double) ?? 0
         floatingChrome = (d.object(forKey: "floatingChrome") as? Bool) ?? false   // clean borderless card by default
         glassMaterial = GlassMaterial(rawValue: d.string(forKey: "glassMaterial") ?? "") ?? .popover
         numberStyle = NumberStyle(rawValue: d.string(forKey: "numberStyle") ?? "") ?? .roll
@@ -760,6 +896,17 @@ final class AppSettings: ObservableObject {
         flameSize = min(2.0, max(0.8, (d.object(forKey: "flameSize") as? Double) ?? 1.7))
         flameSparks = FlameSparks(rawValue: d.string(forKey: "flameSparks") ?? "") ?? .always
         flameSmoke = d.object(forKey: "flameSmoke") as? Bool ?? true
+        // Beacon defaults = the shipped wink: every ~4s ±50%, 0.42s long, full accent, no glow.
+        beaconEvery = (d.object(forKey: "beaconEvery") as? Double) ?? 4.0
+        beaconJitter = (d.object(forKey: "beaconJitter") as? Double) ?? 0.5
+        beaconLength = (d.object(forKey: "beaconLength") as? Double) ?? 0.42
+        beaconStrength = (d.object(forKey: "beaconStrength") as? Double) ?? 1.0
+        beaconGlow = (d.object(forKey: "beaconGlow") as? Double) ?? 0.0
+        beaconMark = BeaconMark(rawValue: d.string(forKey: "beaconMark") ?? "") ?? .percent
+        beaconCurve = BeaconCurve(rawValue: d.string(forKey: "beaconCurve") ?? "") ?? .snap
+        beaconFollowsBurn = d.object(forKey: "beaconFollowsBurn") as? Bool ?? false
+        beaconUsageColor = d.object(forKey: "beaconUsageColor") as? Bool ?? false
+        beaconAlertBeat = d.object(forKey: "beaconAlertBeat") as? Bool ?? false
         showTimeRing = d.object(forKey: "showTimeRing") as? Bool ?? true
         showForecastLine = d.object(forKey: "showForecastLine") as? Bool ?? true
         showWeekPercent = d.object(forKey: "showWeekPercent") as? Bool ?? true

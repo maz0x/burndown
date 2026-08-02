@@ -1,11 +1,15 @@
 import SwiftUI
 import AppKit
+import Charts
 
-// The Insights window. It surfaces the analytics that build on the usage-aggregation layer
-// underneath: live session attribution (#1), per-project usage (#2), a spend
-// budget (#3), weekly pacing (#5), history and trends (#6), model-mix advice (#7), export
-// (#8), and the weekly recap (#9). It is read-only on the engine; the only writes are the
-// user-triggered file exports. Kept in a separate window so the tuned popover stays untouched.
+// The Insights window: the Analytical Studio. It surfaces the analytics that build on the
+// usage-aggregation layer underneath: live session attribution (#1), per-project usage (#2), a
+// spend budget (#3), weekly pacing (#5), history and trends (#6), model-mix advice (#7), export
+// (#8), and the recap (#9). A time-scope filter (Today · 7 days · 30 days · All time) re-indexes
+// the recap, the attribution lists, and the exports; the 14-day rhythm chart deliberately stays
+// fixed (a scoped "Today" would degenerate to a single bar). It is read-only on the engine; the
+// only writes are the user-chosen file exports. Kept in a separate window so the tuned popover
+// stays untouched.
 // The shared card token for Insights sections: track 45% fill, divider 0.5 stroke, r12,
 // 16pt internal padding, no shadow.
 struct InsightsCard: ViewModifier {
@@ -14,6 +18,26 @@ struct InsightsCard: ViewModifier {
         content.padding(16).frame(maxWidth: .infinity, alignment: .leading)
             .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(p.track.opacity(0.45))
                 .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(p.divider, lineWidth: 0.5)))
+    }
+}
+
+/// The recap stat trio plaque: eyebrow-style label under a serif stat numeral.
+private struct StatPlaque: View {
+    let value: String
+    let label: String
+    let p: Palette
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(value).font(.system(size: 18, weight: .semibold, design: .serif))
+                .foregroundStyle(p.ink).monospacedDigit().lineLimit(1).minimumScaleFactor(0.7)
+            Text(label.uppercased()).font(.system(size: 9.5, weight: .semibold)).tracking(1.1)
+                .foregroundStyle(p.sub)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(p.raisedBg))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(label): \(value)")
     }
 }
 
@@ -46,10 +70,45 @@ struct InsightsView: View {
     @Environment(\.colorScheme) private var scheme
     @ObservedObject private var chatNames = ChatNames.shared
 
+    // MARK: Time scope: re-indexes the recap, attribution lists, and exports.
+    private enum Scope: Int, CaseIterable, Identifiable {
+        case today, week, month, all
+        var id: Int { rawValue }
+        var label: String {
+            switch self { case .today: return "Today"; case .week: return "7 days"
+                          case .month: return "30 days"; case .all: return "All time" }
+        }
+        /// Suffix for section titles ("By project, 7 days").
+        var suffix: String {
+            switch self { case .today: return "today"; case .week: return "7 days"
+                          case .month: return "30 days"; case .all: return "all time" }
+        }
+    }
+    @State private var scope: Scope = .week
+    @State private var histSel: UsageRollup? = nil       // hover selection on the rhythm chart
+    @State private var exportToast: String? = nil        // save confirmation, self-dismissing
+
     private var now: Date { Date() }
     private var records: [UsageRecord] { engine.records }
-    private var weekRecs: [UsageRecord] {
-        recordsInWindow(records, since: now.addingTimeInterval(-7 * 86_400), until: now.addingTimeInterval(1))
+    /// The scope's record slice. The full-history scan feeds everything once it lands; before
+    /// that (and always for the engine-bounded windows) engine.records is the honest source.
+    private var scopedRecs: [UsageRecord] {
+        let source = scanned && !allRecords.isEmpty ? allRecords : records
+        switch scope {
+        case .today: return recordsInWindow(source, since: Calendar.current.startOfDay(for: now), until: now.addingTimeInterval(1))
+        case .week:  return recordsInWindow(source, since: now.addingTimeInterval(-7 * 86_400), until: now.addingTimeInterval(1))
+        case .month: return recordsInWindow(source, since: now.addingTimeInterval(-30 * 86_400), until: now.addingTimeInterval(1))
+        case .all:   return source
+        }
+    }
+    /// Per-conversation rows inside the scope (sessions carry their last-activity date).
+    private var scopedSessions: [SessionUsage] {
+        switch scope {
+        case .today: return allSessions.filter { $0.date >= Calendar.current.startOfDay(for: now) }
+        case .week:  return allSessions.filter { $0.date >= now.addingTimeInterval(-7 * 86_400) }
+        case .month: return allSessions.filter { $0.date >= now.addingTimeInterval(-30 * 86_400) }
+        case .all:   return allSessions
+        }
     }
     private var blockRecs: [UsageRecord] {
         guard let start = engine.activeBlockStart else { return [] }
@@ -70,6 +129,7 @@ struct InsightsView: View {
         // Loading state: the full-history scan takes a few seconds; make that unmistakable
         // instead of showing partial numbers that read as final.
         .overlay { loadingOverlay(p) }
+        .overlay(alignment: .bottom) { if let t = exportToast { toast(t, p) } }
         .onAppear { if scanned { return }
                     engine.scanAllUsage { recs, sess in allRecords = recs; allSessions = sess; scanned = true } }
     }
@@ -82,13 +142,16 @@ struct InsightsView: View {
             VStack(alignment: .leading, spacing: 22) {
                 // Hero band FLATTENED: the shared card token, a STATIC FlameMark, no
                 // gradient wash and no idle motion - the earned-by-data law applies here too.
-                HStack(spacing: 12) {
-                    FlameMark(size: 28)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("Insights").font(.system(size: 22, weight: .semibold, design: .serif)).foregroundStyle(p.ink)
-                        Text("Where your Claude usage goes").font(.system(size: 11)).foregroundStyle(p.sub)
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 12) {
+                        FlameMark(size: 28)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Insights").font(.system(size: 22, weight: .semibold, design: .serif)).foregroundStyle(p.ink)
+                            Text("Where your Claude usage goes").font(.system(size: 11)).foregroundStyle(p.sub)
+                        }
+                        Spacer()
                     }
-                    Spacer()
+                    scopePicker(p)
                 }
                 .padding(16)
                 .background(
@@ -97,16 +160,20 @@ struct InsightsView: View {
                         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(p.divider, lineWidth: 0.5))
                 )
                 // Every section wraps in the shared card token.
-                recapCard.modifier(InsightsCard(p: p))
-                advisories
-                attribution.modifier(InsightsCard(p: p))
-                chats.modifier(InsightsCard(p: p))
-                projects.modifier(InsightsCard(p: p))
-                history.modifier(InsightsCard(p: p))
-                budgetControls
-                exportRow
+                recapCard(p).modifier(InsightsCard(p: p))
+                advisories(p)
+                attribution(p).modifier(InsightsCard(p: p))
+                if scanned && allSessions.isEmpty && records.isEmpty {
+                    emptyState(p).modifier(InsightsCard(p: p))
+                } else {
+                    chats(p).modifier(InsightsCard(p: p))
+                    projects(p).modifier(InsightsCard(p: p))
+                }
+                history(p).modifier(InsightsCard(p: p))
+                budgetControls(p)
+                exportRow(p)
                 Text("Token counts are exact, read from your local ~/.claude logs. On a subscription you do not pay these dollar figures: cost is an estimate of what the same usage would cost on Anthropic's pay-as-you-go API at current list prices.")
-                    .font(.caption2).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
+                    .font(.caption2).foregroundStyle(p.faint).fixedSize(horizontal: false, vertical: true)
             }
             .padding(20)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -137,26 +204,43 @@ struct InsightsView: View {
                 }
     }
 
-    // MARK: This week recap
-    private var recapCard: some View {
-        let r = recap(weekRecs, label: "This week")
-        return VStack(alignment: .leading, spacing: 6) {
-            sectionTitle("This week")
-            Text(recapText(r)).font(.callout).fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 18) {
-                stat(fmtTok(r.totalTokens), "tokens")
-                stat(String(format: "$%.2f", r.costUSD), "est. cost")
-                stat("\(r.dayCount)", "active days")
+    /// Nothing scanned anywhere: an illustrated invitation instead of three bare "no data" lines.
+    private func emptyState(_ p: Palette) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 12) {
+                FlameMark(size: 24)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Nothing to analyze yet").font(.system(size: 13, weight: .semibold)).foregroundStyle(p.ink)
+                    Text("Run a Claude Code session in a terminal (or just keep chatting) and your usage lands in ~/.claude automatically. This page fills itself.")
+                        .font(.system(size: 11.5)).foregroundStyle(p.sub).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    // MARK: Scoped recap: narrative + the stat plaque trio.
+    private func recapCard(_ p: Palette) -> some View {
+        let recs = scopedRecs
+        let r = recap(recs, label: scope.label)
+        let agg = totals(recs)
+        let top = rollupByModelFamily(recs).max { $0.tokens < $1.tokens }?.key ?? "None"
+        return VStack(alignment: .leading, spacing: 8) {
+            sectionTitle("Recap · \(scope.suffix)", p)
+            Text(recapText(r)).font(.callout).foregroundStyle(p.ink).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                StatPlaque(value: fmtTok(agg.tokens), label: "Tokens burned", p: p)
+                StatPlaque(value: String(format: "$%.2f", agg.cost), label: "Est. compute", p: p)
+                StatPlaque(value: top, label: "Top model", p: p)
             }
         }
     }
 
     // MARK: Advisory lines (pacing, model-mix, budget)
-    private var advisories: some View {
+    private func advisories(_ p: Palette) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            if let p = pacingLine { advisoryRow("clock", p) }
-            if let m = modelMixLine { advisoryRow("arrow.triangle.swap", m) }
-            if let b = budgetLine { advisoryRow("dollarsign.circle", b) }
+            if let t = pacingLine { advisoryRow("clock", t, p) }
+            if let m = modelMixLine { advisoryRow("arrow.triangle.swap", m, p) }
+            if let b = budgetLine { advisoryRow("dollarsign.circle", b, p) }
         }
     }
     private var pacingLine: String? {
@@ -194,82 +278,90 @@ struct InsightsView: View {
     }
 
     // MARK: Current session attribution
-    private var attribution: some View {
+    private func attribution(_ p: Palette) -> some View {
         VStack(alignment: .leading, spacing: 10) {
-            sectionTitle("Current session")
+            sectionTitle("Current session", p)
             if blockRecs.isEmpty {
-                Text("No active 5-hour block right now.").font(.callout).foregroundStyle(.secondary)
+                Text("No active 5-hour block right now.").font(.callout).foregroundStyle(p.sub)
             } else {
-                Text("By model").font(.caption).foregroundStyle(.secondary)
-                rollupBars(rollupByModelFamily(blockRecs))
+                Text("By model").font(.caption).foregroundStyle(p.sub)
+                rollupBars(rollupByModelFamily(blockRecs), p)
             }
         }
     }
 
-    // MARK: Per-project, all time (#2). Grouped by the REAL cwd of each session (Home, a repo name, ...),
-    // not the log folder, so it is not mangled.
-    private var projects: some View {
+    // MARK: Per-project inside the scope (#2). Grouped by the REAL cwd of each session (Home, a
+    // repo name, ...), not the log folder, so it is not mangled.
+    private func projects(_ p: Palette) -> some View {
         var by: [String: (tokens: Int, cost: Double)] = [:]
-        for s in allSessions { var e = by[s.project] ?? (0, 0); e.tokens += s.tokens; e.cost += s.cost; by[s.project] = e }
+        for s in scopedSessions { var e = by[s.project] ?? (0, 0); e.tokens += s.tokens; e.cost += s.cost; by[s.project] = e }
         let rows = by.map { (key: $0.key, tokens: $0.value.tokens, cost: $0.value.cost) }.sorted { $0.tokens > $1.tokens }
         let maxT = max(1, rows.map { $0.tokens }.max() ?? 1)
         let totalTok = rows.reduce(0) { $0 + $1.tokens }
         let totalCost = rows.reduce(0.0) { $0 + $1.cost }
         return VStack(alignment: .leading, spacing: 8) {
-            sectionTitle("By project (all time)")
-            if !scanned { Text("Reading your full history\u{2026}").font(.callout).foregroundStyle(.secondary) }
-            else if rows.isEmpty { Text("No usage found in your local logs.").font(.callout).foregroundStyle(.secondary) }
+            sectionTitle("By project · \(scope.suffix)", p)
+            if !scanned { Text("Reading your full history\u{2026}").font(.callout).foregroundStyle(p.sub) }
+            else if rows.isEmpty { Text("No usage in this window.").font(.callout).foregroundStyle(p.sub) }
             else {
                 ForEach(Array(rows.prefix(10).enumerated()), id: \.offset) { _, r in
                     HStack(spacing: 8) {
-                        Text(r.key).font(.system(size: 12)).frame(width: 110, alignment: .leading).lineLimit(1).truncationMode(.tail)
+                        Text(r.key).font(.system(size: 12)).foregroundStyle(p.ink)
+                            .frame(width: 110, alignment: .leading).lineLimit(1).truncationMode(.tail)
                         GeometryReader { g in
                             ZStack(alignment: .leading) {
-                                Capsule().fill(Color.secondary.opacity(0.15))
-                                Capsule().fill(Palette.of(scheme).session.opacity(0.85))
+                                Capsule().fill(p.track)
+                                Capsule().fill(p.session.opacity(0.85))
                                     .frame(width: max(2, g.size.width * CGFloat(Double(r.tokens) / Double(maxT))))
                             }
                         }.frame(height: 10)
-                        Text(fmtTok(r.tokens)).font(.system(size: 11)).foregroundStyle(.secondary).frame(width: 46, alignment: .trailing)
-                        Text(usd(r.cost)).font(.system(size: 11)).foregroundStyle(.secondary).frame(width: 52, alignment: .trailing)
+                        .accessibilityElement()
+                        .accessibilityLabel("\(r.key): \(fmtTok(r.tokens)) tokens")
+                        Text(fmtTok(r.tokens)).font(.system(size: 11)).foregroundStyle(p.sub).frame(width: 46, alignment: .trailing)
+                        Text(usd(r.cost)).font(.system(size: 11)).foregroundStyle(p.sub).frame(width: 52, alignment: .trailing)
                     }
                 }
-                Text("Lifetime: \(fmtTok(totalTok)) tokens, about \(usd(totalCost)) est. API cost. Most sessions run from your home folder (grouped as Home); the chats below split that out by conversation.")
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).padding(.top, 2)
+                if scope == .all {
+                    Text("Lifetime: \(fmtTok(totalTok)) tokens, about \(usd(totalCost)) est. API cost. Most sessions run from your home folder (grouped as Home); the chats above split that out by conversation.")
+                        .font(.caption).foregroundStyle(p.sub).fixedSize(horizontal: false, vertical: true).padding(.top, 2)
+                }
             }
         }
     }
     private func usd(_ v: Double) -> String { v >= 100 ? String(format: "$%.0f", v) : String(format: "$%.2f", v) }
 
-    // MARK: Biggest chats, all time. Each chat is one conversation, labeled by its own title.
-    private var chats: some View {
-        let rows = allSessions.sorted { $0.tokens > $1.tokens }.prefix(12)
+    // MARK: Biggest chats inside the scope. Each chat is one conversation, labeled by its own title.
+    private func chats(_ p: Palette) -> some View {
+        let rows = scopedSessions.sorted { $0.tokens > $1.tokens }.prefix(12)
         let maxT = max(1, rows.map { $0.tokens }.max() ?? 1)
         return VStack(alignment: .leading, spacing: 9) {
-            sectionTitle("Biggest chats (all time)")
-            if !scanned { Text("Reading your full history\u{2026}").font(.callout).foregroundStyle(.secondary) }
-            else if rows.isEmpty { Text("No chats found in your local logs.").font(.callout).foregroundStyle(.secondary) }
+            sectionTitle("Biggest chats · \(scope.suffix)", p)
+            if !scanned { Text("Reading your full history\u{2026}").font(.callout).foregroundStyle(p.sub) }
+            else if rows.isEmpty { Text("No chats in this window.").font(.callout).foregroundStyle(p.sub) }
             else {
                 ForEach(Array(rows.enumerated()), id: \.offset) { _, r in
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(chatNames.display(r.title)).font(.system(size: 12.5, weight: .medium)).lineLimit(1).truncationMode(.tail)
+                        Text(chatNames.display(r.title)).font(.system(size: 12.5, weight: .medium)).foregroundStyle(p.ink)
+                            .lineLimit(1).truncationMode(.tail)
                         HStack(spacing: 8) {
-                            Text("\(r.project) · \(shortDate(r.date))").font(.system(size: 10.5)).foregroundStyle(.tertiary)
+                            Text("\(r.project) · \(shortDate(r.date))").font(.system(size: 10.5)).foregroundStyle(p.faint)
                                 .frame(width: 116, alignment: .leading).lineLimit(1).truncationMode(.tail)
                             GeometryReader { g in
                                 ZStack(alignment: .leading) {
-                                    Capsule().fill(Color.secondary.opacity(0.15))
-                                    Capsule().fill(Palette.of(scheme).session.opacity(0.85))
+                                    Capsule().fill(p.track)
+                                    Capsule().fill(p.session.opacity(0.85))
                                         .frame(width: max(2, g.size.width * CGFloat(Double(r.tokens) / Double(maxT))))
                                 }
                             }.frame(height: 8)
-                            Text(fmtTok(r.tokens)).font(.system(size: 11)).foregroundStyle(.secondary).frame(width: 46, alignment: .trailing)
-                            Text(usd(r.cost)).font(.system(size: 11)).foregroundStyle(.secondary).frame(width: 52, alignment: .trailing)
+                            Text(fmtTok(r.tokens)).font(.system(size: 11)).foregroundStyle(p.sub).frame(width: 46, alignment: .trailing)
+                            Text(usd(r.cost)).font(.system(size: 11)).foregroundStyle(p.sub).frame(width: 52, alignment: .trailing)
                         }
                     }
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("\(chatNames.display(r.title)): \(fmtTok(r.tokens)) tokens")
                 }
                 Text("Each chat is one conversation, labeled by its own title (the title Claude shows for it).")
-                    .font(.caption2).foregroundStyle(.tertiary).fixedSize(horizontal: false, vertical: true)
+                    .font(.caption2).foregroundStyle(p.faint).fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -278,25 +370,93 @@ struct InsightsView: View {
         return f.string(from: d)
     }
 
-    // MARK: History
-    private var history: some View {
-        let days = rollupByDay(recordsInWindow(records, since: now.addingTimeInterval(-14 * 86_400),
+    // MARK: History: the 14-day rhythm as a real chart with a hover scrubber. Deliberately NOT
+    // scoped (a "Today" scope would collapse it to one bar); it answers "what is my rhythm",
+    // the scope filter answers "where did it go".
+    private func history(_ p: Palette) -> some View {
+        let source = scanned && !allRecords.isEmpty ? allRecords : records
+        let days = rollupByDay(recordsInWindow(source, since: now.addingTimeInterval(-14 * 86_400),
                                                until: now.addingTimeInterval(1)))
-        let maxT = max(1, days.map { $0.tokens }.max() ?? 1)
+        let maxT = days.map { $0.tokens }.max() ?? 0
+        let avgT = days.isEmpty ? 0 : days.reduce(0) { $0 + $1.tokens } / days.count
         return VStack(alignment: .leading, spacing: 10) {
-            sectionTitle("Last 14 days")
-            if days.isEmpty { Text("No history yet.").font(.callout).foregroundStyle(.secondary) }
-            else {
-                HStack(alignment: .bottom, spacing: 4) {
-                    ForEach(Array(days.enumerated()), id: \.offset) { _, d in
-                        VStack(spacing: 3) {
-                            RoundedRectangle(cornerRadius: 2).fill(Palette.of(scheme).session.opacity(0.7))
-                                .frame(height: max(2, 80 * CGFloat(Double(d.tokens) / Double(maxT))))
-                            Text(String(d.key.suffix(2))).font(.system(size: 9)).foregroundStyle(.secondary)
-                        }.frame(maxWidth: .infinity)
-                    }
-                }.frame(height: 100)
+            HStack {
+                sectionTitle("Last 14 days", p)
+                Spacer()
+                if let s = histSel {
+                    Text("\(String(s.key.suffix(5))): \(fmtTok(s.tokens))")
+                        .font(.system(size: 10.5, weight: .medium, design: .monospaced))
+                        .foregroundStyle(p.session).monospacedDigit()
+                }
             }
+            if days.isEmpty { Text("No history yet.").font(.callout).foregroundStyle(p.sub) }
+            else {
+                Chart {
+                    ForEach(days, id: \.key) { d in
+                        BarMark(x: .value("day", String(d.key.suffix(5))), y: .value("tokens", d.tokens))
+                            .foregroundStyle(p.session.opacity(histSel == nil || histSel?.key == d.key ? 0.8 : 0.35))
+                            .cornerRadius(2)
+                    }
+                }
+                .chartXAxis {
+                    AxisMarks { v in
+                        AxisValueLabel {
+                            if let s = v.as(String.self) {
+                                Text(String(s.suffix(2))).font(.system(size: 9)).foregroundStyle(p.sub)
+                            }
+                        }
+                    }
+                }
+                .chartYAxis {
+                    AxisMarks(position: .leading, values: .automatic(desiredCount: 3)) { v in
+                        AxisGridLine(stroke: StrokeStyle(lineWidth: 0.5, dash: [2, 2])).foregroundStyle(p.divider)
+                        AxisValueLabel {
+                            if let i = v.as(Int.self) {
+                                Text(fmtTok(i)).font(.system(size: 8.5, design: .monospaced)).foregroundStyle(p.sub)
+                            }
+                        }
+                    }
+                }
+                .chartPlotStyle { $0.background(Color.clear) }
+                .frame(height: 110)
+                .hoverCatcher { pt, proxy, geo in
+                    guard let pt, let key: String = proxy.value(atX: pt.x - geo[proxy.plotAreaFrame].minX)
+                    else { histSel = nil; return }
+                    histSel = days.first { String($0.key.suffix(5)) == key }
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Fourteen day usage history")
+                .accessibilityValue(days.map { "\(String($0.key.suffix(5))) \(fmtTok($0.tokens))" }.joined(separator: ", "))
+                HStack(spacing: 4) {
+                    Text("peak \(fmtTok(maxT))").font(.system(size: 11, weight: .semibold)).foregroundStyle(p.ink).monospacedDigit()
+                    Text("· avg \(fmtTok(avgT)) per day").font(.system(size: 9.5)).foregroundStyle(p.faint)
+                    Spacer()
+                }
+            }
+        }
+    }
+
+    /// A real segmented Picker everywhere real, and a hand-drawn look-alike under the offscreen
+    /// renderer (ImageRenderer paints native segmented controls as a yellow placeholder blob,
+    /// the same limitation toggleRow works around).
+    @ViewBuilder private func scopePicker(_ p: Palette) -> some View {
+        if isPreview {
+            HStack(spacing: 2) {
+                ForEach(Scope.allCases) { s in
+                    Text(s.label).font(.system(size: 11, weight: s == scope ? .semibold : .regular))
+                        .foregroundStyle(s == scope ? p.ink : p.sub)
+                        .padding(.horizontal, 10).padding(.vertical, 4)
+                        .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(s == scope ? p.bg : .clear))
+                }
+            }
+            .padding(2)
+            .background(RoundedRectangle(cornerRadius: 7, style: .continuous).fill(p.track))
+        } else {
+            Picker("Time scope", selection: $scope) {
+                ForEach(Scope.allCases) { s in Text(s.label).tag(s) }
+            }
+            .pickerStyle(.segmented).labelsHidden()
+            .accessibilityLabel("Time scope for the recap, attribution, and exports")
         }
     }
 
@@ -319,9 +479,9 @@ struct InsightsView: View {
     }
 
     // MARK: Budget controls
-    private var budgetControls: some View {
+    private func budgetControls(_ p: Palette) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionTitle("Budget")
+            sectionTitle("Budget", p)
             toggleRow("Track a spend budget", $settings.budgetEnabled)
             if settings.budgetEnabled {
                 HStack(spacing: 10) {
@@ -336,7 +496,7 @@ struct InsightsView: View {
                     Text("Limit")
                     TextField("Amount", value: $settings.budgetLimit, format: .number)
                         .frame(width: 90).textFieldStyle(.roundedBorder)
-                    Text(settings.budgetMetric == "usd" ? "USD" : "tokens").foregroundStyle(.secondary)
+                    Text(settings.budgetMetric == "usd" ? "USD" : "tokens").foregroundStyle(p.sub)
                 }
                 toggleRow("Alert when approaching the budget", $settings.alertBudget)
             }
@@ -345,59 +505,84 @@ struct InsightsView: View {
         }
     }
 
-    // MARK: Export
-    private var exportRow: some View {
+    // MARK: Export: the scope's records, to a location the user chooses.
+    private func exportRow(_ p: Palette) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionTitle("Export")
+            sectionTitle("Export · \(scope.suffix)", p)
             HStack(spacing: 10) {
-                Button("CSV") { saveExport(exportCSV(records), "burndown-usage.csv") }
-                Button("JSON") { saveExport(exportJSON(records), "burndown-usage.json") }
-                Button("Markdown") { saveExport(exportMarkdownByDay(records), "burndown-usage.md") }
+                Button("CSV") { saveExport(exportCSV(scopedRecs), "burndown-usage.csv") }
+                Button("JSON") { saveExport(exportJSON(scopedRecs), "burndown-usage.json") }
+                Button("Markdown") { saveExport(exportMarkdownByDay(scopedRecs), "burndown-usage.md") }
             }
-            Text("Saves to your Downloads folder.").font(.caption2).foregroundStyle(.tertiary)
+            Text("You choose where it goes.").font(.caption2).foregroundStyle(p.faint)
         }
     }
+    /// Native save panel (the old path wrote straight into ~/Downloads, which fails silently
+    /// when the folder is sandboxed or relocated); a toast confirms the write either way.
     private func saveExport(_ text: String, _ name: String) {
-        let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads/\(name)")
-        try? text.data(using: .utf8)?.write(to: url)
-        NSWorkspace.shared.activateFileViewerSelecting([url])
+        let panel = NSSavePanel()
+        panel.canCreateDirectories = true
+        panel.nameFieldStringValue = name
+        panel.begin { resp in
+            guard resp == .OK, let url = panel.url else { return }
+            do {
+                try text.write(to: url, atomically: true, encoding: .utf8)
+                showToast("Exported \(url.lastPathComponent)")
+                NSWorkspace.shared.activateFileViewerSelecting([url])
+            } catch {
+                showToast("Could not write the file: \(error.localizedDescription)")
+            }
+        }
+    }
+    private func showToast(_ msg: String) {
+        withAnimation(.emberEase(Dur.d240)) { exportToast = msg }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5) {
+            withAnimation(.emberEase(Dur.d240)) { exportToast = nil }
+        }
+    }
+    private func toast(_ msg: String, _ p: Palette) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checkmark.circle.fill").foregroundStyle(p.live)
+            Text(msg).font(.system(size: 12, weight: .medium)).foregroundStyle(p.ink)
+        }
+        .padding(.horizontal, 16).padding(.vertical, 10)
+        .background(Capsule().fill(p.raisedBg).overlay(Capsule().stroke(p.divider, lineWidth: 1)))
+        .shadow(color: .black.opacity(0.18), radius: 12, y: 4)
+        .padding(.bottom, 18)
+        .transition(.opacity.combined(with: .move(edge: .bottom)))
     }
 
     // MARK: Shared bits
-    private func rollupBars(_ rollups: [UsageRollup], label: @escaping (String) -> String = { $0 }) -> some View {
+    private func rollupBars(_ rollups: [UsageRollup], _ p: Palette, label: @escaping (String) -> String = { $0 }) -> some View {
         let maxT = max(1, rollups.map { $0.tokens }.max() ?? 1)
         return VStack(alignment: .leading, spacing: 6) {
             ForEach(Array(rollups.prefix(8).enumerated()), id: \.offset) { _, r in
                 HStack(spacing: 8) {
-                    Text(label(r.key)).font(.system(size: 12)).frame(width: 130, alignment: .leading)
+                    Text(label(r.key)).font(.system(size: 12)).foregroundStyle(p.ink).frame(width: 130, alignment: .leading)
                         .lineLimit(1).truncationMode(.middle)
                     GeometryReader { g in
                         ZStack(alignment: .leading) {
-                            Capsule().fill(Color.secondary.opacity(0.15))
-                            Capsule().fill(Palette.of(scheme).session.opacity(0.85))
+                            Capsule().fill(p.track)
+                            Capsule().fill(p.session.opacity(0.85))
                                 .frame(width: max(2, g.size.width * CGFloat(Double(r.tokens) / Double(maxT))))
                         }
                     }.frame(height: 10)
-                    Text(fmtTok(r.tokens)).font(.system(size: 11)).foregroundStyle(.secondary)
+                    .accessibilityElement()
+                    .accessibilityLabel("\(label(r.key)): \(fmtTok(r.tokens)) tokens")
+                    Text(fmtTok(r.tokens)).font(.system(size: 11)).foregroundStyle(p.sub)
                         .frame(width: 54, alignment: .trailing)
                 }
             }
         }
     }
-    private func sectionTitle(_ t: String) -> some View {
+    private func sectionTitle(_ t: String, _ p: Palette) -> some View {
         // The one eyebrow token: SF 11pt semibold, +1.4 tracking, sub, uppercase.
-        Text(t.uppercased()).font(.system(size: 11, weight: .semibold)).foregroundStyle(Palette.of(scheme).sub).tracking(1.4)
+        Text(t.uppercased()).font(.system(size: 11, weight: .semibold)).foregroundStyle(p.sub).tracking(1.4)
     }
-    private func stat(_ value: String, _ label: String) -> some View {
-        VStack(alignment: .leading, spacing: 1) {
-            Text(value).font(.system(size: 16, weight: .semibold))
-            Text(label).font(.caption2).foregroundStyle(.secondary)
-        }
-    }
-    private func advisoryRow(_ symbol: String, _ text: String) -> some View {
+    private func advisoryRow(_ symbol: String, _ text: String, _ p: Palette) -> some View {
         HStack(alignment: .top, spacing: 8) {
-            Image(systemName: symbol).foregroundStyle(.secondary).frame(width: 16)
-            Text(text).font(.callout).fixedSize(horizontal: false, vertical: true)
+            Image(systemName: symbol).foregroundStyle(p.sub).frame(width: 16)
+            Text(text).font(.callout).foregroundStyle(p.ink).fixedSize(horizontal: false, vertical: true)
         }
     }
 }

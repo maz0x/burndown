@@ -18,6 +18,9 @@ struct ChartCtx {
     var accent: Color = .orange
     var secondary: Color = kSlate
     var p: Palette = .of(.light)
+    // Plot height for every chart body: kChartH base + the corner grip's vertical boost
+    // (settings.cardChartBoost). Popover-only; contact sheets and previews keep the base.
+    var plotH: CGFloat = kChartH
     var style: ChartStyle = .area
     var window: TimeInterval = 3600
     var days: Int = 14
@@ -147,7 +150,7 @@ struct BurnRateChart: View {
                 .chartXAxis { timeXAxis(lower, now, p, style: ctx.style) }
                 .chartPlotStyle { $0.background(Color.clear) }
                 .transaction { $0.animation = nil }
-                .frame(height: kChartH)
+                .frame(height: ctx.plotH)
                 .hoverCatcher { pt, proxy, geo in
                     guard ctx.hover else { return }
                     guard let pt, let d: Date = plotValue(proxy, geo, pt, as: Date.self) else { sel = nil; return }
@@ -207,7 +210,7 @@ struct VolumeBarsChart: View {
                 .chartXAxis { timeXAxis(lower, now, p, style: ctx.style) }
                 .chartPlotStyle { $0.background(Color.clear) }
                 .transaction { $0.animation = nil }
-                .frame(height: kChartH)
+                .frame(height: ctx.plotH)
                 .hoverCatcher { pt, proxy, geo in
                     guard ctx.hover else { return }
                     guard let pt, let d: Date = plotValue(proxy, geo, pt, as: Date.self) else { sel = nil; return }
@@ -263,7 +266,7 @@ struct CumulativeChart: View {
                 .chartXAxis { timeXAxis(lower, now, p, style: ctx.style) }
                 .chartPlotStyle { $0.background(Color.clear) }
                 .transaction { $0.animation = nil }
-                .frame(height: kChartH)
+                .frame(height: ctx.plotH)
                 .hoverCatcher { pt, proxy, geo in
                     guard ctx.hover else { return }
                     guard let pt, let d: Date = plotValue(proxy, geo, pt, as: Date.self) else { sel = nil; return }
@@ -398,7 +401,7 @@ struct BurndownChart: View {
             }
             .chartPlotStyle { $0.background(Color.clear) }
             .transaction { $0.animation = nil }
-            .frame(height: kChartH)
+            .frame(height: ctx.plotH)
             .hoverCatcher { pt, proxy, geo in
                 guard ctx.hover else { return }
                 guard let pt, let d: Date = plotValue(proxy, geo, pt, as: Date.self), d <= now else { sel = nil; return }
@@ -468,7 +471,7 @@ struct UsageLinesChart: View {
                 .chartXAxis { timeXAxis(lower, now, p, style: ctx.style) }
                 .chartPlotStyle { $0.background(Color.clear) }
                 .transaction { $0.animation = nil }
-                .frame(height: kChartH)
+                .frame(height: ctx.plotH)
                 .hoverCatcher { pt, proxy, geo in
                     guard ctx.hover else { return }
                     guard let pt, let d: Date = plotValue(proxy, geo, pt, as: Date.self) else { selT = nil; return }
@@ -535,7 +538,7 @@ struct ByModelChart: View {
                 .chartXAxis { timeXAxis(lower, now, p, style: ctx.style) }
                 .chartPlotStyle { $0.background(Color.clear) }
                 .transaction { $0.animation = nil }
-                .frame(height: kChartH)
+                .frame(height: ctx.plotH)
                 .hoverCatcher { pt, proxy, geo in
                     guard ctx.hover else { return }
                     guard let pt, let d: Date = plotValue(proxy, geo, pt, as: Date.self) else { sel = nil; return }
@@ -596,7 +599,7 @@ struct ByProjectChart: View {
                 }
                 .chartPlotStyle { $0.background(Color.clear) }
                 .transaction { $0.animation = nil }
-                .frame(height: kChartH)
+                .frame(height: ctx.plotH)
                 .hoverCatcher { pt, proxy, geo in
                     guard ctx.hover else { return }
                     guard let pt, let name: String = proxy.value(atY: pt.y - geo[proxy.plotAreaFrame].minY) else { sel = nil; return }
@@ -655,7 +658,7 @@ struct CostPerDayChart: View {
                 }
                 .chartPlotStyle { $0.background(Color.clear) }
                 .transaction { $0.animation = nil }
-                .frame(height: kChartH)
+                .frame(height: ctx.plotH)
                 .hoverCatcher { pt, proxy, geo in
                     guard ctx.hover else { return }
                     guard let pt, let name: String = plotValue(proxy, geo, pt, as: String.self) else { sel = nil; return }
@@ -712,7 +715,7 @@ struct HourProfileChart: View {
                 }
                 .chartPlotStyle { $0.background(Color.clear) }
                 .transaction { $0.animation = nil }
-                .frame(height: kChartH)
+                .frame(height: ctx.plotH)
                 .hoverCatcher { pt, proxy, geo in
                     guard ctx.hover else { return }
                     guard let pt, let h: Double = plotValue(proxy, geo, pt, as: Double.self) else { sel = nil; return }
@@ -774,7 +777,7 @@ struct DayHeatmapChart: View {
                         }
                     }
                 }
-                .frame(height: kChartH)
+                .frame(height: ctx.plotH)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("Activity heatmap")
                 .accessibilityValue("\(days) days by hour, busiest cell \(fmtTok(Int(peak))) tokens")

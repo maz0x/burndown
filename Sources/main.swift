@@ -258,6 +258,7 @@ func clampToScreen(_ rect: NSRect, near anchor: NSPoint) -> NSRect {
 extension Notification.Name {
     static let openChartSettings = Notification.Name("com.maz.burndown.openChartSettings")
     static let fireTestAlert = Notification.Name("com.maz.burndown.fireTestAlert")
+    static let beaconWinkNow = Notification.Name("com.maz.burndown.beaconWinkNow")
     static let burndownDidSignIn = Notification.Name("com.maz.burndown.didSignIn")
     static let burndownDidSignOut = Notification.Name("com.maz.burndown.didSignOut")
     static let showWelcomeTour = Notification.Name("com.maz.burndown.showWelcomeTour")
@@ -311,6 +312,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private var popover: NSPopover!
     private var settingsWindow: NSWindow!
     private var floatingPanel: NSPanel?
+    // While the floating card's corner grip is dragged, hold this top-left corner still so the
+    // panel grows DOWN-RIGHT under the cursor (an AppKit window otherwise grows from bottom-left).
+    private var floatResizePin: NSPoint?
     private var edgePanel: NSPanel?          // small widget docked to the Claude Desktop window edge
     let edgeState = EdgeState()               // shared lost/rescan state for the widget
     private var tidePanels: [NSPanel] = []   // screen-edge tide line, one overlay per display
@@ -319,6 +323,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private var tidePeekPanel: NSPanel?
     private var tidePeekMonitor: Any?
     private var edgeTimer: Timer?            // tracks the Claude window position while docked
+    private var edgeTimerInterval: TimeInterval = 0   // current poll cadence (60fps fallback vs 2s AX reconcile)
     private var edgeDragging = false         // user is hand-dragging the widget → don't fight it
     private var edgeDragAt = Date(timeIntervalSince1970: 0)
     private var lastEdgeOrigin = NSPoint.zero  // last origin WE set (to tell our moves from the user's)
@@ -341,6 +346,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private var glyphLayer: CALayer?          // the menu-bar glyph, driven via CA (never button.image)
     private var lastTideUptime: TimeInterval = 0   // the full-width tide redraws at its own slow cap
     private var displayHeat: Double = BurnTier.idle.heat   // lerps toward tier.heat at 0.06/frame
+    private var beaconClock = BeaconClock()    // Beacon's wink: a 3-5s timer, advanced off animPhase
+    private var beaconEnv: Double = 0          // this frame's wink envelope (the clock advances once/frame)
+    private var lastBeaconKey = ""             // every input the Beacon glyph draws from
     private var lastTokText = ""
     private var rollFrom = ""
     private var rollPhase: Double = 1          // 1 = settled
@@ -355,11 +363,83 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         setupStatusItem()
         applyTheme()
         bind()
+        // Escape / Cmd+W close whichever auxiliary window is key. An LSUIElement app has no main
+        // menu, so Cmd+W has no File > Close to route to and both were dead keys; every aux
+        // window could only be closed with the mouse. Escape defers to an active text editor
+        // first (field editors are NSTextView), so it still cancels editing before closing.
+        keyDismissMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
+            guard let self, let win = NSApp.keyWindow,
+                  [self.settingsWindow, self.accountWindow, self.insightsWindow,
+                   self.aboutWindow, self.welcomeWindow].contains(where: { $0 === win }) else { return e }
+            let esc = e.keyCode == 53 && !(win.firstResponder is NSTextView)
+            let cmdW = e.keyCode == 13 && e.modifierFlags.contains(.command)
+            if esc || cmdW { win.performClose(nil); return nil }
+            return e
+        }
         // QA (CUB_OPEN_POPOVER=1): open the popover and PIN it open, so its steady-state cost can be
         // profiled with `top`/`sample`. Transient behavior would close it the moment focus moved.
         if ProcessInfo.processInfo.environment["CUB_OPEN_POPOVER"] != nil {
             popover.behavior = .applicationDefined
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.togglePopover() }
+            // QA (CUB_QA_POPRESIZE=<width>x<boost>): prove the live reflow path end to end with no
+            // mouse. Prints the popover's contentSize before and after a runtime width + chart-boost
+            // change (the exact settings a grip drag drives) plus the window id, so
+            // `screencapture -l` can shoot it.
+            // ⚠️ cardWidth/cardChartBoost PERSIST: the QA runner must restore the user's values
+            // afterwards (`defaults write com.maz.burndown cardWidth <saved>` etc).
+            if let qa = ProcessInfo.processInfo.environment["CUB_QA_POPRESIZE"] {
+                let parts = qa.split(separator: "x").compactMap { Double($0) }
+                let w = parts.count > 0 ? parts[0] : 380, b = parts.count > 1 ? parts[1] : 0
+                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+                    guard let self else { return }
+                    let s0 = self.popover.contentSize
+                    print("CUB_POP_BEFORE=\(Int(s0.width))x\(Int(s0.height)) w=\(self.settings.cardWidth) boost=\(self.settings.cardChartBoost)")
+                    self.popover.animates = false
+                    self.settings.cardWidth = CardResize.clampW(w)
+                    self.settings.cardChartBoost = CardResize.clampB(b)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                        let s1 = self.popover.contentSize
+                        print("CUB_POP_AFTER=\(Int(s1.width))x\(Int(s1.height)) w=\(self.settings.cardWidth) boost=\(self.settings.cardChartBoost)")
+                        if let win = self.popover.contentViewController?.view.window {
+                            print("CUB_POP_WINID=\(win.windowNumber) frame=\(Int(win.frame.width))x\(Int(win.frame.height))")
+                        }
+                        fflush(stdout)   // the QA runner reads these mid-run from a redirected pipe
+                    }
+                }
+            }
+        }
+
+        // QA (CUB_QA_FLOATPIN=1): reproduce a grip drag on the floating card with no mouse.
+        // Pins the top-left exactly like ResizeGrip.began, then steps cardWidth like drag ticks.
+        // This crashed with a re-entrant setFrameOrigin before the windowDidResize defer fix
+        // (three identical SIGABRTs on 2026-08-01); it must print survived after.
+        if ProcessInfo.processInfo.environment["CUB_QA_FLOATPIN"] != nil {
+            // Marker file so a headless runner can tell "survived" from "died" without parsing
+            // stdout. Defaults under the app's own config dir; CUB_QA_FLOATPIN_OUT overrides it.
+            let markPath = ProcessInfo.processInfo.environment["CUB_QA_FLOATPIN_OUT"]
+                ?? FileManager.default.homeDirectoryForCurrentUser
+                    .appendingPathComponent(".config/burndown/floatpin.state").path
+            let mark: (String) -> Void = { try? Data($0.utf8).write(to: URL(fileURLWithPath: markPath)) }
+            mark("armed")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+                guard let self, let panel = self.floatingPanel else { mark("no-panel"); return }
+                self.floatResizePin = NSPoint(x: panel.frame.minX, y: panel.frame.maxY)
+                var w = CardResize.minWidth
+                var b = 0.0
+                Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] t in
+                    guard let self else { t.invalidate(); return }
+                    w += 3; b += 2
+                    if w > 380 {
+                        t.invalidate(); self.floatResizePin = nil
+                        mark("survived")
+                        return
+                    }
+                    // Both axes, like a real diagonal drag: width reflows, boost changes HEIGHT
+                    // (the natH preference -> outer frame path, which a width-only sim missed).
+                    self.settings.cardWidth = w
+                    self.settings.cardChartBoost = min(CardResize.maxBoost, b)
+                }
+            }
         }
 
         engine.usageEnabled = settings.usageAPI   // honor the opt-in gate before any live fetch
@@ -414,7 +494,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         syncFloating()   // restore the on-screen monitor if it was left open
         // QA only: open a window on launch so the window-activation fix can be verified headlessly.
         if let o = ProcessInfo.processInfo.environment["CUB_OPEN"] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+                guard let self else { return }
                 switch o {
                 case "account":  self.showAccount()
                 case "insights": self.showInsights()
@@ -454,6 +535,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             notifLog("observer: fireTestAlert received")
             self?.alerts.fireTest(soundName: self?.settings.alertSoundName ?? "")
         }
+        // Settings "Wink now": fire one immediately so a long cadence isn't a minute of waiting.
+        NotificationCenter.default.addObserver(forName: .beaconWinkNow, object: nil, queue: .main) { [weak self] _ in
+            guard let self else { return }
+            self.beaconClock.fireNow(at: self.animPhase, length: self.settings.beaconLength)
+            self.ensureAnimating()
+        }
     }
 
     // Register the Snooze / Open buttons that appear on every Burndown alert banner.
@@ -467,25 +554,34 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
     // MARK: - Edge dock (a small widget glued to a side of the Claude Desktop window)
 
-    @objc private func claudeActivationChanged(_ n: Notification) { setupAXTracking(); updateEdgeDock() }
+    @objc private func claudeActivationChanged(_ n: Notification) { setupAXTracking(); retuneEdgeTimer(); updateEdgeDock() }
 
     // While docking is enabled, run a steady tracker. The widget shows itself only when a Claude
     // Desktop window is actually visible on a display (decided in updateEdgeDock) and follows it.
     // No longer gated on Claude being frontmost, which made it feel like it never appeared.
     private func syncEdgeDock() {
         guard settings.dockEdge != .off else {
-            edgeTimer?.invalidate(); edgeTimer = nil
+            edgeTimer?.invalidate(); edgeTimer = nil; edgeTimerInterval = 0
             edgePanel?.orderOut(nil)
             teardownAX()
             return
         }
-        if edgeTimer == nil {
-            // 60fps polling: the always-on fallback that follows window drags smoothly.
-            let t = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in self?.updateEdgeDock() }
-            RunLoop.main.add(t, forMode: .common); edgeTimer = t
-        }
         setupAXTracking()   // upgrade to instant, event-driven tracking if Accessibility is granted
+        retuneEdgeTimer()
         updateEdgeDock()
+    }
+
+    /// The poll is the FALLBACK, not the engine: 60fps only while AX event delivery is absent.
+    /// Once the observer is live it drops to a 2s reconcile that catches what AX cannot see
+    /// (silent observer death, Claude quitting, display reconfiguration). Polling at 60Hz on top
+    /// of working AX events re-derived the same frame sixty times a second for nothing.
+    private func retuneEdgeTimer() {
+        guard settings.dockEdge != .off else { return }
+        let want: TimeInterval = axObserver != nil ? 2.0 : 1.0 / 60.0
+        guard edgeTimerInterval != want || edgeTimer == nil else { return }
+        edgeTimer?.invalidate()
+        let t = Timer(timeInterval: want, repeats: true) { [weak self] _ in self?.updateEdgeDock() }
+        RunLoop.main.add(t, forMode: .common); edgeTimer = t; edgeTimerInterval = want
     }
 
     // Event-driven window tracking: when the user has granted Accessibility, observe Claude's
@@ -854,7 +950,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             onSettings: { [weak self] in self?.openSettings() },
             onHideFloating: { [weak self] in self?.settings.floatingShown = false },
             onSignIn: { [weak self] in self?.showAccount() },
-            onOpenLogs: { [weak self] in self?.openLogs() }))
+            onOpenLogs: { [weak self] in self?.openLogs() },
+            onResizing: { [weak self] active in
+                guard let self, let panel = self.floatingPanel else { return }
+                self.floatResizePin = active ? NSPoint(x: panel.frame.minX, y: panel.frame.maxY) : nil
+            }))
         host.sizingOptions = [.preferredContentSize]   // panel hugs the card
         let panel = NSPanel(contentViewController: host)
         if settings.floatingChrome {
@@ -869,6 +969,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]  // follow across Spaces
         panel.isReleasedWhenClosed = false
         panel.isMovableByWindowBackground = true
+        // ⚠️ hasShadow stays at its DEFAULT (true) deliberately. Setting it false (2026-08-01,
+        // chasing a stacked-shadow cosmetic) coincided with intermittent aborts inside
+        // -[NSWindow _reallySetFrame:] on this panel's data-driven resizes; the borderless +
+        // transparent + nonactivating + constraint-sized combination is exactly where AppKit's
+        // server-side shadow bookkeeping is fragile. The doubled shadow is cosmetic; the crash
+        // was not. If the cosmetic bothers again, test any change with a LONG soak (the abort
+        // takes 1-2 minutes and needs live data resizes), not a quick drag.
+        // ⚠️ Do NOT set wantsLayer on the content view here. It is an NSHostingView that manages
+        // its own layer configuration; forcing it made every constraint-driven panel resize throw
+        // inside -[NSWindow _reallySetFrame:] (the 2026-08-01 grip-drag crash), and it did not
+        // change the glass compositing anyway (that difference is behind-window vibrancy).
         panel.delegate = self
         panel.setFrameAutosaveName("ClaudeMonitorFloating")
         // First open (or off-screen) → tuck under the menu bar, top-right.
@@ -883,6 +994,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         panel.alphaValue = settings.windowOpacity
         floatingPanel = panel
         panel.orderFront(nil)
+    }
+
+    func windowDidResize(_ notification: Notification) {
+        // Grip drag on the floating card: re-pin the top-left corner after each content-driven
+        // resize, so growth goes down-right, matching the cursor at the bottom-right grip.
+        // ⚠️ DEFERRED on purpose. This notification arrives INSIDE -[NSWindow _reallySetFrame:]
+        // while the constraint engine is mid-modification; a synchronous setFrameOrigin re-enters
+        // the engine and AppKit aborts with an uncaught exception (three identical crash logs,
+        // 2026-08-01, reproduced headless by CUB_QA_FLOATPIN). One runloop hop later the layout
+        // pass is finished and the re-pin is safe.
+        if let pin = floatResizePin, let w = notification.object as? NSWindow, w === floatingPanel {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, self.floatResizePin != nil, let panel = self.floatingPanel else { return }
+                panel.setFrameOrigin(NSPoint(x: pin.x, y: pin.y - panel.frame.height))
+            }
+        }
     }
 
     func windowWillClose(_ notification: Notification) {
@@ -942,6 +1069,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             button.layer?.addSublayer(l)
             glyphLayer = l
             updateStatusItem(engine.snapshot)
+            // Display scale can change under a running status item (moving the bar between a
+            // Retina and a 1x display, or a resolution switch). The glyph layer's contentsScale
+            // is read per render, so one immediate re-render adopts the new scale; without this
+            // the glyph stays soft or oversharp until the next data tick.
+            NotificationCenter.default.addObserver(forName: NSWindow.didChangeBackingPropertiesNotification,
+                                                   object: nil, queue: .main) { [weak self] n in
+                guard let self, let w = n.object as? NSWindow,
+                      w === self.statusItem.button?.window else { return }
+                self.updateStatusItem(self.engine.snapshot)
+            }
         }
 
         popover = NSPopover()
@@ -958,7 +1095,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             engine: engine, settings: settings, live: liveActivity,
             onRefresh: { [weak self] in self?.manualRefresh() },
             onSignIn: { [weak self] in self?.showAccount() },
-            onOpenLogs: { [weak self] in self?.openLogs() }
+            onOpenLogs: { [weak self] in self?.openLogs() },
+            // Grip drag: kill the popover's size animation so the card tracks the cursor 1:1,
+            // restore it on mouse-up. (.preferredContentSize sizing does the actual resizing.)
+            onResizing: { [weak self] active in self?.popover.animates = !active }
         ).noFocusRing())
         h.sizingOptions = [.preferredContentSize]   // popover grows/shrinks to fit the card
         return h
@@ -1292,6 +1432,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
     private var aboutWindow: NSWindow?
     private var welcomeWindow: NSWindow?
+    private var keyDismissMonitor: Any?   // Escape / Cmd+W closer for the titled aux windows
     @objc private func showAbout() {
         if aboutWindow == nil {
             let host = NSHostingController(rootView: AboutView())
@@ -1355,7 +1496,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private func updateStatusItem(_ s: UsageSnapshot) {
         guard let button = statusItem.button else { return }
         let mode = settings.colorMode
-        let template = (mode == .system)
+        // Beacon is exempt from template mode: a template image is tinted wholesale by AppKit, which
+        // would erase the wink. It draws the system ink itself (barInk), so "None" still looks native.
+        let template = (mode == .system) && settings.menuBarStyle != .beacon
         let accent = NSColor(hex: settings.accentHex) ?? NSColor(srgbRed: 0.85, green: 0.47, blue: 0.34, alpha: 1)
         // In system/template mode draw in black so macOS tints it like a native icon.
         func usageCol(_ pct: Double, _ over: Bool) -> NSColor {
@@ -1406,6 +1549,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         g.phase = animPhase          // BurnClock.elapsed: monotonic seconds, what every fire Hz samples
         g.tier = burnClock.tier      // fire tiers ARE the BurnClock tiers
         g.heat = displayHeat         // tier.heat, lerped at 0.06/frame (~1.1s settle)
+        // Beacon winks to the theme accent - or, with "By usage" on, to its own usage ramp: a warm
+        // accent deepens toward rust as you approach the cap; a cool one jumps to the warm scale
+        // (amber -> rust) instead of blending through mud. The COLOUR carries the reading.
+        g.accent = settings.beaconUsageColor
+            ? beaconUsageNSColor(pct: settings.menuBarShow == .weekly ? s.weeklyPct : s.sessionPct,
+                                 over: settings.menuBarShow == .weekly ? s.weeklyOver : s.over,
+                                 accent: accent)
+            : accent
+        g.beacon = beaconEnv
+        g.beaconMark = settings.beaconMark
+        g.beaconGlow = settings.beaconGlow
         // Refresh flare: 1 right after a fetch cycle starts, fading over ~0.9s (drawn by flame).
         g.flare = max(0, 1 - Date().timeIntervalSince(engine.refreshAnchor) / 0.9)
         // Heat: 0 below 85%, ramping to 1 at the cap (over = full). Drives the flame's rage
@@ -1706,9 +1860,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         displayHeat += (heatTarget - displayHeat) * (1 - pow(0.94, frames))   // was 0.06/frame
         if abs(heatTarget - displayHeat) < 0.002 { displayHeat = heatTarget }
         if rollPhase < 1 { rollPhase = min(1, rollPhase + 0.07 * frames) }
+        // Beacon: advance the wink clock exactly once per frame. Every knob is read live, so dragging a
+        // slider in Settings changes the next wink (and the current one's shape) with no restart.
+        // "Follows burn": the gap itself becomes the signal - up to 4x faster at full token rate, back to
+        // your setting when nothing is flowing. The rhythm tells you Claude is working without you reading
+        // a number. (displayNeedle is the eased live rate the other live styles already ride.)
+        let every = settings.beaconFollowsBurn ? settings.beaconEvery / (1 + 3 * max(0, min(1, displayNeedle)))
+                                               : settings.beaconEvery
+        // "Double-wink near the limit": the shape carries the warning, so a glance is enough.
+        let hot = bs.over || bs.sessionPct >= settings.alertSessionAt
+        let curve: BeaconCurve = (settings.beaconAlertBeat && hot) ? .beat : settings.beaconCurve
+        beaconEnv = beaconClock.envelope(at: animPhase, every: every, jitter: settings.beaconJitter,
+                                         length: settings.beaconLength, curve: curve)
+            * max(0, min(1, settings.beaconStrength))
 
-        // The tick RATE is the frame rate now, so render the (small, cheap) glyph every tick.
-        updateStatusItem(bs)
+        // The tick RATE is the frame rate now, so render the (small, cheap) glyph every tick - EXCEPT for
+        // Beacon, whose glyph is bit-identical between winks. Every input it draws from is in the key
+        // below, so an unchanged key means an unchanged image, and recompositing the menu bar 10x a
+        // second for the same pixels is the whole idle cost of a breathing style. (Anything NOT in this
+        // key must not be able to change the Beacon glyph.)
+        var skipGlyph = false
+        if settings.menuBarStyle == .beacon {
+            let key = [String(Int((beaconEnv * 512).rounded())), String(Int((bs.sessionPct * 1e4).rounded())),
+                       String(Int((bs.weeklyPct * 1e4).rounded())), settings.accentHex,
+                       settings.menuBarShow.rawValue, settings.menuNumberFormat.rawValue,
+                       settings.menuBoldDigits ? "b" : "r",
+                       // Sign-in only reaches the glyph through the "--" placeholder, which needs both
+                       // metrics at zero. Guarding it keeps isSignedIn() (not free) off the 10fps path.
+                       (bs.sessionPct == 0 && bs.weeklyPct == 0) ? (engine.isSignedIn() ? "in" : "out") : "-",
+                       liveActivity.active ? "live" : "idle",
+                       settings.beaconMark.rawValue, String(Int(settings.beaconGlow * 100)),
+                       settings.beaconUsageColor ? "u" : "a",
+                       NSApp.effectiveAppearance.name.rawValue].joined(separator: "|")
+            skipGlyph = (key == lastBeaconKey)
+            lastBeaconKey = key
+        }
+        if !skipGlyph { updateStatusItem(bs) }
         // The Ember Line breath. Its own motion is slow (flame sway ~0.32 Hz, breath on the tier
         // period), so 10fps is ~30 samples/cycle - continuous to the eye. It invalidates ONLY the
         // burn-front strip; the static remaining-fill repaints on the ~2s data-change sink.
@@ -1727,7 +1914,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         // 10...30). Idle sways at 0.20 Hz with a sub-pixel excursion, so 10fps is already continuous
         // to the eye; a 2.4 Hz redline flick gets the full 30. Smooth everywhere, wasteful nowhere.
         // (A glyph rebuild is ~90us - see CUB_BENCH - so even 30fps is ~0.3%.)
-        scheduleAnimTick(1.0 / burnClock.tier.renderFPS)
+        // A wink is over in under half a second, so sample it at the full rate whatever the tier says -
+        // at the idle 10fps the ramp would land in 4 frames and read as a stutter, not a blink.
+        let winking = animPhase - beaconClock.firedAt < beaconClock.length + 0.05
+        let fps = (settings.menuBarStyle == .beacon && winking) ? 30 : burnClock.tier.renderFPS
+        scheduleAnimTick(1.0 / fps)
     }
 
     // Smart refresh = gradual backoff: snap to the fast cadence the moment tokens flow,
@@ -1810,6 +2001,14 @@ if let flamePath = ProcessInfo.processInfo.environment["CUB_SNAP_FLAME"] {
 }
 if let burnPath = ProcessInfo.processInfo.environment["CUB_SNAP_BURN"] {
     StyleSheet.renderBurners(to: burnPath)
+    exit(0)
+}
+if ProcessInfo.processInfo.environment["CUB_BEACON_DIAG"] != nil {
+    StyleSheet.beaconDiag()
+    exit(0)
+}
+if let beaconPath = ProcessInfo.processInfo.environment["CUB_SNAP_BEACON"] {
+    StyleSheet.renderBeacon(to: beaconPath)
     exit(0)
 }
 if let fs = ProcessInfo.processInfo.environment["CUB_SNAP_FLAMESIZE"] {
@@ -2028,6 +2227,26 @@ if CommandLine.arguments.contains("--sessions") {
         print(String(format: "%14d  $%9.2f  [%@]  %@", s.tokens, s.cost, s.project, s.title))
     }
     exit(0)
+}
+
+// An accessory app has no UI state worth restoring, and the crash-restore prompt AppKit raises
+// on the launch after a crash is INVISIBLE behind a menu-bar-only app: the main thread parks in
+// promptToIgnorePersistentState and the app never finishes launching (seen 2026-08-01, when a
+// crash made every relaunch hang as "it will not open"). Opting out of persistent UI removes
+// both the prompt and the state writes. First set takes effect on the NEXT launch; the login
+// agent restarts on every build, so in practice immediately.
+if UserDefaults.standard.object(forKey: "ApplePersistenceIgnoreState") == nil {
+    UserDefaults.standard.set(true, forKey: "ApplePersistenceIgnoreState")
+}
+
+// Last words: macOS crash logs strip ObjC exception reasons and Swift symbol names, which made
+// a real crash here (2026-08-01) nearly undiagnosable. Write the name, reason, and symbolicated
+// stack to the config dir before dying; 0600 like every other file there.
+NSSetUncaughtExceptionHandler { e in
+    let msg = "\(Date())\n\(e.name.rawValue): \(e.reason ?? "no reason")\n\(e.callStackSymbols.joined(separator: "\n"))\n"
+    let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/burndown/last-exception.log")
+    try? Data(msg.utf8).write(to: url)
+    try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
 }
 
 let delegate = AppDelegate()

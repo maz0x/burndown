@@ -16,11 +16,13 @@ echo "→ Compiling Swift sources"
 # Build for THIS machine. Hardcoding arm64 here meant an Intel Mac compiled, signed and printed
 # "Built" while producing a binary it could not run. release.sh is the one that builds both
 # slices and lipos them into the universal bundle that ships.
+# Recursive on purpose: a flat Sources/*.swift silently skips files the day Sources/ grows a
+# subdirectory, and the failure mode is link errors that read like something else entirely.
 swiftc -O \
   -target "$(uname -m)-apple-macos13.0" \
   -framework AppKit -framework SwiftUI -framework Combine -framework Charts -framework UserNotifications -framework ServiceManagement \
   -o "$MACOS_DIR/$BIN" \
-  Sources/*.swift
+  $(find Sources -name '*.swift' | sort)
 
 echo "→ Writing Info.plist"
 # Single source of truth for the version: kAppVersion in Sources/Settings.swift.

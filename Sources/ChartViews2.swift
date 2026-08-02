@@ -52,7 +52,7 @@ struct BurnHistogramChart: View {
                 }
                 .chartPlotStyle { $0.background(Color.clear) }
                 .transaction { $0.animation = nil }
-                .frame(height: kChartH)
+                .frame(height: ctx.plotH)
                 .hoverCatcher { pt, proxy, geo in
                     guard ctx.hover else { return }
                     guard let pt, let s: String = plotValue(proxy, geo, pt, as: String.self) else { sel = nil; return }
@@ -130,7 +130,7 @@ struct PaceGaugeChart: View {
                     }
                     Spacer(minLength: 0)
                 }
-                .frame(height: kChartH)
+                .frame(height: ctx.plotH)
                 .help("Spent share of the budget divided by elapsed share of the window. 1.0x is exactly on pace.")
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("Pace gauge")
@@ -187,7 +187,7 @@ struct ModelCapsChart: View {
             }
             // minHeight, not height: the API can report several per-model caps, and a fixed frame
             // would clip the fourth row. The card grows with the rows instead.
-            .frame(minHeight: kChartH, alignment: .top)
+            .frame(minHeight: ctx.plotH, alignment: .top)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Weekly limits")
             .accessibilityValue(rows.map { "\($0.name) \(Int((1 - $0.pct) * 100)) percent left" }.joined(separator: ", "))
@@ -236,7 +236,7 @@ struct TopChatsChart: View {
                 }
                 .chartPlotStyle { $0.background(Color.clear) }
                 .transaction { $0.animation = nil }
-                .frame(height: kChartH)
+                .frame(height: ctx.plotH)
                 .hoverCatcher { pt, proxy, geo in
                     guard ctx.hover else { return }
                     guard let pt, let name: String = proxy.value(atY: pt.y - geo[proxy.plotAreaFrame].minY) else { sel = nil; return }
@@ -302,7 +302,7 @@ struct ShareSplitChart: View {
                         legendRow(p.faint, "\(shown.count - 2) more", rest, p)
                     }
                 }
-                .frame(height: kChartH - 30, alignment: .top)
+                .frame(height: ctx.plotH - 30, alignment: .top)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(byModel ? "Model mix" : "Project mix")
                 .accessibilityValue(shown.map { "\($0.name) \(Int($0.v * 100)) percent" }.joined(separator: ", "))
@@ -367,7 +367,7 @@ struct WeekdayProfileChart: View {
                 }
                 .chartPlotStyle { $0.background(Color.clear) }
                 .transaction { $0.animation = nil }
-                .frame(height: kChartH)
+                .frame(height: ctx.plotH)
                 .hoverCatcher { pt, proxy, geo in
                     guard ctx.hover else { return }
                     guard let pt, let s: String = plotValue(proxy, geo, pt, as: String.self) else { sel = nil; return }
@@ -425,7 +425,7 @@ struct DailyTokensChart: View {
                 }
                 .chartPlotStyle { $0.background(Color.clear) }
                 .transaction { $0.animation = nil }
-                .frame(height: kChartH)
+                .frame(height: ctx.plotH)
                 .hoverCatcher { pt, proxy, geo in
                     guard ctx.hover else { return }
                     guard let pt, let s: String = plotValue(proxy, geo, pt, as: String.self) else { sel = nil; return }
@@ -473,7 +473,7 @@ struct SessionBlocksChart: View {
                 .chartYAxis { tokenYAxis(peak, p, style: ctx.style) }
                 .chartPlotStyle { $0.background(Color.clear) }
                 .transaction { $0.animation = nil }
-                .frame(height: kChartH)
+                .frame(height: ctx.plotH)
                 .hoverCatcher { pt, proxy, geo in
                     guard ctx.hover else { return }
                     guard let pt, let x: Double = plotValue(proxy, geo, pt, as: Double.self) else { sel = nil; return }
@@ -551,7 +551,7 @@ struct CompositionChart: View {
                 .chartXAxis { timeXAxis(lower, now, p, style: ctx.style) }
                 .chartPlotStyle { $0.background(Color.clear) }
                 .transaction { $0.animation = nil }
-                .frame(height: kChartH)
+                .frame(height: ctx.plotH)
                 .hoverCatcher { pt, proxy, geo in
                     guard ctx.hover else { return }
                     guard let pt, let d: Date = plotValue(proxy, geo, pt, as: Date.self) else { sel = nil; return }
@@ -645,7 +645,7 @@ struct MonthCostChart: View {
                 }
                 .chartPlotStyle { $0.background(Color.clear) }
                 .transaction { $0.animation = nil }
-                .frame(height: kChartH)
+                .frame(height: ctx.plotH)
                 .hoverCatcher { pt, proxy, geo in
                     guard ctx.hover else { return }
                     guard let pt, let s: String = plotValue(proxy, geo, pt, as: String.self) else { sel = nil; return }

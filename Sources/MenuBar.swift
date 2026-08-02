@@ -36,6 +36,59 @@ struct GlyphData {
     var flameSize: Double = 1.0
     var flameSparks: FlameSparks = .redline
     var flameSmoke: Bool = false
+    // ── Beacon ──
+    var accent: NSColor = NSColor(hex: kAccentHex) ?? .systemOrange   // the theme accent = the wink color
+    var beacon: Double = 0       // 0 = the bar's own ink, 1 = full accent. The app clock owns the schedule.
+    var beaconMark: BeaconMark = .percent   // what actually winks
+    var beaconGlow: Double = 0              // 0…1 halo at the peak of the wink
+}
+
+// The Beacon wink clock. It owns nothing but time - when the next wink lands, and how lit the glyph is
+// right now - so the QA diag can run it headless and get exactly what the menu bar gets.
+struct BeaconClock {
+    private(set) var firedAt: Double = -99           // start of the current/last wink, in elapsed seconds
+    private(set) var length: Double = 0.42           // the length THIS wink was fired with
+    private var nextAt: Double = 1.0
+
+    /// Advance to `elapsed` (monotonic seconds) and return the wink envelope, 0…1. Call once per frame.
+    /// `every` ± `jitter` sets the gap, re-rolled after every wink so it never settles into a rhythm.
+    mutating func envelope(at elapsed: Double, every: Double, jitter: Double, length: Double, curve: BeaconCurve) -> Double {
+        if elapsed >= nextAt {
+            firedAt = nextAt                         // honour the scheduled instant, not this tick's lateness
+            self.length = max(0.02, length)
+            let j = max(0, min(1, jitter)) * every
+            // Measure the next gap from the wink INSTANT, not from this tick - a tick can be up to a
+            // frame late, and scheduling off it would let that lateness accumulate into the cadence.
+            // max(elapsed,…) keeps a wake-from-sleep jump from queuing a burst of backdated winks.
+            nextAt = max(elapsed, firedAt + max(0.05, Double.random(in: (every - j)...(every + j))))
+        }
+        return Self.level(elapsed - firedAt, self.length, curve)
+    }
+    /// Fire a wink right now, leaving the schedule alone - for the Settings "Wink now" button, so a
+    /// long cadence doesn't mean waiting a minute to judge a change.
+    mutating func fireNow(at elapsed: Double, length: Double) {
+        firedAt = elapsed
+        self.length = max(0.02, length)
+    }
+    /// The wink over time. `t` = seconds since it started, `len` its total length.
+    static func level(_ t: Double, _ len: Double, _ curve: BeaconCurve) -> Double {
+        guard t >= 0, t < len else { return 0 }
+        let f = t / len                              // 0…1 through the wink, so every curve scales together
+        switch curve {
+        case .snap:  // on instantly, hold, ease off - the original blink
+            if f < 0.12 { return f / 0.12 }
+            if f < 0.36 { return 1 }
+            return pow(1 - (f - 0.36) / 0.64, 1.6)
+        case .pulse: // one smooth in-and-out, no hold: a breath
+            return 0.5 - 0.5 * cos(2 * .pi * f)
+        case .fade:  // instant on, long decay: a spark landing
+            return pow(1 - f, 2.2)
+        case .beat:  // two blinks, the second softer: a pulse
+            if f < 0.30 { return 0.5 - 0.5 * cos(2 * .pi * (f / 0.30)) }
+            if f < 0.42 { return 0 }
+            return 0.75 * (0.5 - 0.5 * cos(2 * .pi * ((f - 0.42) / 0.58)))
+        }
+    }
 }
 
 enum MenuBarRenderer {
@@ -69,6 +122,7 @@ enum MenuBarRenderer {
         case .molten:  return molten(g)
         case .coals:   return coals(g)
         case .comet:  return comet(g)
+        case .beacon: return beacon(g)
         case .stack:  return stack(g)
         case .ring:   return ring(g)
         case .orbit:  return orbit(g)
@@ -500,6 +554,114 @@ enum MenuBarRenderer {
     // NSApp can be nil in the headless snapshot tools; default to a dark bar there (menu bars usually are).
     private static func barIsDark() -> Bool { (NSApp?.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) ?? .darkAqua) == .darkAqua }
     private static func sChar() -> NSColor { NSColor(hex: barIsDark() ? "4A2E22" : "3A2A22") ?? .darkGray }
+    // What a native template icon resolves to on this bar. Any style that wants to pass for a system
+    // icon draws in this, NOT in labelColor (which follows the APP theme, not the menu bar's).
+    private static func barInk() -> NSColor { barIsDark() ? .white : (NSColor(hex: "1C1C1C") ?? .black) }
+
+    // BEACON: a readout that passes for a native menu-bar icon, then winks. The digits rest in the
+    // bar's own ink; g.beacon (0…1, driven by the app's 3-5s wink clock) blends them to the accent for
+    // a fraction of a second. No glow, no motion, no shape change - the color IS the whole event.
+    private static func beacon(_ g: GlyphData) -> NSImage {
+        let e = CGFloat(max(0, min(1, g.beacon)))
+        let base = barInk(), lit = base.blended(to: g.accent, e)
+        let glow = CGFloat(max(0, min(1, g.beaconGlow))) * e
+        let a = attrs(PRIMARY, g.digitWeight, base)
+        let ts = (g.pctText as NSString).size(withAttributes: a)
+        let wk = g.hasSecondary
+        let wkH: CGFloat = 2.5, botPad: CGFloat = wk ? wkH + 2.0 : 0
+        let mark = g.beaconMark
+        // A halo needs room to fall off or it clips to a hard square at the glyph's edge. The pad keys
+        // off the SETTING, not the envelope, so the glyph never changes width mid-wink.
+        let gp: CGFloat = g.beaconGlow > 0.01 ? 8 : 0
+
+        // A soft halo behind whatever is winking. One radial gradient, only while lit - free at rest.
+        func halo(_ c: NSPoint, _ r: CGFloat) {
+            guard glow > 0.01 else { return }
+            NSGradient(colors: [g.accent.withAlphaComponent(0.55 * glow), g.accent.withAlphaComponent(0)])?
+                .draw(fromCenter: c, radius: 0, toCenter: c, radius: r, options: [])
+        }
+
+        if mark.isBare {                       // no digits at all: the glyph IS the mark
+            let d: CGFloat = mark == .ringOnly ? 9.5 : 7, pad: CGFloat = 3 + gp
+            let W = d + pad * 2, H = d + pad * 2 + botPad
+            return img(W, H) {
+                let c = NSPoint(x: W / 2, y: botPad + (H - botPad) / 2)
+                halo(c, d * 1.4)
+                let box = NSRect(x: c.x - d / 2, y: c.y - d / 2, width: d, height: d)
+                if mark == .dotOnly {
+                    // Rest is a dim dot (still legible as "the app is here"), the wink brings it up.
+                    base.withAlphaComponent(0.55 + 0.45 * e).blended(to: g.accent, e).setFill()
+                    NSBezierPath(ovalIn: box).fill()
+                } else {
+                    // The ring carries the usage fraction, so it stays readable at rest - the wink is
+                    // the arc lighting up. Its own track, in the bar's ink: the shared one is tuned
+                    // for coloured glyphs and disappears here.
+                    let lw: CGFloat = 1.8, rad = d / 2 - lw / 2
+                    let track = NSBezierPath()
+                    track.appendArc(withCenter: c, radius: rad, startAngle: 0, endAngle: 360)
+                    track.lineWidth = lw; base.withAlphaComponent(0.22).setStroke(); track.stroke()
+                    let arc = NSBezierPath()
+                    arc.appendArc(withCenter: c, radius: rad, startAngle: 90,
+                                  endAngle: 90 - 360 * CGFloat(min(1, max(0.02, g.pct))), clockwise: true)
+                    arc.lineWidth = lw; arc.lineCapStyle = .round
+                    base.withAlphaComponent(0.75).blended(to: g.accent, e).setStroke(); arc.stroke()
+                }
+                if wk { weeklyBar(W, g.secFrac, lit, wkH) }
+            }
+        }
+
+        // Marks that keep the number: measure the digits, then add room for the mark itself.
+        let dotGap: CGFloat = 2.5, dotD: CGFloat = 3.5
+        let extraW: CGFloat = (mark == .dot) ? dotGap + dotD : 0
+        let extraH: CGFloat = (mark == .pip) ? 1.5 : (mark == .underline ? 2.5 : 0)
+        let tw = ceil(ts.width), th = ceil(ts.height)
+        let W = tw + extraW + gp * 2, H = th + botPad + extraH + gp * 2
+        let x0 = gp, y0 = botPad + gp        // the text origin, inside any glow padding
+        // "% sign only" splits the string: the digits stay in the bar's ink, the sign carries the wink.
+        let signIdx = g.pctText.lastIndex(of: "%")
+        return img(W, H) {
+            switch mark {
+            case .percent:
+                // Two lobes rather than one big circle: a single radial over a wide number either
+                // clips at the glyph edge or needs padding that shoves the neighbouring icons around.
+                halo(NSPoint(x: x0 + tw * 0.28, y: y0 + th / 2), th * 0.95)
+                halo(NSPoint(x: x0 + tw * 0.72, y: y0 + th / 2), th * 0.95)
+                (g.pctText as NSString).draw(at: NSPoint(x: x0, y: y0), withAttributes: attrs(PRIMARY, g.digitWeight, lit))
+            case .sign:
+                if let i = signIdx {
+                    let head = String(g.pctText[g.pctText.startIndex..<i]), tail = String(g.pctText[i...])
+                    let ha = attrs(PRIMARY, g.digitWeight, base)
+                    (head as NSString).draw(at: NSPoint(x: x0, y: y0), withAttributes: ha)
+                    let hx = x0 + ceil((head as NSString).size(withAttributes: ha).width)
+                    halo(NSPoint(x: hx + 4, y: y0 + th / 2), 9)
+                    (tail as NSString).draw(at: NSPoint(x: hx, y: y0), withAttributes: attrs(PRIMARY, g.digitWeight, lit))
+                } else {   // bare-number format has no sign to wink; fall back to the whole readout
+                    (g.pctText as NSString).draw(at: NSPoint(x: x0, y: y0), withAttributes: attrs(PRIMARY, g.digitWeight, lit))
+                }
+            case .dot:
+                (g.pctText as NSString).draw(at: NSPoint(x: x0, y: y0), withAttributes: a)
+                let c = NSPoint(x: x0 + tw + dotGap + dotD / 2, y: y0 + th * 0.42)
+                halo(c, dotD * 2.6)
+                base.withAlphaComponent(0.35 + 0.65 * e).blended(to: g.accent, e).setFill()
+                NSBezierPath(ovalIn: NSRect(x: c.x - dotD / 2, y: c.y - dotD / 2, width: dotD, height: dotD)).fill()
+            case .pip:
+                (g.pctText as NSString).draw(at: NSPoint(x: x0, y: y0), withAttributes: a)
+                let d: CGFloat = 2, c = NSPoint(x: x0 + tw - d, y: y0 + th + 0.5)
+                halo(c, 6)
+                lit.withAlphaComponent(0.25 + 0.75 * e).setFill()
+                NSBezierPath(ovalIn: NSRect(x: c.x - d / 2, y: c.y - d / 2, width: d, height: d)).fill()
+            case .underline:
+                (g.pctText as NSString).draw(at: NSPoint(x: x0, y: y0 + extraH), withAttributes: a)
+                // The line sweeps out from the centre as the wink rises, so it reads as motion, not a bar.
+                let lw = tw * e, r = NSRect(x: x0 + (tw - lw) / 2, y: y0, width: lw, height: 1.5)
+                halo(NSPoint(x: x0 + tw / 2, y: y0), 10)
+                g.accent.withAlphaComponent(0.9 * Double(e)).setFill()
+                NSBezierPath(roundedRect: r, xRadius: 0.75, yRadius: 0.75).fill()
+            case .dotOnly, .ringOnly: break   // handled above
+            }
+            if wk { weeklyBar(W, g.secFrac, mark == .percent ? lit : base, wkH) }
+        }
+    }
 
     // SMOLDER: charcoal-warm ember digits lit from below, breathing. The quiet default.
     // No sparks, no cracks, ever. All motion derives from g.phase (BurnClock elapsed).

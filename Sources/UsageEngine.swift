@@ -117,6 +117,12 @@ private let KEYCHAIN_SERVICE = "Claude Code-credentials"
 private let OAUTH_CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"  // Claude Code public client
 private let TOKEN_URL = URL(string: "https://api.anthropic.com/v1/oauth/token")!
 
+// Task.detached requires Sendable captures. UsageEngine is main-confined by discipline: every
+// mutation of its published state happens through a DispatchQueue.main hop - the exact contract
+// the GCD version ran under, which dispatch closures simply never type-checked. Asserted here,
+// not compiler-checked; keep the main-hop rule when touching the fetch paths.
+extension UsageEngine: @unchecked Sendable {}
+
 final class UsageEngine: ObservableObject {
     @Published var snapshot = UsageSnapshot()
     @Published var ready = false
@@ -179,8 +185,8 @@ final class UsageEngine: ObservableObject {
         }
         if !force, Date().timeIntervalSince(lastAPIFetch) < 300 { return }
         lastAPIFetch = Date()
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            let s = APIAccount.fetchSpend(adminKey: key)
+        Task.detached(priority: .utility) { [weak self] in
+            let s = await APIAccount.fetchSpend(adminKey: key)
             DispatchQueue.main.async { self?.apiSpend = s }
         }
     }
@@ -188,8 +194,8 @@ final class UsageEngine: ObservableObject {
     /// Save an Admin key, verify it against the live API, and report success (key kept only if it works).
     func setAdminKey(_ raw: String, completion: @escaping (Bool, String?) -> Void) {
         let key = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let s = APIAccount.fetchSpend(adminKey: key)
+        Task.detached(priority: .userInitiated) { [weak self] in
+            let s = await APIAccount.fetchSpend(adminKey: key)
             DispatchQueue.main.async {
                 if s.error == nil {
                     APIAccount.saveKey(key)
@@ -450,14 +456,14 @@ final class UsageEngine: ObservableObject {
         let parts = t.split(separator: "#", maxSplits: 1).map(String.init)
         let code = parts.first ?? t
         let state = parts.count > 1 ? parts[1] : verifier
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        Task.detached(priority: .userInitiated) { [weak self] in
             let body: [String: Any] = ["grant_type": "authorization_code", "code": code, "state": state,
                                        "client_id": OAUTH_CLIENT_ID,
                                        "redirect_uri": "https://console.anthropic.com/oauth/code/callback",
                                        "code_verifier": verifier]
             var ok = false
             for u in ["https://api.anthropic.com/v1/oauth/token", "https://console.anthropic.com/v1/oauth/token"] {
-                if let url = URL(string: u), let tok = Self.postTokenJSON(url, body) { Self.saveStored(tok); ok = true; break }
+                if let url = URL(string: u), let tok = await Self.postTokenJSON(url, body) { Self.saveStored(tok); ok = true; break }
             }
             DispatchQueue.main.async {
                 guard let self else { return }
@@ -478,42 +484,45 @@ final class UsageEngine: ObservableObject {
         }
     }
 
-    private static func postTokenJSON(_ url: URL, _ body: [String: Any]) -> Tok? {
+    // async (was a DispatchSemaphore.wait over dataTask): the request suspends instead of parking
+    // a GCD worker thread for up to 18s. The URLRequest timeout still bounds the wait.
+    private static func postTokenJSON(_ url: URL, _ body: [String: Any]) async -> Tok? {
         var req = URLRequest(url: url, timeoutInterval: 15)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
         req.setValue(CLIENT_UA, forHTTPHeaderField: "User-Agent")
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        let sem = DispatchSemaphore(value: 0); var result: Tok? = nil
-        URLSession.shared.dataTask(with: req) { data, resp, _ in
-            defer { sem.signal() }
-            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-            guard code == 200, let data = data,
-                  let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let a = o["access_token"] as? String else {
-                // Only an ERROR body may be logged. Reaching here with a 200 means the response
-                // parsed as something other than the expected token pair, so the body is still
-                // the credential; the log is written for users to paste into a public issue.
-                if code == 200 {
-                    dbg("signin@\(url.host ?? "")=200 but the body was not a token pair")
-                } else if let data = data, let b = String(data: data, encoding: .utf8) {
-                    dbg("signin@\(url.host ?? "")=\(code) \(b.prefix(120))")
-                } else { dbg("signin@\(url.host ?? "")=\(code)") }
-                return
-            }
-            let rt = (o["refresh_token"] as? String) ?? ""
-            let exp = Date().timeIntervalSince1970 * 1000 + (((o["expires_in"] as? Double) ?? 28800) * 1000)
-            let scopes = (o["scopes"] as? [String]) ?? (o["scope"] as? String).map { $0.split(separator: " ").map(String.init) } ?? []
-            let acct = o["account"] as? [String: Any]
-            let email = (acct?["email_address"] as? String) ?? (acct?["emailAddress"] as? String) ?? (acct?["email"] as? String)
-            let org = (o["organization"] as? [String: Any])?["name"] as? String
-            result = Tok(access: a, refresh: rt, expMs: exp, scopes: scopes, email: email, org: org)
-        }.resume()
-        _ = sem.wait(timeout: .now() + 18)
-        return result
+        guard let (data, resp) = try? await URLSession.shared.data(for: req) else {
+            dbg("signin@\(url.host ?? "")=0"); return nil
+        }
+        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        guard code == 200,
+              let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let a = o["access_token"] as? String else {
+            // Only an ERROR body may be logged. Reaching here with a 200 means the response
+            // parsed as something other than the expected token pair, so the body is still
+            // the credential; the log is written for users to paste into a public issue.
+            if code == 200 {
+                dbg("signin@\(url.host ?? "")=200 but the body was not a token pair")
+            } else if let b = String(data: data, encoding: .utf8) {
+                dbg("signin@\(url.host ?? "")=\(code) \(b.prefix(120))")
+            } else { dbg("signin@\(url.host ?? "")=\(code)") }
+            return nil
+        }
+        let rt = (o["refresh_token"] as? String) ?? ""
+        let exp = Date().timeIntervalSince1970 * 1000 + (((o["expires_in"] as? Double) ?? 28800) * 1000)
+        let scopes = (o["scopes"] as? [String]) ?? (o["scope"] as? String).map { $0.split(separator: " ").map(String.init) } ?? []
+        let acct = o["account"] as? [String: Any]
+        let email = (acct?["email_address"] as? String) ?? (acct?["emailAddress"] as? String) ?? (acct?["email"] as? String)
+        let org = (o["organization"] as? [String: Any])?["name"] as? String
+        return Tok(access: a, refresh: rt, expMs: exp, scopes: scopes, email: email, org: org)
     }
 
     var usageEnabled = true   // opt-in gate: when false, we never call the OAuth usage API (estimate-only mode)
+
+    /// Diagnostics only (Account window drawer): when the stored private token expires.
+    /// Reads the token file on call; never exposes the token itself.
+    var tokenExpiry: Date? { Self.loadStored().map { Date(timeIntervalSince1970: $0.expMs / 1000) } }
 
     func fetchLive(force: Bool = false, completion: ((Bool) -> Void)? = nil) {
         guard usageEnabled else { completion?(false); return }   // user has not opted into the live usage API
@@ -522,9 +531,9 @@ final class UsageEngine: ObservableObject {
         // rate-limits hard. Manual refresh (force) bypasses the floor.
         if !force, Date().timeIntervalSince(lastLiveFetch) < minLiveInterval { completion?(false); return }
         lastLiveFetch = Date()
-        DispatchQueue.global(qos: .utility).async { [weak self] in
+        Task.detached(priority: .utility) { [weak self] in
             guard let self else { return }
-            let result = Self.queryUsageAPI()
+            let result = await Self.queryUsageAPI()
             let freshPlan = Self.planFromClaudeJson()   // live plan/tier, independent of the token
             DispatchQueue.main.async {
                 var s = self.snapshot
@@ -598,12 +607,12 @@ final class UsageEngine: ObservableObject {
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 
-    private static func queryUsageAPI() -> Result<APIUsage, LiveError> {
-        guard var token = ensureAccessToken() else { dbg("token=unavailable"); return .failure(LiveError(text: "no token")) }
-        var (code, data) = callUsage(token)
+    private static func queryUsageAPI() async -> Result<APIUsage, LiveError> {
+        guard var token = await ensureAccessToken() else { dbg("token=unavailable"); return .failure(LiveError(text: "no token")) }
+        var (code, data) = await callUsage(token)
         if code == 401 {                          // token rejected → force one refresh + retry
             dbg("usage=401 forcing refresh")
-            if let s = loadStored(), let r = refresh(s) { saveStored(r); token = r.access; (code, data) = callUsage(token) }
+            if let s = loadStored(), let r = await refresh(s) { saveStored(r); token = r.access; (code, data) = await callUsage(token) }
         }
         if code != 200 { dbg("usage=\(code)") }   // quiet in steady state
         guard code == 200, let data = data,
@@ -652,21 +661,16 @@ final class UsageEngine: ObservableObject {
         return .success(api)
     }
 
-    private static func callUsage(_ token: String) -> (Int, Data?) {
+    private static func callUsage(_ token: String) async -> (Int, Data?) {
         var req = URLRequest(url: USAGE_URL, timeoutInterval: 12)
         req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         req.setValue(OAUTH_BETA, forHTTPHeaderField: "anthropic-beta")
         req.setValue(CLIENT_UA, forHTTPHeaderField: "User-Agent")
         req.setValue("application/json", forHTTPHeaderField: "Accept")
-        let sem = DispatchSemaphore(value: 0)
-        var code = 0; var out: Data? = nil
-        URLSession.shared.dataTask(with: req) { data, resp, _ in
-            code = (resp as? HTTPURLResponse)?.statusCode ?? 0; out = data
-            if code != 200, let d = data, let b = String(data: d, encoding: .utf8) { dbg("usageBody=\(b.prefix(140))") }
-            sem.signal()
-        }.resume()
-        _ = sem.wait(timeout: .now() + 15)
-        return (code, out)
+        guard let (data, resp) = try? await URLSession.shared.data(for: req) else { return (0, nil) }
+        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        if code != 200, let b = String(data: data, encoding: .utf8) { dbg("usageBody=\(b.prefix(140))") }
+        return (code, data)
     }
 
     // MARK: - OAuth token manager
@@ -769,11 +773,11 @@ final class UsageEngine: ObservableObject {
     /// Keychain item, so sign-out sticks and a fresh install touches nothing without permission.
     static var cliBootstrapAllowed = false
 
-    private static func ensureAccessToken() -> String? {
+    private static func ensureAccessToken() async -> String? {
         let now = Date().timeIntervalSince1970 * 1000
         if let s = loadStored() {
             if s.expMs > now + 60_000 { return s.access }
-            if let r = refresh(s) { saveStored(r); dbg("refresh=ok(stored)"); return r.access }
+            if let r = await refresh(s) { saveStored(r); dbg("refresh=ok(stored)"); return r.access }
             dbg("refresh=failed(stored)")
         }
         guard cliBootstrapAllowed else { dbg("bootstrap=disabled(no consent)"); return nil }
@@ -786,7 +790,7 @@ final class UsageEngine: ObservableObject {
         return nil
     }
 
-    private static func refresh(_ t: Tok) -> Tok? {
+    private static func refresh(_ t: Tok) async -> Tok? {
         guard !t.refresh.isEmpty else { return nil }
         var req = URLRequest(url: TOKEN_URL, timeoutInterval: 12)
         req.httpMethod = "POST"
@@ -797,28 +801,24 @@ final class UsageEngine: ObservableObject {
         let body: [String: Any] = ["grant_type": "refresh_token", "client_id": OAUTH_CLIENT_ID,
                                    "refresh_token": t.refresh, "expires_in": 28800]
         req.httpBody = try? JSONSerialization.data(withJSONObject: body)
-        let sem = DispatchSemaphore(value: 0)
-        var result: Tok? = nil
-        URLSession.shared.dataTask(with: req) { data, resp, _ in
-            defer { sem.signal() }
-            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-            guard code == 200, let data = data,
-                  let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let a = o["access_token"] as? String else {
-                // Same rule as the sign-in path: a 200 body here is the rotated token pair.
-                if code == 200 {
-                    dbg("refreshHTTP=200 but the body was not a token pair")
-                } else if let data = data, let b = String(data: data, encoding: .utf8) {
-                    dbg("refreshHTTP=\(code) body=\(b.prefix(140))")
-                } else { dbg("refreshHTTP=\(code)") }
-                return
-            }
-            let rt = (o["refresh_token"] as? String) ?? t.refresh
-            let exp = Date().timeIntervalSince1970 * 1000 + (((o["expires_in"] as? Double) ?? 28800) * 1000)
-            result = Tok(access: a, refresh: rt, expMs: exp, scopes: t.scopes)
-        }.resume()
-        _ = sem.wait(timeout: .now() + 15)
-        return result
+        guard let (data, resp) = try? await URLSession.shared.data(for: req) else {
+            dbg("refreshHTTP=0"); return nil
+        }
+        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        guard code == 200,
+              let o = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let a = o["access_token"] as? String else {
+            // Same rule as the sign-in path: a 200 body here is the rotated token pair.
+            if code == 200 {
+                dbg("refreshHTTP=200 but the body was not a token pair")
+            } else if let b = String(data: data, encoding: .utf8) {
+                dbg("refreshHTTP=\(code) body=\(b.prefix(140))")
+            } else { dbg("refreshHTTP=\(code)") }
+            return nil
+        }
+        let rt = (o["refresh_token"] as? String) ?? t.refresh
+        let exp = Date().timeIntervalSince1970 * 1000 + (((o["expires_in"] as? Double) ?? 28800) * 1000)
+        return Tok(access: a, refresh: rt, expMs: exp, scopes: t.scopes)
     }
 
     /// Is a Claude Code sign-in present on this Mac? Presence check only: the credential file's

@@ -135,6 +135,109 @@ enum StyleSheet {
         }
     }
 
+    // QA: BEACON - the wink sampled across its own length, on a dark bar and a light bar, so the
+    // resting ink can be checked against a native icon and the flash against the accent.
+    // CUB_SNAP_BEACON=/path.png
+    static func renderBeacon(to path: String) {
+        // CUB_BEACON_ACCENT=00DCC3 for a custom accent, CUB_BEACON_GLOW=0.6 to preview the halo,
+        // CUB_BEACON_MARKS=1 to sweep the marks instead of the curves, CUB_BEACON_LIGHT=1 for a light bar.
+        let env = ProcessInfo.processInfo.environment
+        let accent = NSColor(hex: env["CUB_BEACON_ACCENT"] ?? kAccentHex) ?? .orange
+        let glow = Double(env["CUB_BEACON_GLOW"] ?? "") ?? 0
+        let dark = env["CUB_BEACON_LIGHT"] == nil
+        let marksMode = env["CUB_BEACON_MARKS"] != nil
+        let len = 0.42
+        // Ten instants across one wink (plus a resting frame), so each row IS the animation.
+        let times: [Double] = [-0.2] + (0...9).map { Double($0) / 9 * len * 0.98 }
+        // Rows: either every curve at the default mark, or every mark on the default curve.
+        // CUB_BEACON_USAGE=1: one row per usage level, each winking the adaptive ramp's colour for it -
+        // what "Wink colour: By usage" actually looks like as you climb toward the cap.
+        let usageMode = env["CUB_BEACON_USAGE"] != nil
+        let levels: [(String, Double, Bool)] = [("18%", 0.18, false), ("46%", 0.46, false),
+                                                ("72%", 0.72, false), ("91%", 0.91, false), ("over", 1.0, true)]
+        let rows: [(String, BeaconMark, BeaconCurve)] = usageMode
+            ? levels.map { ($0.0, .percent, .snap) }
+            : (marksMode ? BeaconMark.allCases.map { ($0.label, $0, .snap) }
+                         : BeaconCurve.allCases.map { ($0.label, .percent, $0) })
+        let scale: CGFloat = 3.0, rowH: CGFloat = 62, colW: CGFloat = 104, lx: CGFloat = 108
+        let W = lx + CGFloat(times.count) * colW, H = CGFloat(rows.count) * rowH + 34
+        let sheet = NSImage(size: NSSize(width: W, height: H)); sheet.lockFocus()
+        NSApplication.shared.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+        (dark ? NSColor(calibratedWhite: 0.13, alpha: 1) : NSColor(calibratedWhite: 0.94, alpha: 1)).setFill()
+        NSBezierPath(rect: NSRect(x: 0, y: 0, width: W, height: H)).fill()
+        let inkW = dark ? 0.92 : 0.18
+        let la: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11, weight: .semibold), .foregroundColor: NSColor(calibratedWhite: inkW, alpha: 1)]
+        let sa: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .medium), .foregroundColor: NSColor(calibratedWhite: dark ? 0.55 : 0.45, alpha: 1)]
+        for (r, rowDef) in rows.enumerated() {
+            let y = H - CGFloat(r + 1) * rowH
+            (rowDef.0 as NSString).draw(at: NSPoint(x: 14, y: y + rowH / 2 - 7), withAttributes: la)
+            for (c, t) in times.enumerated() {
+                var g = GlyphData(pct: 0.46, pctText: "46%", primary: accent, secFrac: 0.13, secText: "",
+                                  secondary: accent, pLabel: "", sLabel: "")
+                g.accent = accent; g.beaconMark = rowDef.1; g.beaconGlow = glow
+                if usageMode {
+                    let lv = levels[r]
+                    g.pct = lv.1; g.pctText = "\(Int((lv.1 * 100).rounded()))%"
+                    g.accent = beaconUsageNSColor(pct: lv.1, over: lv.2, accent: accent)
+                }
+                g.beacon = BeaconClock.level(t, len, rowDef.2)
+                let glyph = MenuBarRenderer.image(style: .beacon, g); let gs = glyph.size
+                let gx = lx + CGFloat(c) * colW
+                glyph.draw(in: NSRect(x: gx, y: y + (rowH - gs.height * scale) / 2, width: gs.width * scale, height: gs.height * scale),
+                           from: .zero, operation: .sourceOver, fraction: 1, respectFlipped: true, hints: [.interpolation: NSImageInterpolation.high])
+                if r == 0 {
+                    (t < 0 ? "rest" : String(format: "%.0fms", t * 1000) as NSString).draw(at: NSPoint(x: gx, y: H - 16), withAttributes: sa)
+                }
+            }
+            NSColor(calibratedWhite: dark ? 1 : 0, alpha: 0.06).setFill(); NSBezierPath(rect: NSRect(x: 0, y: y, width: W, height: 0.5)).fill()
+        }
+        sheet.unlockFocus()
+        if let tiff = sheet.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff), let png = rep.representation(using: .png, properties: [:]) {
+            try? png.write(to: URL(fileURLWithPath: path))
+        }
+    }
+
+    // QA (CUB_BEACON_DIAG=1): run the REAL wink clock headless for 5 minutes at 30fps and report the
+    // cadence - gaps must land in 3-5s and never repeat, each wink must be over inside half a second,
+    // and the glyph must be at rest the vast majority of the time.
+    static func beaconDiag() {
+        var clock = BeaconClock()
+        let env = ProcessInfo.processInfo.environment
+        let every = Double(env["CUB_BEACON_EVERY"] ?? "") ?? 4.0
+        let jitter = Double(env["CUB_BEACON_JITTER"] ?? "") ?? 0.5
+        let len = Double(env["CUB_BEACON_LENGTH"] ?? "") ?? 0.42
+        let curve = BeaconCurve(rawValue: env["CUB_BEACON_CURVE"] ?? "") ?? .snap
+        let fps = 30.0, span = 300.0
+        var gaps: [Double] = [], durations: [Double] = []
+        var lastFired = -99.0, litFrames = 0, frames = 0, runLit = 0.0
+        for k in 1...Int(span * fps) {
+            let e = Double(k) / fps
+            let lvl = clock.envelope(at: e, every: every, jitter: jitter, length: len, curve: curve)
+            frames += 1
+            if clock.firedAt != lastFired {
+                if lastFired > 0 { gaps.append(clock.firedAt - lastFired) }
+                if runLit > 0 { durations.append(runLit) }
+                lastFired = clock.firedAt; runLit = 0
+            }
+            if lvl > 0 { litFrames += 1; runLit += 1 / fps }
+        }
+        if runLit > 0 { durations.append(runLit) }
+        func stats(_ a: [Double]) -> String {
+            guard !a.isEmpty else { return "none" }
+            return String(format: "n=%d  min %.2fs  max %.2fs  mean %.2fs", a.count, a.min()!, a.max()!, a.reduce(0, +) / Double(a.count))
+        }
+        print(String(format: "BEACON wink clock - %ds at %dfps  (every %.2fs ±%.0f%%, length %.2fs, %@)",
+                     Int(span), Int(fps), every, jitter * 100, len, curve.label))
+        print("  gap between winks : \(stats(gaps))")
+        print("  wink duration     : \(stats(durations))")
+        print(String(format: "  lit frames        : %d / %d  (%.1f%% of the time coloured)", litFrames, frames, Double(litFrames) / Double(frames) * 100))
+        let distinct = Set(gaps.map { Int($0 * 100) }).count
+        print("  distinct gaps     : \(distinct) of \(gaps.count)  (a fixed interval would collapse to 1)")
+        let lo = every * (1 - jitter) - 0.02, hi = every * (1 + jitter) + 0.02
+        let bad = gaps.filter { $0 < lo || $0 > hi }.count + durations.filter { $0 > len + 0.05 }.count
+        print(bad == 0 ? "  PASS - every sample inside the configured window" : "  FAIL - \(bad) sample(s) outside the window")
+    }
+
     // QA (CUB_BENCH=1): time the REAL per-frame work so frame rates are chosen from data, not fear.
     // Prints microseconds per glyph rebuild for each fire style, and the implied CPU% at 30/15/5 fps.
     static func bench() {
@@ -410,8 +513,11 @@ enum StyleSheet {
                                 rate: 14_000, active: true)
         }
         if let tsS = ProcessInfo.processInfo.environment["CUB_TEXTSCALE"], let ts = Double(tsS) { settings.textScale = ts }
+        // Reflow QA: card width and per-chart height boost, the two corner-grip axes.
+        if let cwS = ProcessInfo.processInfo.environment["CUB_CARDWIDTH"], let cw = Double(cwS) { settings.cardWidth = cw }
+        if let cbS = ProcessInfo.processInfo.environment["CUB_CARDBOOST"], let cb = Double(cbS) { settings.cardChartBoost = cb }
         if ProcessInfo.processInfo.environment["CUB_QUIET"] != nil { settings.quietHours = true; settings.quietFrom = 0; settings.quietTo = 23 }
-        let scale = max(0.7, min(1.6, settings.textScale))
+        let scale = max(0.7, min(1.6, settings.textScale))   // the Popover size zoom (slider range)
         // Render DetailCard directly so QA can force any state, over a plain bg (the live app uses glass).
         let heat = s.over ? 1.0 : max(0, (min(1, s.sessionPct) - 0.85) / 0.15)
         // QA: CUB_API_MOCK=connected|error exercises the developer-API popover line.
@@ -427,13 +533,14 @@ enum StyleSheet {
                               records: qaRecords,
                               apiSpend: apiMock,
                               onRefresh: {})
-            .frame(width: 264, alignment: .leading)
-            .scaleEffect(scale, anchor: .topLeading)
-            .background(p.bg)
+            .background(p.bg)   // DetailCard frames its own width from settings.cardWidth
             .overlay(RedlineOverlay(heat: heat, radius: 16, p: p))   // QA: exercise the feature-14 popover glow
             .environment(\.colorScheme, dark ? .dark : .light)
         let renderer = ImageRenderer(content: view)
-        renderer.scale = 2
+        // textScale is a uniform zoom of the 264pt design, so rendering the same layout at a
+        // denser raster IS the scaled card, pixel for pixel. (A scaleEffect inside the fixed
+        // canvas, as this did before, clipped >100% and letterboxed <100%.)
+        renderer.scale = 2 * scale
         guard let img = renderer.nsImage, let tiff = img.tiffRepresentation,
               let rep = NSBitmapImageRep(data: tiff),
               let png = rep.representation(using: .png, properties: [:]) else { return }

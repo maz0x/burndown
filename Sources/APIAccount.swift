@@ -75,7 +75,9 @@ enum APIAccount {
 
     /// Fetch month-to-date + today USD spend from the Admin Cost Report API. Synchronous;
     /// call OFF the main thread. Handles pagination. Never throws; failures land in `.error`.
-    static func fetchSpend(adminKey: String) -> APISpend {
+    // async (was a per-page DispatchSemaphore.wait): each page request suspends instead of
+    // parking a GCD worker thread; the URLRequest timeout still bounds every page.
+    static func fetchSpend(adminKey: String) async -> APISpend {
         var out = APISpend(configured: true)
         guard looksLikeAdminKey(adminKey) else {
             out.error = "That is not an Admin key. It must start with sk-ant-admin (create one at console.anthropic.com, Settings, Admin keys)."
@@ -104,12 +106,10 @@ enum APIAccount {
             req.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
             req.setValue("Burndown/\(kAppVersion) (https://github.com/maz0x)", forHTTPHeaderField: "User-Agent")
 
-            let sem = DispatchSemaphore(value: 0)
             var body: Data? = nil, code = 0
-            URLSession.shared.dataTask(with: req) { d, r, _ in
-                body = d; code = (r as? HTTPURLResponse)?.statusCode ?? 0; sem.signal()
-            }.resume()
-            _ = sem.wait(timeout: .now() + 18)
+            if let (d, r) = try? await URLSession.shared.data(for: req) {
+                body = d; code = (r as? HTTPURLResponse)?.statusCode ?? 0
+            }
 
             guard code == 200, let d = body,
                   let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else {

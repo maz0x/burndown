@@ -89,6 +89,33 @@ func usageNSColor(pct: Double, over: Bool, accent: NSColor, mode: ColorMode) -> 
         return accent.blended(to: danger, CGFloat(t))
     }
 }
+// Beacon's "Wink colour: By usage". The Adaptive ramp above blends accent -> rust in RGB, which is
+// clean for a warm accent (clay deepens smoothly into rust) but drags a cool one through mud
+// (teal -> sage -> brown). So a cool accent never blends toward rust at all: the moment the ramp
+// engages it JUMPS to the warm scale, landing on amber and deepening to rust at the cap. The hue
+// CATEGORY carries the reading - cool means fine, warm means the cap is coming.
+let kBeaconWarmHex = "E8973F"   // amber: where a cool accent's wink lands when the ramp engages
+
+func beaconUsageNSColor(pct: Double, over: Bool, accent: NSColor) -> NSColor {
+    let danger = NSColor(hex: kDangerHex) ?? accent
+    let t = over ? 1.0 : max(0, (min(1.0, pct) - 0.5) / 0.5)   // same engagement point as Adaptive
+    guard t > 0 else { return accent }
+    if accent.isWarmHue { return accent.blended(to: danger, CGFloat(t)) }
+    return (NSColor(hex: kBeaconWarmHex) ?? danger).blended(to: danger, CGFloat(t))
+}
+
+extension NSColor {
+    /// Hues already on the amber/rust side (reds through yellows), where blending toward rust stays
+    /// clean. Greys count as cool: with no hue of their own they take the jump ramp too.
+    var isWarmHue: Bool {
+        guard let c = usingColorSpace(.sRGB) else { return false }
+        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        c.getHue(&h, saturation: &s, brightness: &b, alpha: &a)
+        let deg = h * 360
+        return s >= 0.2 && (deg <= 75 || deg >= 335)
+    }
+}
+
 func secondaryNSColor(accent: NSColor, mode: ColorMode) -> NSColor {
     switch mode {
     case .system: return .secondaryLabelColor

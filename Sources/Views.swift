@@ -1,5 +1,6 @@
 import SwiftUI
 import Charts
+import ApplicationServices   // AXIsProcessTrusted, for the dock follower's permission card
 
 extension View {
     /// Kill the system keyboard-focus ring (the roaming green box under Full Keyboard Access) across a
@@ -400,7 +401,9 @@ struct DetailCard: View {
             }
         }
         .padding(16)
-        .frame(width: 264, alignment: .leading)
+        // The card's one width constraint. 264 is the design width; the corner grip widens it and
+        // every row reflows (bars, names, charts all fill their container - nothing else is fixed).
+        .frame(width: CardResize.clampW(settings.cardWidth), alignment: .leading)
     }
 
     // Signed-in: the modular, reorderable, hideable sections (order + visibility from Settings).
@@ -573,6 +576,7 @@ struct DetailCard: View {
                      sessionResetAt: snapshot.sessionResetAt, weeklyResetAt: snapshot.weeklyResetAt,
                      chartDays: settings.chartDays, modelLimits: snapshot.modelLimits,
                      chartHover: settings.chartHover,
+                     plotH: kChartH + CardResize.clampB(settings.cardChartBoost),
                      showChats: settings.showChatsBurning, chatsOpen: $settings.chatsExpanded,
                      truncation: settings.chatTruncation, records: records, explain: settings.popoverExplain)
             .padding(12)
@@ -792,7 +796,6 @@ struct StatusBadge: View {
     var tipAbove: Bool = false     // show the tooltip above the badge (when the header sits low in the card)
     @State private var pingID = 0
     @State private var bump = false
-    @State private var breathe = false   // CA-driven LIVE-dot breath (no per-frame SwiftUI work)
     @State private var hoverTip = false
     @State private var hoverToken = UUID()
     @Environment(\.accessibilityReduceMotion) private var reduce
@@ -885,17 +888,15 @@ struct StatusBadge: View {
                     PingRing(color: c).id(pingID)
                     // Between heartbeats the LIVE dot breathes 0.80 + 0.20b on the tier
                     // period; its ping scales 1.0 -> 1.35 -> 1.0 (7.4).
-                    // Driven by CORE ANIMATION, not a TimelineView. A TimelineView re-runs SwiftUI and
-                    // re-commits the ENTIRE popover window (chart layers and all) on every tick - that
-                    // is what made an idle popover cost 12-15%. A repeating opacity animation is
-                    // interpolated by the render server instead: perfectly smooth at the display's full
-                    // rate, and the app does no per-frame work at all.
-                    Circle().fill(c).frame(width: 6, height: 6)
-                        .opacity(breathe ? 1.0 : 0.80)
-                        .animation(reduce ? nil : .easeInOut(duration: BurnTier.idle.period / 2)
-                                                    .repeatForever(autoreverses: true), value: breathe)
+                    // A REAL CABasicAnimation (see BreathDot), not SwiftUI's `.repeatForever`.
+                    // SwiftUI does not hand a repeating animation to the render server: it keeps its own
+                    // display link running and re-lays out the whole hosting view every frame. This one
+                    // dot was costing ~23% of a core in the floating window. Core Animation interpolates
+                    // out of process instead, so the app does no per-frame work at all.
+                    BreathDot(color: c, size: 6, lo: 0.80, hi: 1.0,
+                              period: BurnTier.idle.period, still: reduce)
+                        .frame(width: 6, height: 6)
                         .scaleEffect(bump ? 1.35 : 1)
-                        .onAppear { breathe = true }
                 }.frame(width: 7, height: 7)
             } else if let ic = icon {
                 Image(systemName: ic).font(.system(size: 9, weight: .bold))
@@ -963,6 +964,7 @@ struct MonitorChart: View {
     var chartDays: Int = 14           // span for the day-scale charts (cost, hour profile, heatmap)
     var modelLimits: [ScopedLimit] = []   // per-model weekly caps, for the Model limits chart
     var chartHover: Bool = true
+    var plotH: CGFloat = kChartH   // per-chart plot height (base + the corner grip's vertical boost)
     var showChats = true
     // Bound (not @State) so the chats list reopens the way the user left it: the popover discards its
     // content view on close, which would reset any local state.
@@ -985,7 +987,7 @@ struct MonitorChart: View {
                  sessionPct: sessionPct, weeklyPct: weeklyPct,
                  sessionResetAt: sessionResetAt, weeklyResetAt: weeklyResetAt,
                  modelLimits: modelLimits,
-                 accent: accent, secondary: secondary, p: p, style: chartStyle,
+                 accent: accent, secondary: secondary, p: p, plotH: plotH, style: chartStyle,
                  window: burnSpan.seconds, days: chartDays, hover: chartHover)
     }
 
@@ -1095,15 +1097,14 @@ struct LiveCadence: View {
     var track: Color = .gray
     var anchor: Date
     var period: Double
-    @State private var pulse = false
     @Environment(\.accessibilityReduceMotion) private var reduce
     var body: some View {
         HStack(spacing: 5) {
             if on {
-                Circle().fill(accent).frame(width: 6, height: 6)
-                    .opacity(reduce ? 1 : (pulse ? 1.0 : 0.4))
-                    .animation(reduce ? nil : .easeInOut(duration: 1.5).repeatForever(autoreverses: true), value: pulse)
-                    .onAppear { pulse = true }
+                // CA-driven, for the same reason as the StatusBadge dot: a SwiftUI `.repeatForever`
+                // here re-renders the entire card every display frame.
+                BreathDot(color: accent, size: 6, lo: 0.4, hi: 1.0, period: 3.0, still: reduce)
+                    .frame(width: 6, height: 6)
                     .help("Live - updates every \(fmtCadence(period))")
             } else {
                 Image(systemName: "pause.fill").font(.system(size: 8)).foregroundStyle(faint).frame(width: 8, height: 8)
@@ -1186,14 +1187,12 @@ struct OverPill: View {
         .padding(.horizontal, 9).padding(.vertical, 3)
         .background(Capsule().fill(color.opacity(0.14)))
         // Ember breathing: a slow warm pulse around the pill while over the limit - urgency you
-        // feel peripherally, without a flashing alarm.
+        // feel peripherally, without a flashing alarm. CA-driven (see BreathHalo): the 4fps
+        // TimelineView this replaces re-rendered the entire card on every tick.
         .background {
             if !reduce {
-                TimelineView(.periodic(from: .now, by: 0.25)) { ctx in   // 4fps: slow warm pulse
-                    let ph = (sin(ctx.date.timeIntervalSinceReferenceDate * 1.6) + 1) / 2
-                    Capsule().fill(color.opacity(0.001))
-                        .shadow(color: color.opacity(0.25 + 0.3 * ph), radius: 4 + 3 * ph)
-                }
+                BreathHalo(color: color, opacityRange: 0.25...0.55, radiusRange: 4...7,
+                           period: 2 * .pi / 1.6)   // the old sin(t * 1.6) cadence, ~3.9s
             }
         }
     }
@@ -1276,6 +1275,12 @@ struct EdgeDockView: View {
             .overlay(RoundedRectangle(cornerRadius: r).stroke(p.divider, lineWidth: 0.6))
             .shadow(color: .black.opacity(0.18), radius: 6, y: 2)
             // Adjustable size: measure the natural card, scale it, then reserve the scaled size so the panel hugs it.
+            // fixedSize is what makes "natural" true: the frame below is built FROM this measurement
+            // and proposes itself back down, so without it a greedy element would return
+            // natSize * scale on every pass and compound at any widgetScale off 1.0. That is the
+            // same loop that ran the popover card to 1e10 points and aborted the app (2026-08-01);
+            // this measurement sits behind an NSPanel frame, so it is the same hazard.
+            .fixedSize()
             .background(GeometryReader { g in Color.clear.preference(key: WidgetSizeKey.self, value: g.size) })
             .scaleEffect(scale, anchor: .center)
             .frame(width: natSize.width * scale, height: natSize.height * scale)
@@ -1523,6 +1528,43 @@ struct HoldToCopy<Label: View>: View {
     }
 }
 
+// MARK: - Progressive disclosure: the one Advanced drawer token (Account, Settings).
+// Collapsed by default so the everyday path never meets the knobs inside; state is per-appearance
+// (@State), so every window opens calm. The 80/20 law: essentials visible, depth one click away.
+struct AdvancedCard<Content: View>: View {
+    var title = "Advanced"
+    let p: Palette
+    @ViewBuilder var content: () -> Content
+    @State private var open = false
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.emberEase(Dur.d240)) { open.toggle() }
+            } label: {
+                HStack(spacing: 8) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .bold)).foregroundStyle(p.sub)
+                        .rotationEffect(.degrees(open ? 90 : 0))
+                    Text(title.uppercased()).font(.system(size: 11, weight: .semibold)).tracking(1.4)
+                        .foregroundStyle(p.sub)
+                    Spacer()
+                }
+                .padding(.vertical, 6)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("\(title), \(open ? "expanded" : "collapsed")")
+            if open {
+                VStack(alignment: .leading, spacing: 10) { content() }
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(p.raisedBg))
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+    }
+}
+
 struct AccountView: View {
     @ObservedObject var engine: UsageEngine
     @ObservedObject var settings: AppSettings
@@ -1682,6 +1724,14 @@ struct AccountView: View {
         .onAppear { engine.refreshAPISpend() }
     }
 
+    private func diagRow(_ label: String, _ value: String, _ p: Palette) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(label).font(.system(size: 11)).foregroundStyle(p.faint).frame(width: 84, alignment: .leading)
+            Text(value).font(.system(size: 11, design: .monospaced)).foregroundStyle(p.sub)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
     @ViewBuilder private func content(_ p: Palette) -> some View {
         let coral = Color(hex: settings.accentHex)
         VStack(alignment: .leading, spacing: 16) {
@@ -1700,6 +1750,18 @@ struct AccountView: View {
                 }
 
                 apiCard(p, coral)   // the Developer API is a coequal source, always shown
+
+                // Diagnostics live behind the drawer: real facts for a bug report or a trust
+                // check, zero noise for everyone else.
+                AdvancedCard(title: "Diagnostics and storage", p: p) {
+                    diagRow("Access token", engine.tokenExpiry.map {
+                        $0 > Date() ? "expires in \(weekLeftString($0))" : "expired, will refresh on next fetch"
+                    } ?? "none stored yet", p)
+                    diagRow("Live cache", engine.snapshot.liveUpdated.map {
+                        "updated \(Int(max(0, Date().timeIntervalSince($0))))s ago"
+                    } ?? "never written", p)
+                    diagRow("Storage", "~/.config/burndown · folder 0700, files 0600", p)
+                }
 
                 // Privacy footer: lock + trust sentence, no chmod here; logs link below.
                 VStack(alignment: .leading, spacing: 8) {
@@ -2046,6 +2108,9 @@ struct SettingsView: View {
     @State private var testNote: String?
     @ObservedObject private var updater = Updater.shared
     @State private var lastDock: DockEdge = .bottom   // remembers the edge so the on/off toggle can restore it
+    // Bumped when the app re-activates so the Accessibility card re-checks after a trip to
+    // System Settings; reading it in body makes the check re-run on the bump.
+    @State private var axRecheck = 0
     @State private var galleryLive = false            // chart gallery previews: sample data or my data
 
     var body: some View {
@@ -2159,6 +2224,37 @@ struct SettingsView: View {
         }
     }
 
+    /// The dock follower's Accessibility recovery card: shown only while docking is ON and the
+    /// permission is missing (the follower silently falls back to slow polling in that state,
+    /// which used to be invisible). One click prompts; the other opens the exact Settings pane.
+    /// Re-activation of the app re-checks, so granting makes the card disappear on return.
+    private func axPermissionCard(_ p: Palette) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: "hand.raised.fill").font(.system(size: 13)).foregroundStyle(p.warning)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Accessibility permission needed").font(.system(size: 12, weight: .semibold)).foregroundStyle(p.ink)
+                Text("Without it the widget cannot follow the Claude window instantly and falls back to slower tracking. Grant it once and the follower turns event-driven.")
+                    .font(.system(size: 11)).foregroundStyle(p.sub).fixedSize(horizontal: false, vertical: true)
+                HStack(spacing: 8) {
+                    Button("Grant access") {
+                        _ = AXIsProcessTrustedWithOptions(["AXTrustedCheckOptionPrompt" as CFString: true] as CFDictionary)
+                    }
+                    Button("Open System Settings") {
+                        if let u = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility") {
+                            NSWorkspace.shared.open(u)
+                        }
+                    }
+                }.controlSize(.small).padding(.top, 3)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(p.warning.opacity(0.08)))
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            axRecheck += 1
+        }
+    }
+
     @ViewBuilder private func generalPane(_ p: Palette) -> some View {
         let coral = Color(hex: settings.accentHex)
         header("General", p)
@@ -2236,6 +2332,10 @@ struct SettingsView: View {
                 Toggle("", isOn: Binding(get: { settings.dockEdge != .off },
                                          set: { on in settings.dockEdge = on ? (lastDock == .off ? .bottom : lastDock) : .off }))
                     .labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(coral)
+            }
+            if settings.dockEdge != .off, axRecheck >= 0, !AXIsProcessTrusted() {
+                div(p)
+                axPermissionCard(p)
             }
             if settings.dockEdge != .off {
                 div(p)
@@ -2488,6 +2588,61 @@ struct SettingsView: View {
                 }
             }
         }
+        if settings.menuBarStyle == .beacon {
+            subhead("Beacon adjust", p)
+            card(p) {
+                row("Preset", p, info: settings.matchingBeaconPreset?.blurb
+                    ?? "Named tunes for the seven knobs below. Picking one applies it right away; nudge any slider afterwards and this reads Custom again.") {
+                    DropPicker(options: [("Custom", BeaconPreset?.none)] + BeaconPreset.allCases.map { ($0.label, BeaconPreset?.some($0)) },
+                               selection: Binding(get: { settings.matchingBeaconPreset },
+                                                  set: { if let np = $0 { settings.applyBeaconPreset(np) } }), p: p)
+                }
+                div(p)
+                row("Mark", p, info: settings.beaconMark.blurb) {
+                    DropPicker(options: BeaconMark.allCases.map { ($0.label, $0) }, selection: $settings.beaconMark, p: p)
+                }
+                div(p)
+                row("Wink", p, info: settings.beaconCurve.blurb) {
+                    DropPicker(options: BeaconCurve.allCases.map { ($0.label, $0) }, selection: $settings.beaconCurve, p: p)
+                }
+                div(p)
+                // Deliberately wide ranges: the useful discovery is where it stops registering at BOTH
+                // ends, so the sliders run past tasteful in either direction rather than fencing it in.
+                beaconSlider("Every", p, $settings.beaconEvery, 0.3...60, "%.1fs",
+                             "Seconds between winks. Under ~1s it reads as a strobe; past ~20s you will miss most of them.")
+                div(p)
+                beaconSlider("Randomness", p, $settings.beaconJitter, 0...1, "%.0f%%", scale: 100,
+                             "How much the gap wanders. 0% is a metronome (the eye learns it and stops seeing it); 100% swings from instant to double the gap.")
+                div(p)
+                beaconSlider("Length", p, $settings.beaconLength, 0.03...4, "%.2fs",
+                             "How long one wink lasts. Below ~0.08s it starts to vanish between screen refreshes; above ~1s it stops being a wink and becomes a colour change.")
+                div(p)
+                beaconSlider("Strength", p, $settings.beaconStrength, 0...1, "%.0f%%", scale: 100,
+                             "How far the colour travels toward your accent. Around 25-40% is 'only if you happen to be looking'.")
+                div(p)
+                beaconSlider("Glow", p, $settings.beaconGlow, 0...1, "%.0f%%", scale: 100,
+                             "A soft halo behind the mark at the peak. Costs one gradient, and only while lit.")
+                div(p)
+                row("Rhythm", p, info: "Steady keeps your cadence always. Follows burn winks up to 4x faster while tokens are flowing and settles back when idle, so the rhythm itself tells you Claude is working.") {
+                    Segmented(options: [("Steady", false), ("Follows burn", true)], selection: $settings.beaconFollowsBurn, p: p)
+                }
+                div(p)
+                row("Wink colour", p, info: "Accent always winks your accent colour. By usage makes the colour carry the reading: a warm accent deepens toward rust as you approach the cap, and a cool accent jumps to amber the moment the ramp engages, then deepens to rust - so the hue itself says how close you are.") {
+                    Segmented(options: [("Accent", false), ("By usage", true)], selection: $settings.beaconUsageColor, p: p)
+                }
+                div(p)
+                row("Near the limit", p, info: "Switches the wink to a double blink once you pass your alert threshold, so a glance is enough to know you are close.") {
+                    Segmented(options: [("Same", false), ("Double wink", true)], selection: $settings.beaconAlertBeat, p: p)
+                }
+                div(p)
+                row("Try it", p, info: "Fires one wink right now with the current settings, so you can judge a change without waiting out the cadence.") {
+                    Button("Wink now") { NotificationCenter.default.post(name: .beaconWinkNow, object: nil) }
+                        .buttonStyle(.bordered).controlSize(.small)
+                }
+                Text("Every knob applies live - watch the menu bar as you drag.")
+                    .font(.system(size: 10.5)).foregroundStyle(p.sub).padding(.top, 4)
+            }
+        }
         subhead("Style", p)
         // Curated Core set first, then the full library grouped by family (Live / Static gauge /
         // Static text / Both-only). Nothing is cut; the heavy library is just made discoverable.
@@ -2501,6 +2656,20 @@ struct SettingsView: View {
         Text(settings.menuBarStyle.desc(settings.menuBarShow))
             .font(.system(size: 11.5)).foregroundStyle(p.sub)
             .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 6)
+    }
+
+    // One Beacon knob: slider + live readout, in the same shape as the Flame size row.
+    @ViewBuilder private func beaconSlider(_ name: String, _ p: Palette, _ v: Binding<Double>,
+                                           _ range: ClosedRange<Double>, _ fmt: String,
+                                           scale: Double = 1, _ info: String) -> some View {
+        row(name, p, info: info) {
+            HStack(spacing: 8) {
+                Slider(value: v, in: range).frame(width: 132).controlSize(.small).tint(Color(hex: settings.accentHex))
+                Text(String(format: fmt, v.wrappedValue * scale))
+                    .font(.system(size: 11, design: .monospaced)).monospacedDigit()
+                    .foregroundStyle(p.sub).frame(width: 44, alignment: .trailing)
+            }
+        }
     }
 
     private func glyphGrid(_ styles: [MenuBarStyle], _ p: Palette) -> some View {
@@ -2546,7 +2715,7 @@ struct SettingsView: View {
             }
             div(p)
             gslider("Popover size", p, Binding(get: { settings.textScale * 100 }, set: { settings.textScale = $0 / 100 }),
-                    70...160, "%", "Scales the whole popover and floating window - text, numbers, chart, and spacing - from compact to large. (Widget size is under Dock, in General.)")
+                    70...160, "%", "Scales the whole popover and floating window - text, numbers, chart, and spacing - from compact to large. Separate from this zoom, the card's bottom-right grip RESIZES the window at the same type size: drag sideways for a wider card, down for taller charts, double-click to reset. (Widget size is under Dock, in General.)")
         }
         subhead("Background", p)
         card(p) {
@@ -3009,6 +3178,7 @@ struct SettingsView: View {
             g.hasSecondary = (settings.menuBarShow == .both)
             if let r = s.weeklyResetAt { g.weekLeftText = weekLeftString(r) }
             g.spark = live.history.isEmpty ? [0.1, 0.2, 0.15, 0.3, 0.25, 0.4] : live.history
+            g.accent = accent; g.beacon = 1   // the chip shows Beacon mid-wink; resting it is just system ink
             return g
         }
         switch settings.menuBarShow {
@@ -3020,6 +3190,7 @@ struct SettingsView: View {
         g.hasSecondary = (settings.menuBarShow == .both)
         g.weekLeftText = "3d 4h"
         g.spark = [0.05, 0.12, 0.08, 0.22, 0.18, 0.4, 0.32, 0.55, 0.6, 0.5, 0.78, 0.7]
+        g.accent = accent; g.beacon = 1   // the chip shows Beacon mid-wink; resting it is just system ink
         return g
     }
 }
@@ -3319,28 +3490,110 @@ struct RedlineOverlay: View {
     var heat: Double
     var radius: CGFloat
     var p: Palette
-    @State private var bloomHigh = false
     @Environment(\.accessibilityReduceMotion) private var reduce
     var body: some View {
         let anger = p.overLimit
         let on = heat > 0.001
-        // The bloom rides 8 -> 12 percent on the redline period. Driven by CORE ANIMATION (a repeating
-        // opacity ramp the render server interpolates), NOT a TimelineView: a TimelineView tick
-        // re-commits the whole window every frame, which is what made the popover expensive.
+        // The bloom rides 8 -> 12 percent on the redline period, as a REAL CABasicAnimation
+        // (see BreathingBloom). SwiftUI's `.repeatForever` looks like a hand-off to the render server
+        // but is not one: it keeps a display link alive and re-lays out the whole window every frame.
         ZStack {
-            RoundedRectangle(cornerRadius: radius, style: .continuous)
-                .fill(RadialGradient(colors: [anger.opacity(0.12 * heat), .clear], center: .top, startRadius: 8, endRadius: 110))
-                .opacity(bloomHigh ? 1.0 : 0.667)          // 0.12 * (0.667...1.0) == the spec's 8 -> 12 percent
-                .animation(reduce ? nil : .easeInOut(duration: BurnTier.redline.period / 2)
-                                            .repeatForever(autoreverses: true), value: bloomHigh)
+            BreathingBloom(color: anger, peak: 0.12 * heat,
+                           lo: 0.667, hi: 1.0,       // 0.12 * (0.667...1.0) == the spec's 8 -> 12 percent
+                           period: BurnTier.redline.period,
+                           cornerRadius: radius, endRadius: 110, still: reduce)
             RoundedRectangle(cornerRadius: radius, style: .continuous)
                 .strokeBorder(anger.opacity(0.35 * heat), lineWidth: 1)
         }
-        .onAppear { bloomHigh = on }
-        .onChange(of: on) { bloomHigh = $0 }
         .allowsHitTesting(false)
         .opacity(on ? 1 : 0)
         .animation(.emberEase(Dur.d480), value: heat)
+    }
+}
+
+// MARK: - Corner resize grip (popover + floating card)
+
+/// AppKit half of the grip. Classic screen-coordinate mouse tracking, so the math is immune to the
+/// window resizing and repositioning under the cursor mid-drag (a SwiftUI DragGesture is not: its
+/// coordinate space moves with the very view the drag is changing). Also owns the resize cursor,
+/// and refuses window-background dragging so grabbing the grip never MOVES the floating panel.
+/// NEVER put this (or any NSViewRepresentable) inside DetailCard: the ImageRenderer screenshot
+/// pipeline renders DetailCard and would paint a placeholder where the representable sits.
+final class GripNSView: NSView {
+    var began: () -> Void = {}
+    var changed: (_ dx: Double, _ dy: Double) -> Void = { _, _ in }
+    var ended: () -> Void = {}
+    var reset: () -> Void = {}
+    var hover: (_ inside: Bool) -> Void = { _ in }
+    private var start = NSPoint.zero
+
+    override var mouseDownCanMoveWindow: Bool { false }
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        trackingAreas.forEach(removeTrackingArea)
+        addTrackingArea(NSTrackingArea(rect: bounds, options: [.mouseEnteredAndExited, .activeAlways], owner: self))
+    }
+    override func mouseEntered(with event: NSEvent) { hover(true) }
+    override func mouseExited(with event: NSEvent) { hover(false) }
+    override func resetCursorRects() { addCursorRect(bounds, cursor: Self.cursor) }
+    override func mouseDown(with event: NSEvent) {
+        if event.clickCount == 2 { reset(); return }
+        start = NSEvent.mouseLocation
+        began()
+    }
+    override func mouseDragged(with event: NSEvent) {
+        let l = NSEvent.mouseLocation
+        // Screen y grows upward; the card grows DOWNWARD from its anchored top, so down = growth.
+        changed(Double(l.x - start.x), Double(start.y - l.y))
+    }
+    override func mouseUp(with event: NSEvent) { ended() }
+
+    static let cursor: NSCursor = {
+        if #available(macOS 15.0, *) { return .frameResize(position: .bottomRight, directions: .all) }
+        return .crosshair
+    }()
+}
+
+private struct GripHost: NSViewRepresentable {
+    var began: () -> Void
+    var changed: (Double, Double) -> Void
+    var ended: () -> Void
+    var reset: () -> Void
+    var hover: (Bool) -> Void
+    func makeNSView(context: Context) -> GripNSView { GripNSView() }
+    func updateNSView(_ v: GripNSView, context: Context) {
+        v.began = began; v.changed = changed; v.ended = ended; v.reset = reset; v.hover = hover
+    }
+}
+
+/// The visible grip: three faint diagonal strokes in the card's bottom-trailing corner, the
+/// classic grow box. Nearly silent at rest, brightens on hover, resize cursor over the hit area.
+struct ResizeGrip: View {
+    var p: Palette
+    var began: () -> Void
+    var changed: (Double, Double) -> Void
+    var ended: () -> Void
+    var reset: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        ZStack {
+            Path { path in
+                for i in 0..<3 {
+                    let o = CGFloat(4 + i * 4)
+                    path.move(to: CGPoint(x: 15 - o, y: 15))
+                    path.addLine(to: CGPoint(x: 15, y: 15 - o))
+                }
+            }
+            .stroke((hovering ? p.sub : p.faint).opacity(hovering ? 0.95 : 0.55),
+                    style: StrokeStyle(lineWidth: 1, lineCap: .round))
+            GripHost(began: began, changed: changed, ended: ended, reset: reset,
+                     hover: { hovering = $0 })
+        }
+        .frame(width: 17, height: 17)
+        .contentShape(Rectangle())
+        .help("Drag sideways for a wider card, down for taller charts. Double-click to reset.")
+        .accessibilityLabel("Resize card")
     }
 }
 
@@ -3354,8 +3607,12 @@ struct MenuCard: View {
     var onHideFloating: () -> Void = {}
     var onSignIn: () -> Void = {}
     var onOpenLogs: () -> Void = {}
+    var onResizing: (Bool) -> Void = { _ in }   // popover kills its size animation during a grip drag
     @Environment(\.colorScheme) private var scheme
     @State private var natH: CGFloat = 500
+    // Corner-drag resize (reflow, not zoom): sideways drives settings.cardWidth, down drives
+    // settings.cardChartBoost. The anchor holds both values at mouse-down so the drag is absolute.
+    @State private var dragStart: (w: Double, boost: Double)? = nil
     // The 7-day cost spark is O(records) with per-record price lookups; cache it so a card re-render
     // (the floating window redraws on every live update) does NOT recompute it every frame.
     @State private var spark: [Double] = []
@@ -3364,6 +3621,11 @@ struct MenuCard: View {
     var body: some View {
         let p = Palette.of(scheme)
         let scale = max(0.7, min(1.6, settings.textScale))
+        let cw = CardResize.clampW(settings.cardWidth)
+        // Vertical drag needs the visible plot count so the card's bottom edge tracks the cursor
+        // 1:1 (each chart grows by boost, so the card grows by charts x boost).
+        let chartCount = (settings.showBurnChart && settings.visibleSections().contains(.chart))
+            ? max(1, settings.chartKinds.count) : 0
         // Redline heat: the whole card smolders as the session nears its cap.
         let s = engine.snapshot
         let heat = s.over ? 1.0 : max(0, (min(1, s.sessionPct) - 0.85) / 0.15)
@@ -3374,18 +3636,59 @@ struct MenuCard: View {
                    dailySpark: spark, records: engine.records,
                    apiSpend: engine.apiSpend,
                    onRefresh: onRefresh, onSignIn: onSignIn, onOpenLogs: onOpenLogs)
-            .frame(width: 264)
+            .frame(width: cw)
+            // ⚠️ THE RUNAWAY GUARD. Without fixedSize the card takes the PROPOSED height, and the
+            // proposal comes from the outer frame below (natH * scale). Greedy spacers fill it, so
+            // the measurement returns natH * scale, which becomes the next natH: with textScale
+            // exactly 1.0 that is a harmless equilibrium, but at 1.0229 (or any value off 1) it
+            // compounds every layout pass until the card is thousands of points tall, blank, and
+            // finally asks AppKit for a 1e10 frame and aborts the app (2026-08-01).
+            // fixedSize pins the measurement to the content's IDEAL height, so no proposal can
+            // ever feed back into it.
+            .fixedSize(horizontal: false, vertical: true)
             .background(GeometryReader { g in Color.clear.preference(key: ContentHeightKey.self, value: g.size.height) })
             .scaleEffect(scale, anchor: .topLeading)
-            .frame(width: 264 * scale, height: natH * scale, alignment: .topLeading)
+            // min(6000, natH): the measured height passes through @State on its way to a WINDOW
+            // frame (the hosting view sizes the popover and floating panel from this). A single
+            // garbage measurement during rapid reflow once reached AppKit as height=1e10 and
+            // aborted the app (frame outside INT bounds, 2026-08-01). 6000pt is beyond any real
+            // card and far inside AppKit's limits; both the write (onPreferenceChange) and this
+            // read clamp, so no transient can ever become a window frame.
+            .frame(width: cw * scale, height: min(6000, natH) * scale, alignment: .topLeading)
             .background(CardSurface(settings: settings, p: p))
             .overlay(RedlineOverlay(heat: heat, radius: settings.glassCornerRadius, p: p))
+            // Corner-drag resize. The grip lives HERE, not in DetailCard, so the ImageRenderer
+            // screenshot pipeline (which renders DetailCard) never meets the NSViewRepresentable.
+            .overlay(alignment: .bottomTrailing) {
+                ResizeGrip(p: p,
+                    began: {
+                        dragStart = (cw, CardResize.clampB(settings.cardChartBoost))
+                        onResizing(true)
+                    },
+                    changed: { dx, dy in
+                        guard let a = dragStart else { return }
+                        // Cursor deltas arrive in screen points; divide the zoom back out so the
+                        // reflow happens in design points and the edges track the cursor 1:1.
+                        settings.cardWidth = CardResize.width(start: a.w, dx: dx / scale)
+                        settings.cardChartBoost = CardResize.boost(start: a.boost, dy: dy / scale, charts: chartCount)
+                    },
+                    ended: {
+                        dragStart = nil
+                        onResizing(false)
+                    },
+                    reset: {
+                        dragStart = nil
+                        settings.cardWidth = CardResize.minWidth
+                        settings.cardChartBoost = 0
+                    })
+                    .padding(4)
+            }
             // Floating window: a soft usage-colored halo around the card (calm clay normally,
             // warming as the session climbs) - it reads "alive" against any desktop.
             .shadow(color: floating ? Color(hex: kAccentHex).opacity(0.16 + 0.30 * heat) : .clear,
                     radius: floating ? 16 : 0)
             // Guard against a preference-change render loop: only update when the height really moved.
-            .onPreferenceChange(ContentHeightKey.self) { let h = max(80, $0); if abs(h - natH) > 0.5 { natH = h } }
+            .onPreferenceChange(ContentHeightKey.self) { let h = min(6000, max(80, $0)); if abs(h - natH) > 0.5 { natH = h } }
             // Recompute the cost spark only when the record set actually grows (not every render).
             .onChange(of: engine.records.count) { c in if c != sparkKey { sparkKey = c; spark = dailyCostSpark(engine.records) } }
             .onAppear { if sparkKey != engine.records.count { sparkKey = engine.records.count; spark = dailyCostSpark(engine.records) } }

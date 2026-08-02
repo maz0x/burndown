@@ -275,6 +275,13 @@ quietly, grows and throws sparks as you work, and rages toward white-hot
 near the limit. It is lovely, and it is one line in this README because
 it is the charm, not the argument.
 
+At the opposite end sits Beacon, the quietest style: it rests in the menu
+bar's own ink so it passes for a system icon, then winks to your accent
+for a fraction of a second every few seconds. Proof of life with no
+demand for attention. The mark, the wink curve, the cadence, and the
+strength are all tunable, and the wink color can ride your usage instead
+of the accent, so the hue itself says how close you are to the cap.
+
 ## Beyond the menu bar
 
 - **The docked widget** clings to an edge of the Claude Desktop window,
