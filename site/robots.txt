@@ -4,5 +4,6 @@
 User-agent: *
 Allow: /
 
+Sitemap: https://burndown-app.pages.dev/sitemap.txt
 Sitemap: https://burndown-app.pages.dev/sitemap-2026.xml
 Sitemap: https://burndown-app.pages.dev/sitemap.xml
