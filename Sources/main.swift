@@ -1124,7 +1124,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             win.styleMask = [.titled, .closable]
             win.title = kAppName
             win.isReleasedWhenClosed = false
-            win.setContentSize(NSSize(width: 660, height: 580))
+            win.setContentSize(NSSize(width: 660, height: 640))
             win.appearance = themeAppearance()
             win.center()
             win.delegate = self

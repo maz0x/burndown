@@ -1,5 +1,30 @@
 # What's new in Burndown
 
+## 0.9.3
+
+- **Settings has been rebuilt around what you actually use.** The window used
+  to open on a General pane holding twenty-six controls, most of which you set
+  once and never touch again. Now every pane leads with the handful that
+  matter and keeps the rest one click away in an Advanced drawer. Nothing was
+  removed: every option that existed before is still there, still does the
+  same thing, and your current settings carry over untouched.
+- **A new Companions pane.** The floating window, the widget that attaches to
+  the Claude window, and the screen-edge ember line have moved out of General
+  into a pane of their own, one section each. General is down to the basics
+  plus updates, and now also holds Export and Reset under Your data.
+- **The menu bar pane leads with the styles worth trying.** Nine core styles
+  are shown; the full library sits under All styles, which opens itself
+  automatically if the style you are using lives in there, so your choice is
+  never hidden. Number format and digit options moved into their own drawer.
+- **Appearance is calm again.** The background section shows a live preview,
+  the three styles and the five one-tap presets. The nine fine-tuning sliders
+  are still all there, now behind Fine-tune background.
+- **Alerts reads in the order you would set it up**: the levels first, then
+  the extra warnings, then how alerts reach you, then a button to test one.
+- **Popover size moved to the Popover pane**, where you would look for it.
+- The window is slightly taller, section headings are consistent everywhere,
+  and the whole thing was checked in both light and dark mode.
+
 ## 0.9.2
 
 **Update if you have ever moved the Popover size slider.** At any size other

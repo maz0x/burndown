@@ -224,7 +224,7 @@ re-connects behind your back.</p>
   with their rate over the last minute. Right-click a row to rename it.</li>
 </ul>
 <p>Every section has a small question dot; hover it for a plain-English explanation of what you
-are looking at. Turn the dots off in Settings, Charts, "Explain each section".</p>
+are looking at. Turn the dots off in Settings, Popover, under "Fine-tune".</p>
 <div class="note">
   <b>About the dollar figures.</b> They are estimates from public API list pricing, not billing
   amounts. On a subscription you do not pay them. They answer one question: what would this work
@@ -263,7 +263,7 @@ independently.</p>
   <tr><td><b>Window reset</b></td><td>A fresh session or weekly window has started.</td></tr>
   <tr><td><b>Weekly digest</b></td><td>Optional, once on Mondays: tokens and estimated cost for the week.</td></tr>
 </table>
-<p>Behavior options cover repeat-while-over, quiet hours, and six original alert sounds. A
+<p>The Delivery group covers repeat-while-over, quiet hours, and six original alert sounds. A
 persistent de-duplication backstop means the same alert cannot repeat at you, even across
 restarts, and every banner carries a Snooze button.</p>
 
@@ -291,7 +291,6 @@ together.</p>
   for opacity, blur, saturation, tint, borders, corner radius, shadow, and window transparency.
   A live preview shows the real text contrast ratio as you tune.</li>
   <li><b>Accent color</b> and "tint by usage" (adaptive, solid, or none).</li>
-  <li><b>Popover size</b> from 70 to 160 percent, scaling text and charts together as a zoom.</li>
   <li><b>Resize the card itself</b> with the grip in its bottom-right corner, in the popover and
   the floating window. This is not a zoom: the type stays the same size and the card reflows.
   Drag sideways and the card widens, so progress bars stretch, chat names stop truncating, and
@@ -301,7 +300,8 @@ together.</p>
   Reduce Motion is on.</li>
 </ul>
 <p>Settings, Popover is an editor for the card itself: every element has a visibility switch,
-and whole sections can be reordered or hidden.</p>
+and whole sections can be reordered or hidden. It also holds <b>Popover size</b>, from 70 to 160
+percent, which scales text and charts together as a zoom.</p>
 <p>Settings, Menu Bar chooses the glyph from a couple dozen styles, plus number format,
 time-to-reset, digit weight, and (for the flame) size, sparks, and smoke.</p>
 <p>The quietest style is <b>Beacon</b>: it sits in the menu bar's own ink like a system icon and
@@ -315,8 +315,10 @@ Try it button that fires one wink on demand.</p>
 move while you try styles, without spending a token. It is never saved.</p>
 
 <h2 id="companions">Widget and Ember Line</h2>
+<p>All three live in Settings, Companions, one section each. Each starts with a single on/off
+switch, and its detail appears once you turn it on.</p>
 <ul>
-  <li><b>Docked widget.</b> Settings, General. Clings to an edge of the Claude Desktop window and
+  <li><b>Docked widget.</b> Clings to an edge of the Claude Desktop window and
   follows it, appearing only while Claude is frontmost. macOS asks for Accessibility permission
   the first time; that is what lets it follow instantly instead of lagging.</li>
   <li><b>Ember Line.</b> A filament along a screen edge showing what is left of your session,

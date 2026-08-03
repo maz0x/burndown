@@ -1534,8 +1534,25 @@ struct HoldToCopy<Label: View>: View {
 struct AdvancedCard<Content: View>: View {
     var title = "Advanced"
     let p: Palette
-    @ViewBuilder var content: () -> Content
-    @State private var open = false
+    var content: () -> Content
+    var spacing: CGFloat = 10
+    @State private var open: Bool
+
+    /// `startOpen` is for the one case where staying shut would hide the user's own choice:
+    /// the menu-bar style library opens itself when the style in use lives inside it.
+    /// CUB_OPEN_DRAWERS is QA only, so documentation captures can photograph a pane's depth.
+    /// `spacing` is 0 for a drawer holding a settings row list, whose rows carry their own
+    /// height and hairlines: any gap there makes the dividers float instead of separating.
+    init(title: String = "Advanced", p: Palette, startOpen: Bool = false, spacing: CGFloat = 10,
+         @ViewBuilder content: @escaping () -> Content) {
+        self.title = title
+        self.p = p
+        self.content = content
+        self.spacing = spacing
+        _open = State(initialValue: startOpen
+                      || ProcessInfo.processInfo.environment["CUB_OPEN_DRAWERS"] != nil)
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             Button {
@@ -1555,7 +1572,7 @@ struct AdvancedCard<Content: View>: View {
             .buttonStyle(.plain)
             .accessibilityLabel("\(title), \(open ? "expanded" : "collapsed")")
             if open {
-                VStack(alignment: .leading, spacing: 10) { content() }
+                VStack(alignment: .leading, spacing: spacing) { content() }
                     .padding(12)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(p.raisedBg))
@@ -2069,26 +2086,31 @@ struct OAuthStep: View {
 // controls on the right. Keeps the surface calm while keeping the high-value controls
 // (menu-bar style, transparency, chart ranges) one click away, never buried.
 enum SettingsTab: String, CaseIterable, Identifiable {
-    case general, alerts, menuBar, appearance, popover, data
+    // Declaration order IS the sidebar order (allCases drives the list). The raw values are the
+    // case names and MUST NOT change: `settings.pendingTab` deep links pass "data" (the chart
+    // gear) and "general", and the CUB_TAB QA switch accepts every one of them by name.
+    case general, menuBar, popover, data, companions, appearance, alerts
     var id: String { rawValue }
     var label: String {
         switch self {
         case .general:    return "General"
-        case .alerts:     return "Alerts"
         case .menuBar:    return "Menu Bar"
-        case .appearance: return "Appearance"
         case .popover:    return "Popover"
         case .data:       return "Charts"
+        case .companions: return "Companions"
+        case .appearance: return "Appearance"
+        case .alerts:     return "Alerts"
         }
     }
     var icon: String {
         switch self {
         case .general:    return "gearshape"
-        case .alerts:     return "bell.badge"
         case .menuBar:    return "menubar.rectangle"
-        case .appearance: return "paintpalette"
         case .popover:    return "rectangle.portrait.on.rectangle.portrait"
         case .data:       return "chart.xyaxis.line"
+        case .companions: return "macwindow.on.rectangle"
+        case .appearance: return "paintpalette"
+        case .alerts:     return "bell.badge"
         }
     }
 }
@@ -2123,7 +2145,7 @@ struct SettingsView: View {
                 Spacer()
             }
             .padding(.top, 16).padding(.horizontal, 10)
-            .frame(width: 188)
+            .frame(width: 176)
             .frame(maxHeight: .infinity)
             .background(p.track.opacity(0.4))
 
@@ -2133,7 +2155,8 @@ struct SettingsView: View {
                 if ProcessInfo.processInfo.environment["CUB_NOSCROLL"] != nil {
                     // QA only: render the whole pane without a ScrollView so ImageRenderer captures it.
                     VStack(alignment: .leading, spacing: 16) { pane(tab ?? .general, p) }
-                        .padding(22).frame(maxWidth: .infinity, alignment: .topLeading)
+                        .padding(22)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 } else {
                     ScrollView {
                         VStack(alignment: .leading, spacing: 16) {
@@ -2148,8 +2171,8 @@ struct SettingsView: View {
             .background(p.bg)
         }
         .frame(width: 660,
-               // QA renders (no ScrollView) need the full pane height; the Charts gallery is the tall one.
-               height: ProcessInfo.processInfo.environment["CUB_NOSCROLL"] != nil ? ((tab ?? .general) == .data ? 3450 : 1180) : 580)
+               height: ProcessInfo.processInfo.environment["CUB_NOSCROLL"] != nil
+                   ? qaPaneHeight(tab ?? .general) : 640)
         .onAppear {
             login = loginInitially
             if let t = settings.pendingTab.flatMap({ SettingsTab(rawValue: $0) }) { tab = t; settings.pendingTab = nil }
@@ -2167,6 +2190,24 @@ struct SettingsView: View {
             Button("Cancel", role: .cancel) { }
         } message: {
             Text("This permanently clears your stored usage history and the on-disk diagnostic log. Your Claude account, limits, and settings are not affected, and live tracking keeps running.")
+        }
+    }
+
+    /// QA only. CUB_NOSCROLL swaps the ScrollView for a fixed-height pane so a documentation
+    /// capture shows the whole thing at once; this is how tall each pane needs to be. The
+    /// drawers-open figures are larger because CUB_OPEN_DRAWERS expands every AdvancedCard.
+    /// Measured from the rendered PNGs, not estimated. If a pane grows, re-measure rather than
+    /// padding the number: too much slack leaves dead space at the bottom of a marketing shot.
+    private func qaPaneHeight(_ t: SettingsTab) -> CGFloat {
+        let open = ProcessInfo.processInfo.environment["CUB_OPEN_DRAWERS"] != nil
+        switch t {
+        case .general:    return 710
+        case .menuBar:    return open ? 980 : 730
+        case .popover:    return open ? 1465 : 1255
+        case .data:       return 3450
+        case .companions: return 445      // nothing to expand until a companion is switched on
+        case .appearance: return open ? 1285 : 758
+        case .alerts:     return 1050
         }
     }
 
@@ -2216,11 +2257,12 @@ struct SettingsView: View {
     @ViewBuilder private func pane(_ tab: SettingsTab, _ p: Palette) -> some View {
         switch tab {
         case .general:    generalPane(p)
-        case .alerts:     alertsPane(p)
         case .menuBar:    menuBarPane(p)
-        case .appearance: appearancePane(p)
         case .popover:    popoverPane(p)
         case .data:       dataPane(p)
+        case .companions: companionsPane(p)
+        case .appearance: appearancePane(p)
+        case .alerts:     alertsPane(p)
         }
     }
 
@@ -2312,11 +2354,53 @@ struct SettingsView: View {
                     Image(systemName: "arrow.up.forward.square").font(.system(size: 11))
                     Text("Releases and source on GitHub").font(.system(size: 12.5, weight: .medium))
                     Spacer()
-                }.foregroundStyle(p.ink).frame(height: 32)
+                }.foregroundStyle(p.ink).frame(height: 36)
             }.buttonStyle(.plain)
                 .help("Opens the Burndown project page, where every release and all of the source code live.")
         }
-        subhead("Companions", p)
+        subhead("Your data", p)
+        card(p) {
+            Text("Your usage history is kept on this Mac and survives restarts. Export it for your own analysis, or clear it. Your Claude account, limits, and settings are not affected.")
+                .font(.system(size: 11)).foregroundStyle(p.sub).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 7)
+            div(p)
+            Button {
+                if let u = live.exportCSV() {
+                    NSWorkspace.shared.activateFileViewerSelecting([u])
+                    exportNote = "Saved \(u.lastPathComponent) to Downloads"
+                } else { exportNote = "Could not write the file." }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "square.and.arrow.up").font(.system(size: 11))
+                    Text("Export history as CSV").font(.system(size: 12.5, weight: .medium))
+                    Spacer()
+                }.foregroundStyle(p.ink).frame(height: 36)
+            }.buttonStyle(.plain)
+            if let n = exportNote {
+                Text(n).font(.system(size: 11)).foregroundStyle(p.sub).padding(.bottom, 6)
+            }
+            div(p)
+            Button { confirmReset = true } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "trash").font(.system(size: 11))
+                    Text("Reset chart history and logs…").font(.system(size: 12.5, weight: .medium))
+                    Spacer()
+                }.foregroundStyle(Color(hex: kDangerHex)).frame(height: 36)
+            }.buttonStyle(.plain)
+        }
+    }
+
+    // Extra places Burndown can live besides the menu bar: the floating card, the widget
+    // that rides the Claude window, and the screen-edge ember line. Each leads with its own
+    // on/off switch; the deep styling sits below it.
+    // Extra places Burndown can live besides the menu bar: the floating card, the widget
+    // that rides the Claude window, and the screen-edge ember line. Each leads with its own
+    // on/off switch; the deep styling sits below it.
+    @ViewBuilder private func companionsPane(_ p: Palette) -> some View {
+        let coral = Color(hex: settings.accentHex)
+        header("Companions", p)
+        Text("Extra places Burndown can live, besides the menu bar.")
+            .font(.system(size: 11.5)).foregroundStyle(p.sub).frame(maxWidth: .infinity, alignment: .leading)
+        subhead("Floating window", p)
         card(p) {
             row("Floating window", p, info: "Shows the card as a floating window that stays on top, so you can watch usage without clicking the menu bar. The menu bar calls this Show / Hide Floating Window.") {
                 Toggle("", isOn: $settings.floatingShown).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(coral)
@@ -2327,8 +2411,10 @@ struct SettingsView: View {
                     Toggle("", isOn: $settings.floatingChrome).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(coral)
                 }
             }
-            div(p)
-            row("Dock to Claude window", p, info: "Attaches a usage widget to an edge of the Claude Desktop window and follows it. Turn it on, then pick the edge below. The first time, macOS asks for Accessibility permission; that is what lets the widget follow the window instantly instead of lagging behind it.") {
+        }
+        subhead("Docked widget", p)
+        card(p) {
+            row("Attach to the Claude window", p, info: "Attaches a usage widget to an edge of the Claude Desktop window and follows it. Turn it on, then pick the edge below. The first time, macOS asks for Accessibility permission; that is what lets the widget follow the window instantly instead of lagging behind it.") {
                 Toggle("", isOn: Binding(get: { settings.dockEdge != .off },
                                          set: { on in settings.dockEdge = on ? (lastDock == .off ? .bottom : lastDock) : .off }))
                     .labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(coral)
@@ -2363,7 +2449,9 @@ struct SettingsView: View {
                 gslider("Widget size", p, Binding(get: { settings.widgetScale * 100 }, set: { settings.widgetScale = $0 / 100 }),
                         70...180, "%", "Scales the docked widget larger or smaller.")
             }
-            div(p)
+        }
+        subhead("Ember line", p)
+        card(p) {
             row("Ember line", p, info: "A quiet ember line along a screen edge, on every display. The bright span is what remains of your 5-hour session; the glowing tip is the burn front, breathing faster as you burn hotter and turning red near the limit.") {
                 Toggle("", isOn: $settings.tideLine).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(coral)
             }
@@ -2377,7 +2465,10 @@ struct SettingsView: View {
                 row("Style", p, info: "How the ember line draws: the default Ember Line, a thin Filament, dashed Segmented, a Comet tail, a brightness Taper, Pulse Beads, Spark Front, or a Minimal Node at the burn front.") {
                     DropPicker(options: EmberLineStyle.allCases.map { ($0.label, $0) }, selection: $settings.tideStyle, p: p)
                 }
-                div(p)
+            }
+        }
+        if settings.tideLine {
+            AdvancedCard(title: "Fine-tune the line", p: p, spacing: 0) {
                 row("Flames at the front", p, info: "Little flame licks dancing at the burn front (Ember Line style).") {
                     Segmented(options: [("Off", 0), ("1", 1), ("2", 2), ("3", 3)], selection: $settings.tideFlames, p: p)
                 }
@@ -2398,21 +2489,11 @@ struct SettingsView: View {
                     Toggle("", isOn: $settings.tideSmoke).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(coral)
                 }
                 div(p)
-                row("Length", p, info: "How much of the edge the line spans, centered.") {
-                    HStack(spacing: 8) {
-                        Slider(value: $settings.tideLength, in: 0.4...1.0).frame(width: 120).controlSize(.small).tint(coral)
-                        Text("\(Int((settings.tideLength * 100).rounded()))%").font(.system(size: 11, design: .monospaced))
-                            .monospacedDigit().foregroundStyle(p.sub).frame(width: 38, alignment: .trailing)
-                    }
-                }
+                gslider("Length", p, Binding(get: { settings.tideLength * 100 }, set: { settings.tideLength = $0 / 100 }),
+                        40...100, "%", "How much of the edge the line spans, centered.")
                 div(p)
-                row("Transparency", p, info: "How solid the line is. Lower is more see-through.") {
-                    HStack(spacing: 8) {
-                        Slider(value: $settings.tideOpacity, in: 0.3...1.0).frame(width: 120).controlSize(.small).tint(coral)
-                        Text("\(Int((settings.tideOpacity * 100).rounded()))%").font(.system(size: 11, design: .monospaced))
-                            .monospacedDigit().foregroundStyle(p.sub).frame(width: 38, alignment: .trailing)
-                    }
-                }
+                gslider("Transparency", p, Binding(get: { settings.tideOpacity * 100 }, set: { settings.tideOpacity = $0 / 100 }),
+                        30...100, "%", "How solid the line is. Lower is more see-through.")
                 div(p)
                 row("Displays", p, info: "Which screens carry the ember line: all connected displays, the main display only, or whichever display currently holds the Claude window.") {
                     Segmented(options: TideDisplays.allCases.map { ($0.label, $0) }, selection: $settings.tideDisplays, p: p)
@@ -2432,9 +2513,13 @@ struct SettingsView: View {
             row("Usage alerts", p, info: "macOS notifications when usage crosses your levels. You'll be asked to allow notifications the first time.") {
                 Toggle("", isOn: $settings.alertsEnabled).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(coral)
             }
-            if settings.alertsEnabled {
-                // Each trigger is one row: "Off" plus its levels inline; pick a level to enable it.
-                alertGroup("Thresholds", p)
+        }
+        if settings.alertsEnabled {
+            // Four groups, in the order you would set them up: where to draw the line, what else
+            // is worth a warning, how the warning arrives, and a way to prove it works.
+            // Each trigger is one row: "Off" plus its levels inline; pick a level to enable it.
+            subhead("Levels", p)
+            card(p) {
                 row("Session", p, info: "Alert when the 5-hour session crosses this level, and again at 100%. Off disables it.") {
                     pctAlertControl(p, on: $settings.alertSession, level: $settings.alertSessionAt, levels: [0.75, 0.9, 0.95])
                 }
@@ -2462,7 +2547,17 @@ struct SettingsView: View {
                               selection: Binding(get: { settings.alertForecast ? settings.alertForecastMin : -1 },
                                                  set: { v in if v < 0 { settings.alertForecast = false } else { settings.alertForecast = true; settings.alertForecastMin = v } }), p: p)
                 }
-                alertGroup("Behavior", p)
+            }
+            subhead("Extra warnings", p)
+            card(p) {
+                row("Budget alert", p, info: "Warn when your spend or tokens approach the budget you set in the Insights window (right-click the menu bar icon, Insights).") {
+                    Toggle("", isOn: $settings.alertBudget).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(coral)
+                }
+                div(p)
+                row("Runaway burn alert", p, info: "Warn when the burn rate suddenly runs far above your own recent normal, which usually means a loop or a runaway agent. The threshold adapts to how you actually work.") {
+                    Toggle("", isOn: $settings.alertRunaway).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(coral)
+                }
+                div(p)
                 row("Window reset", p, info: "Notify when a fresh session or weekly window starts.") {
                     Toggle("", isOn: $settings.alertOnReset).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(coral)
                 }
@@ -2470,7 +2565,9 @@ struct SettingsView: View {
                 row("Weekly digest", p, info: "A single Monday summary of what you burned last week. Off by default.") {
                     Toggle("", isOn: $settings.weeklyDigest).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(coral)
                 }
-                div(p)
+            }
+            subhead("Delivery", p)
+            card(p) {
                 row("Repeat while over", p, info: "Re-alert at this interval while still over a level. Once = a single alert per window.") {
                     Segmented(options: [("Once", 0.0), ("15m", 15), ("30m", 30), ("1h", 60)], selection: $settings.alertRepeatMin, p: p)
                 }
@@ -2495,15 +2592,9 @@ struct SettingsView: View {
                     div(p)
                     row("Quiet to", p) { DropPicker(options: hourOptions, selection: $settings.quietTo, p: p) }
                 }
-                alertGroup("Budget & runaway", p)
-                row("Budget alert", p, info: "Warn when your spend or tokens approach the budget you set in the Insights window (right-click the menu bar icon, Insights).") {
-                    Toggle("", isOn: $settings.alertBudget).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(coral)
-                }
-                div(p)
-                row("Runaway burn alert", p, info: "Warn when the burn rate suddenly runs far above your own recent normal, which usually means a loop or a runaway agent. The threshold adapts to how you actually work.") {
-                    Toggle("", isOn: $settings.alertRunaway).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(coral)
-                }
-                alertGroup("Test", p)
+            }
+            subhead("Test", p)
+            card(p) {
                 Button {
                     NotificationCenter.default.post(name: .fireTestAlert, object: nil)
                     testNote = "Test sent. If no banner appears: System Settings, Notifications, Burndown, set the alert style to Banners or Alerts (not None), and turn off Focus / Do Not Disturb."
@@ -2512,7 +2603,7 @@ struct SettingsView: View {
                         Image(systemName: "bell.badge").font(.system(size: 11))
                         Text("Send a test alert").font(.system(size: 12.5, weight: .medium))
                         Spacer()
-                    }.foregroundStyle(coral).frame(height: 30)
+                    }.foregroundStyle(coral).frame(height: 36)
                 }.buttonStyle(.plain)
                 if let n = testNote {
                     Text(n).font(.system(size: 10.5)).foregroundStyle(p.sub).fixedSize(horizontal: false, vertical: true).padding(.bottom, 4)
@@ -2528,28 +2619,53 @@ struct SettingsView: View {
                 Segmented(options: [("Session", MenuBarShow.session), ("Weekly", .weekly), ("Both", .both)],
                           selection: $settings.menuBarShow, p: p)
             }
-            div(p)
-            row("Preview chips with", p, info: "Sample shows the styles with example numbers so they always look good. Live shows your real usage right now.") {
-                Segmented(options: [("Sample", false), ("Live", true)], selection: $settings.chipLivePreview, p: p)
+        }
+        // The curated Core set is the visible layer; the rest of the library lives one click
+        // down in "All styles". Nothing is cut, and the drawer opens itself when the style in
+        // use is one of the deeper ones, so a choice already made is never hidden.
+        let show = settings.menuBarShow
+        let core = MenuBarStyle.allCases.filter { $0.isCore && !$0.isRetired && $0.supports(show) }
+        HStack(spacing: 6) {
+            subhead("Style", p)
+            InfoDot(text: "Sample shows the styles with example numbers so they always look good. Live shows your real usage right now.",
+                    p: p, accent: Color(hex: settings.accentHex))
+            Spacer()
+            Text("Preview with").font(.system(size: 11)).foregroundStyle(p.faint)
+            Segmented(options: [("Sample", false), ("Live", true)], selection: $settings.chipLivePreview, p: p)
+        }
+        if !core.isEmpty { glyphGrid(core, p) }
+        Text(settings.menuBarStyle.desc(settings.menuBarShow))
+            .font(.system(size: 11.5)).foregroundStyle(p.sub)
+            .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 2)
+        styleAdjust(p)
+        AdvancedCard(title: "All styles", p: p, startOpen: !settings.menuBarStyle.isCore, spacing: 0) {
+            ForEach(MenuBarStyle.Family.allCases) { fam in
+                let items = MenuBarStyle.allCases.filter { $0.family == fam && !$0.isCore && !$0.isRetired && $0.supports(show) }
+                if !items.isEmpty { miniHead(fam.rawValue, p); glyphGrid(items, p) }
             }
         }
-        card(p) {
+        AdvancedCard(title: "Digits and format", p: p, spacing: 0) {
             row("Number format", p, info: "How the menu-bar number reads: with a percent sign, bare, or S/W-labeled.") {
                 Segmented(options: MenuNumberFormat.allCases.map { ($0.label, $0) }, selection: $settings.menuNumberFormat, p: p)
             }
             div(p)
-            row("Time to reset", p, info: "Append a short reset countdown to the fire styles (Hearth, Burnfront, Flame).") {
-                Toggle("", isOn: $settings.menuTimeToReset).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(Color(hex: settings.accentHex))
+            row("Percentage", p, info: "Show the percent number. Off makes the Flame style flame-only (the glyph carries the tier).") {
+                Segmented(options: [("On", true), ("Off", false)], selection: $settings.menuShowPct, p: p)
             }
             div(p)
             row("Digit weight", p, info: "The weight of the menu-bar digits.") {
                 Segmented(options: [("Regular", false), ("Semibold", true)], selection: $settings.menuBoldDigits, p: p)
             }
             div(p)
-            row("Percentage", p, info: "Show the percent number. Off makes the Flame style flame-only (the glyph carries the tier).") {
-                Segmented(options: [("On", true), ("Off", false)], selection: $settings.menuShowPct, p: p)
+            row("Time to reset", p, info: "Append a short reset countdown to the fire styles (Hearth, Burnfront, Flame).") {
+                Toggle("", isOn: $settings.menuTimeToReset).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(Color(hex: settings.accentHex))
             }
         }
+    }
+
+    // The tuning panel for whichever style is selected, if it has one. Kept as a visible
+    // card rather than a drawer: it only ever appears for the style already in use.
+    @ViewBuilder private func styleAdjust(_ p: Palette) -> some View {
         if settings.menuBarStyle == .flame {
             subhead("Flame adjust", p)
             card(p) {
@@ -2643,19 +2759,6 @@ struct SettingsView: View {
                     .font(.system(size: 10.5)).foregroundStyle(p.sub).padding(.top, 4)
             }
         }
-        subhead("Style", p)
-        // Curated Core set first, then the full library grouped by family (Live / Static gauge /
-        // Static text / Both-only). Nothing is cut; the heavy library is just made discoverable.
-        let show = settings.menuBarShow
-        let core = MenuBarStyle.allCases.filter { $0.isCore && !$0.isRetired && $0.supports(show) }
-        if !core.isEmpty { alertGroup("Core", p); glyphGrid(core, p) }
-        ForEach(MenuBarStyle.Family.allCases) { fam in
-            let items = MenuBarStyle.allCases.filter { $0.family == fam && !$0.isCore && !$0.isRetired && $0.supports(show) }
-            if !items.isEmpty { alertGroup(fam.rawValue, p); glyphGrid(items, p) }
-        }
-        Text(settings.menuBarStyle.desc(settings.menuBarShow))
-            .font(.system(size: 11.5)).foregroundStyle(p.sub)
-            .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 6)
     }
 
     // One Beacon knob: slider + live readout, in the same shape as the Flame size row.
@@ -2713,9 +2816,6 @@ struct SettingsView: View {
             row("Live indicator", p, info: "The LIVE badge color: follow the palette, use the accent, a fixed green, or no color.") {
                 Segmented(options: [("Theme", LiveColor.theme), ("Accent", .accent), ("Green", .green), ("None", .off)], selection: $settings.liveColor, p: p)
             }
-            div(p)
-            gslider("Popover size", p, Binding(get: { settings.textScale * 100 }, set: { settings.textScale = $0 / 100 }),
-                    70...160, "%", "Scales the whole popover and floating window - text, numbers, chart, and spacing - from compact to large. Separate from this zoom, the card's bottom-right grip RESIZES the window at the same type size: drag sideways for a wider card, down for taller charts, double-click to reset. (Widget size is under Dock, in General.)")
         }
         subhead("Background", p)
         card(p) {
@@ -2740,13 +2840,15 @@ struct SettingsView: View {
                     }.buttonStyle(.plain).focusable(false)
                 }
             }.padding(.vertical, 7)
+        }
+        // The presets above cover the everyday need; these are the individual knobs behind them.
+        AdvancedCard(title: "Fine-tune background", p: p, spacing: 0) {
             if settings.glassStyle == .frosted {
-                div(p)
                 row("Material", p, info: "The frosted-glass material used for the Frosted style.") {
                     DropPicker(options: GlassMaterial.allCases.map { ($0.label, $0) }, selection: $settings.glassMaterial, p: p)
                 }
+                div(p)
             }
-            div(p)
             gslider("Glass opacity", p, $settings.glassOpacity, 55...100, "%", "How opaque the glass layer is behind text. Clamped at 55 percent so text stays legible over any desktop.")
             div(p)
             gslider("Blur radius", p, $settings.glassBlur, 0...40, "pt", "Extra blur on top of the material. 0 keeps the material's native blur; higher softens the backdrop more.")
@@ -2779,7 +2881,7 @@ struct SettingsView: View {
                     Image(systemName: "arrow.counterclockwise").font(.system(size: 11))
                     Text("Reset to defaults").font(.system(size: 12.5, weight: .medium))
                     Spacer()
-                }.foregroundStyle(Color(hex: settings.accentHex)).frame(height: 30)
+                }.foregroundStyle(Color(hex: settings.accentHex)).frame(height: 36)
             }.buttonStyle(.plain)
         }
         subhead("Numbers", p)
@@ -2795,11 +2897,17 @@ struct SettingsView: View {
     @ViewBuilder private func popoverPane(_ p: Palette) -> some View {
         let coral = Color(hex: settings.accentHex)
         header("Popover", p)
+        card(p) {
+            gslider("Popover size", p, Binding(get: { settings.textScale * 100 }, set: { settings.textScale = $0 / 100 }),
+                    70...160, "%", "Scales the whole popover and floating window - text, numbers, chart, and spacing - from compact to large. Separate from this zoom, the card's bottom-right grip RESIZES the window at the same type size: drag sideways for a wider card, down for taller charts, double-click to reset. (Widget size is under Companions.)")
+        }
         subhead("Sections", p)
         Text("Drag to reorder the panels in the popover. Use the eye to hide any you do not need. The app name stays pinned at the bottom.")
             .font(.system(size: 11.5)).foregroundStyle(p.sub).frame(maxWidth: .infinity, alignment: .leading)
         sectionsEditor(p, coral)
-        subhead("Session line", p)
+        // Per-element visibility: grouped eye toggles. Each hides one popover element and
+        // the card content-hugs to a shorter height with no gaps.
+        subhead("Session", p)
         card(p) {
             row("Estimated cost", p, info: "Show the estimated pay-as-you-go API price of the tokens you have used (what it would cost without a subscription) on the Session and This week lines. An estimate, not a bill.") {
                 Toggle("", isOn: $settings.showCost).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(coral)
@@ -2808,11 +2916,7 @@ struct SettingsView: View {
             row("Token rate", p, info: "Show the live tokens-per-minute burn rate beside the cost on the Session line.") {
                 Toggle("", isOn: $settings.showTokens).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(coral)
             }
-        }
-        // Per-element visibility: grouped eye toggles. Each hides one popover element and
-        // the card content-hugs to a shorter height with no gaps.
-        subhead("Session", p)
-        card(p) {
+            div(p)
             visRow("Time ring", $settings.showTimeRing, "The reset-countdown ring beside the session number.", p, coral); div(p)
             visRow("Forecast line", $settings.showForecastLine, "The time-to-limit / status line under the session number.", p, coral)
         }
@@ -2836,11 +2940,13 @@ struct SettingsView: View {
         card(p) {
             visRow("Developer API line", $settings.showDeveloperApiLine, "Show your pay-as-you-go API spend as one line at the bottom, when an Admin key is connected.", p, coral)
         }
-        subhead("Chrome", p)
-        card(p) {
+        AdvancedCard(title: "Fine-tune", p: p, spacing: 0) {
             visRow("Section dividers", $settings.popoverDividers, "The hairlines between sections. Off leaves the spacing alone to separate them.", p, coral); div(p)
             visRow("Section eyebrows", $settings.popoverEyebrows, "The small uppercase labels (SESSION, THIS WEEK).", p, coral); div(p)
-            visRow("Compact spacing", $settings.popoverCompact, "Tighten the vertical spacing to fit more in less height.", p, coral)
+            visRow("Compact spacing", $settings.popoverCompact, "Tighten the vertical spacing to fit more in less height.", p, coral); div(p)
+            row("Explain each section", p, info: "Shows a small, faint question dot beside each popover section and chart title. Hover it for a plain-English explanation. Off hides the dots; the tooltips on the labels themselves stay.") {
+                Toggle("", isOn: $settings.popoverExplain).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(coral)
+            }
         }
     }
 
@@ -2985,55 +3091,26 @@ struct SettingsView: View {
             row("Refresh countdown", p, info: "The small pulsing dot and interval on the chart card showing that data is live and how often it refreshes. Turn off to hide it.") {
                 Toggle("", isOn: $settings.showCountdownRing).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(Color(hex: settings.accentHex))
             }
-            div(p)
-            row("Explain each section", p, info: "Shows a small, faint question dot beside each popover section and chart title. Hover it for a plain-English explanation. Off hides the dots; the tooltips on the labels themselves stay.") {
-                Toggle("", isOn: $settings.popoverExplain).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(Color(hex: settings.accentHex))
-            }
-        }
-        subhead("Stored data", p)
-        card(p) {
-            Text("Your usage history is kept on this Mac and survives restarts. Export it for your own analysis, or clear it. Your Claude account, limits, and settings are not affected.")
-                .font(.system(size: 11)).foregroundStyle(p.sub).frame(maxWidth: .infinity, alignment: .leading).padding(.vertical, 7)
-            div(p)
-            Button {
-                if let u = live.exportCSV() {
-                    NSWorkspace.shared.activateFileViewerSelecting([u])
-                    exportNote = "Saved \(u.lastPathComponent) to Downloads"
-                } else { exportNote = "Could not write the file." }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "square.and.arrow.up").font(.system(size: 11))
-                    Text("Export history as CSV").font(.system(size: 12.5, weight: .medium))
-                    Spacer()
-                }.foregroundStyle(p.ink).frame(height: 32)
-            }.buttonStyle(.plain)
-            if let n = exportNote {
-                Text(n).font(.system(size: 11)).foregroundStyle(p.sub).padding(.bottom, 6)
-            }
-            div(p)
-            Button { confirmReset = true } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: "trash").font(.system(size: 11))
-                    Text("Reset chart history and logs…").font(.system(size: 12.5, weight: .medium))
-                    Spacer()
-                }.foregroundStyle(Color(hex: kDangerHex)).frame(height: 32)
-            }.buttonStyle(.plain)
         }
     }
 
     // MARK: - Building blocks
 
     private func header(_ title: String, _ p: Palette) -> some View {
-        Text(title).font(.system(size: 22, weight: .semibold, design: .serif)).foregroundStyle(p.ink)
+        Text(title).font(.system(size: 24, weight: .semibold, design: .serif)).foregroundStyle(p.ink)
     }
+    /// THE section heading, used by every pane. One style, so a group always reads as a group.
+    /// The padding sits on top of the pane VStack's own 16pt spacing, which is why it is 12 and
+    /// not the larger figure the plan quoted: 12 + 16 already lands at a generous 28pt of air.
     private func subhead(_ title: String, _ p: Palette) -> some View {
-        Text(title).font(.system(size: 11, weight: .medium)).tracking(0.4).foregroundStyle(p.faint).padding(.top, 4)
+        Text(title.uppercased()).font(.system(size: 10.5, weight: .semibold)).tracking(1.2)
+            .foregroundStyle(p.faint).padding(.top, 12).padding(.bottom, 2)
     }
     private func card<C: View>(_ p: Palette, @ViewBuilder _ content: () -> C) -> some View {
         VStack(alignment: .leading, spacing: 0) { content() }
             .padding(.horizontal, 12).padding(.vertical, 2)
-            .background(RoundedRectangle(cornerRadius: 10).fill(p.track.opacity(0.45)))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(p.divider, lineWidth: 0.5))
+            .background(RoundedRectangle(cornerRadius: 11).fill(p.track.opacity(0.45)))
+            .overlay(RoundedRectangle(cornerRadius: 11).stroke(p.divider, lineWidth: 0.5))
     }
     private func row<C: View>(_ title: String, _ p: Palette, @ViewBuilder _ control: @escaping () -> C) -> some View {
         SettingRow(title: title, accent: Color(hex: settings.accentHex), p: p, control: control)
@@ -3043,8 +3120,9 @@ struct SettingsView: View {
     }
     private func div(_ p: Palette) -> some View { Rectangle().fill(p.divider).frame(height: 1) }
 
-    // An in-card group header for long cards (e.g. Alerts: Thresholds / Behavior / Test).
-    private func alertGroup(_ t: String, _ p: Palette) -> some View {
+    // The nested heading, one level quieter than `subhead`: used for the style families inside
+    // the "All styles" drawer, where a full-weight eyebrow would compete with the pane's own.
+    private func miniHead(_ t: String, _ p: Palette) -> some View {
         Text(t.uppercased()).font(.system(size: 9.5, weight: .bold)).tracking(0.8).foregroundStyle(p.faint)
             .frame(maxWidth: .infinity, alignment: .leading).padding(.top, 11).padding(.bottom, 3)
     }
@@ -3148,7 +3226,9 @@ struct SettingsView: View {
         .listStyle(.plain)
         .scrollContentBackground(.hidden)
         .scrollDisabled(true)
-        .frame(height: CGFloat(settings.sectionOrder.count) * 38 + 6)
+        // 28pt is what a row actually occupies (13pt label + the 5pt insets above and below).
+        // The old 38 left a dead band under the last row that read as a layout mistake.
+        .frame(height: CGFloat(settings.sectionOrder.count) * 28 + 10)
         .background(RoundedRectangle(cornerRadius: 10).fill(p.track.opacity(0.45)))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(p.divider, lineWidth: 0.5))
     }

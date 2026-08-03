@@ -4,20 +4,20 @@ import SwiftUI
 // MARK: - Breathing, done by the render server
 
 // SwiftUI's `.animation(.repeatForever)` is NOT handed off to Core Animation. SwiftUI keeps its own
-// display link alive for the whole life of the animation and re-renders the display list — and, in an
-// NSHostingView, re-runs `NSHostingView.layout()` — on EVERY display frame, even though no `body`
+// display link alive for the whole life of the animation and re-renders the display list - and, in an
+// NSHostingView, re-runs `NSHostingView.layout()` - on EVERY display frame, even though no `body`
 // re-evaluates. In the floating window (a 264x900 card over a blurred glass material) one 6pt
 // breathing dot cost ~23% of a CPU core continuously; body evaluations were only ~1.5/s.
 //
 // A real `CABasicAnimation` is different: the app hands the render server a start value, an end value
 // and a curve, and then does nothing at all. Interpolation happens out of process, at the display's
-// full rate, for free. These two views are that — the same breath, none of the cost.
+// full rate, for free. These two views are that - the same breath, none of the cost.
 //
 // Rule of thumb for this codebase: a *perpetual* animation must be CA. A *transient* one (a ping, a
 // flare, a milestone pulse) is fine in SwiftUI, because the display link stops when it finishes.
 
 enum Breathing {
-    /// `ImageRenderer` cannot rasterize an `NSViewRepresentable` — it paints the "unsupported content"
+    /// `ImageRenderer` cannot rasterize an `NSViewRepresentable` - it paints the "unsupported content"
     /// placeholder instead, which silently wrecked the QA popover sheet the first time these views went
     /// in. Every offline render in this app is a `CUB_SNAP*` mode, so detect that once and let the
     /// breathing views fall back to a plain SwiftUI shape (frozen at the top of the breath).
@@ -182,7 +182,7 @@ private struct BreathHaloLayer: NSViewRepresentable {
 }
 
 /// The redline bloom: a radial gradient fading from `color` at the top edge to clear, whose opacity
-/// breathes forever. Same deal — `CAGradientLayer` plus one `CABasicAnimation`, zero per-frame app work.
+/// breathes forever. Same deal - `CAGradientLayer` plus one `CABasicAnimation`, zero per-frame app work.
 struct BreathingBloom: View {
     var color: Color
     var peak: Double

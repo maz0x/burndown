@@ -233,7 +233,7 @@ checkerboard and a gradient, with a real contrast readout underneath
 as you like and know the numbers will survive it. One link resets the
 lot.
 
-<img src="site/screenshots/settings-appearance.png" width="660" alt="The whole Appearance pane: theme picker, accent, tint by usage, popover size, then the Background block with live glass preview and contrast readout, style, presets, nine sliders, and the number animation picker">
+<img src="site/screenshots/settings-appearance.png" width="660" alt="The Appearance pane: palette, theme, accent, tint by usage and the live indicator, then the Background block with its live glass preview and contrast readout, three styles and five presets, with the nine adjustment sliders one click down under Fine-tune background, and the number animation picker">
 
 ### Down to the last element
 
@@ -488,7 +488,7 @@ daily check off any time in Settings, General.
 Because the update is fetched by the app rather than a browser, macOS
 does not quarantine it, so updates install without any Gatekeeper prompt.
 
-<img src="site/screenshots/settings-general.png" width="660" alt="Settings, General: the daily update check, the current version with its status line, and a link to releases and source">
+<img src="site/screenshots/settings-general.png" width="660" alt="Settings, General: open at login, dock icon, live usage, refresh rate, the daily update check with the current version and a link to releases and source, and Your data for exporting or clearing history">
 
 ## FAQ
 
