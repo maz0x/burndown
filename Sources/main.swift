@@ -2058,6 +2058,13 @@ if let snapPath = ProcessInfo.processInfo.environment["CUB_SNAP"] {
     StyleSheet.render(to: snapPath)
     exit(0)
 }
+// One menu-bar glyph on transparency, so the hero composite can show the icon sitting in a real
+// menu bar. CUB_SNAP_GLYPH=/path.png [CUB_GLYPH_STYLE=smolder].
+if let gPath = ProcessInfo.processInfo.environment["CUB_SNAP_GLYPH"] {
+    let style = MenuBarStyle(rawValue: ProcessInfo.processInfo.environment["CUB_GLYPH_STYLE"] ?? "") ?? .smolder
+    StyleSheet.renderGlyph(style, to: gPath)
+    exit(0)
+}
 if let popPath = ProcessInfo.processInfo.environment["CUB_SNAP_POP"] {
     MainActor.assumeIsolated { StyleSheet.renderPopover(to: popPath, dark: ProcessInfo.processInfo.environment["CUB_DARK"] != nil) }
     exit(0)

@@ -18,6 +18,23 @@ enum StyleSheet {
         return g
     }
 
+    // One glyph, at its true menu-bar size, on transparency. The hero composite pastes this into
+    // a drawn menu bar so the landing page can show WHERE the app lives, not just what it draws.
+    static func renderGlyph(_ style: MenuBarStyle, to path: String) {
+        let img = MenuBarRenderer.image(style: style, sampleGlyph())
+        let s = img.size
+        // 2x, matching every other asset in docs/screenshots.
+        let out = NSImage(size: NSSize(width: s.width * 2, height: s.height * 2))
+        out.lockFocus()
+        img.draw(in: NSRect(x: 0, y: 0, width: s.width * 2, height: s.height * 2),
+                 from: .zero, operation: .sourceOver, fraction: 1,
+                 respectFlipped: true, hints: [.interpolation: NSImageInterpolation.high])
+        out.unlockFocus()
+        guard let tiff = out.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else { return }
+        try? png.write(to: URL(fileURLWithPath: path))
+    }
+
     // QA: render the flame across burn intensities x redline, at two flicker phases each,
     // so we can eyeball the temperature ramp (coal -> white-hot), the rage near the limit,
     // and the sparks. CUB_SNAP_FLAME=/path.png.

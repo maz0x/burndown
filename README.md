@@ -40,8 +40,8 @@ It keeps itself up to date from here on.
 > building from source avoids the question entirely.
 
 <p align="center">
-  <img src="site/screenshots/popover.png" width="264" alt="The Burndown card in light mode: session and weekly percentages, per-model caps, live burn rate, and a chart">
-  <img src="site/screenshots/popover-dark.png" width="264" alt="The same card in dark mode">
+  <img src="site/screenshots/hero.png" width="420" alt="The Burndown icon in the macOS menu bar showing 46 percent, with its card open beneath: session and weekly percentages, per-model caps, live burn rate, and a chart">
+  <img src="site/screenshots/hero-dark.png" width="420" alt="The same menu bar icon and card in dark mode">
 </p>
 
 ## The whole picture, one click away
