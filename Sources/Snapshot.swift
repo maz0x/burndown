@@ -610,6 +610,26 @@ enum StyleSheet {
                                        cache5m: Int(w * 11_000), cache1h: 0, cacheRead: Int(w * 90_000)))
             }
         }
+        // RECENT DETAIL, and it is not decoration. The loop above emits ONE record per hour, at
+        // minute 10, weighted by hour of day with zero overnight. The popover's default chart
+        // window is ONE HOUR, so it saw at most a single bar, and rendering the screenshots at
+        // night produced a chart reading "No usage in this window". The sample set was therefore
+        // time-of-day dependent, which also made "reruns are comparable" untrue.
+        // These minute-level records sit in the last 90 minutes so any short window has a full,
+        // honest-looking shape whatever the clock says.
+        let recent: [Double] = [0.34, 0.52, 0.41, 0.68, 0.86, 0.62, 0.94, 0.73,
+                                0.58, 0.81, 1.00, 0.77, 0.64, 0.88, 0.70, 0.46,
+                                0.75, 0.92, 0.66, 0.83, 0.55, 0.71, 0.38]
+        for (i, w) in recent.enumerated() {
+            let slot = now.addingTimeInterval(-Double(recent.count - i) * 4 * 60)
+            let m = models[i % models.count]
+            let pr = projects[(i / 2) % projects.count]
+            let chats = ["Draft the launch plan", "Plan the research trip",
+                         "Debug the importer", "Rewrite the onboarding copy"]
+            out.append(UsageRecord(date: slot, model: m, project: pr, session: chats[(i / 2) % chats.count],
+                                   input: Int(w * 9_000), output: Int(w * 2_100),
+                                   cache5m: Int(w * 2_600), cache1h: 0, cacheRead: Int(w * 21_000)))
+        }
         return out.sorted { $0.date < $1.date }
     }
 
