@@ -347,82 +347,96 @@ enum StyleSheet {
         try? png.write(to: URL(fileURLWithPath: path))
     }
 
+    // The menu-bar style contact sheet. Every glyph sits inside a dark chip shaped like the
+    // menu bar it will actually live in, at close to true size, grouped by the same families
+    // the Settings picker uses. The previous version was a two-column table of very tall rows,
+    // which left each small glyph stranded in whitespace and gave no clue these were menu-bar
+    // icons at all.
     static func render(to path: String) {
         let g = sampleGlyph()
         // Only styles a user can actually choose. allCases still carries six retired styles
         // (kiln, inferno, ignite, charred, molten, coals) that the picker hides, and publishing
         // them advertises glyphs nobody can select.
-        let styles = MenuBarStyle.allCases.filter { !$0.isRetired }
-        let scale: CGFloat = 2.2
-        let glyphs = styles.map { MenuBarRenderer.image(style: $0, g) }
+        let families: [(MenuBarStyle.Family, [MenuBarStyle])] = MenuBarStyle.Family.allCases.map { fam in
+            (fam, MenuBarStyle.allCases.filter { $0.family == fam && !$0.isRetired })
+        }.filter { !$0.1.isEmpty }
 
-        // Size the grid from the artwork rather than guessing. The old fixed 46pt row was
-        // shorter than the tallest glyph at this scale, so every row bled into its neighbour.
-        let maxGlyphH = (glyphs.map { $0.size.height }.max() ?? 22) * scale
-        let maxGlyphW = (glyphs.map { $0.size.width }.max() ?? 60) * scale
-        let padX: CGFloat = 22, gap: CGFloat = 20, padY: CGFloat = 18
-        let rowH = (maxGlyphH + 26).rounded()
-        let glyphBoxW = min(maxGlyphW, 300).rounded()
-        let labelX = padX + glyphBoxW + gap
+        // POINTS, not pixels: lockFocus renders on a Retina backing store, so the PNG comes out
+        // at 2x these numbers and is published at this width. Getting that wrong is how the old
+        // sheet ended up twice the size it meant to be.
+        let cols = 4
+        let chipW: CGFloat = 186, chipH: CGFloat = 56, chipR: CGFloat = 10
+        let gapX: CGFloat = 18, labelH: CGFloat = 22, rowGap: CGFloat = 20
+        let padX: CGFloat = 24, padY: CGFloat = 22, headH: CGFloat = 32
+        let cellH = chipH + labelH + rowGap
+        // The glyphs are already at true menu-bar size; a touch over 1x keeps them honest while
+        // staying legible in a contact sheet.
+        let glyphScale: CGFloat = 1.25
 
-        let cols = 2
-        let perCol = (styles.count + cols - 1) / cols
-        // Enough room for the longest label plus its LIVE pill without either touching the
-        // column divider. Also lands the sheet at the width the landing page reserves for it.
-        let colW = (labelX + 255).rounded()
-        let W = colW * CGFloat(cols)
-        let H = CGFloat(perCol) * rowH + padY * 2
+        let W = padX * 2 + CGFloat(cols) * chipW + CGFloat(cols - 1) * gapX
+        var H = padY * 2
+        for (_, items) in families {
+            H += headH + CGFloat((items.count + cols - 1) / cols) * cellH
+        }
 
         let sheet = NSImage(size: NSSize(width: W, height: H))
         sheet.lockFocus()
-        NSColor(calibratedWhite: 0.11, alpha: 1).setFill()
+        // The app's own paper, so the sheet belongs with every other documentation image.
+        (NSColor(hex: "F5F3EE") ?? .white).setFill()
         NSBezierPath(rect: NSRect(x: 0, y: 0, width: W, height: H)).fill()
 
-        let labelAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 13, weight: .medium),
-            .foregroundColor: NSColor(calibratedWhite: 0.88, alpha: 1)]
-        let liveAttrs: [NSAttributedString.Key: Any] = [
-            .font: NSFont.systemFont(ofSize: 8.5, weight: .bold),
-            .foregroundColor: NSColor(hex: "D97757") ?? .orange]
+        let headAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
+            .foregroundColor: NSColor(hex: "8A8378") ?? .gray,
+            .kern: 1.2]
+        let nameAttrs: [NSAttributedString.Key: Any] = [
+            .font: NSFont.systemFont(ofSize: 12, weight: .medium),
+            .foregroundColor: NSColor(hex: "3A3733") ?? .black]
 
-        for (i, style) in styles.enumerated() {
-            let col = i / perCol, row = i % perCol
-            let ox = CGFloat(col) * colW
-            let y = H - padY - CGFloat(row + 1) * rowH
+        var y = H - padY
+        for (fam, items) in families {
+            let head = fam.rawValue.uppercased() as NSString
+            let hs = head.size(withAttributes: headAttrs)
+            head.draw(at: NSPoint(x: padX, y: y - hs.height), withAttributes: headAttrs)
+            y -= headH
 
-            // Alternating tint reads far better than hairlines once rows are this tall.
-            if row % 2 == 1 {
-                NSColor(calibratedWhite: 1, alpha: 0.035).setFill()
-                NSBezierPath(rect: NSRect(x: ox, y: y, width: colW, height: rowH)).fill()
+            for (i, style) in items.enumerated() {
+                let col = i % cols, row = i / cols
+                let cx = padX + CGFloat(col) * (chipW + gapX)
+                let cy = y - CGFloat(row + 1) * cellH + rowGap
+
+                // The chip: a slice of a dark menu bar, which is what makes these read as
+                // menu-bar icons rather than loose artwork.
+                let chip = NSRect(x: cx, y: cy + labelH, width: chipW, height: chipH)
+                NSColor(calibratedWhite: 0.11, alpha: 1).setFill()
+                NSBezierPath(roundedRect: chip, xRadius: chipR, yRadius: chipR).fill()
+                NSColor(calibratedWhite: 1, alpha: 0.07).setStroke()
+                let edge = NSBezierPath(roundedRect: chip.insetBy(dx: 0.5, dy: 0.5), xRadius: chipR, yRadius: chipR)
+                edge.lineWidth = 1
+                edge.stroke()
+
+                let glyph = MenuBarRenderer.image(style: style, g)
+                let dw = glyph.size.width * glyphScale, dh = glyph.size.height * glyphScale
+                glyph.draw(in: NSRect(x: chip.midX - dw / 2, y: chip.midY - dh / 2, width: dw, height: dh),
+                           from: .zero, operation: .sourceOver, fraction: 1,
+                           respectFlipped: true, hints: [.interpolation: NSImageInterpolation.high])
+
+                // A live style gets the same small accent dot the Settings picker uses.
+                if style.isLive {
+                    (NSColor(hex: "D97757") ?? .orange).setFill()
+                    let d: CGFloat = 5
+                    NSBezierPath(ovalIn: NSRect(x: chip.maxX - d - 7, y: chip.maxY - d - 7,
+                                                width: d, height: d)).fill()
+                }
+
+                let name = style.label.replacingOccurrences(of: " (live)", with: "") as NSString
+                let ns = name.size(withAttributes: nameAttrs)
+                name.draw(at: NSPoint(x: chip.midX - ns.width / 2, y: cy + (labelH - ns.height) / 2),
+                          withAttributes: nameAttrs)
             }
-
-            let glyph = glyphs[i]
-            let drawW = glyph.size.width * scale, drawH = glyph.size.height * scale
-            // Left-aligned in a fixed box so labels line up, centred vertically in the row.
-            let gx = ox + padX, gy = y + (rowH - drawH) / 2
-            glyph.draw(in: NSRect(x: gx, y: gy, width: drawW, height: drawH),
-                       from: .zero, operation: .sourceOver, fraction: 1,
-                       respectFlipped: true, hints: [.interpolation: NSImageInterpolation.high])
-
-            // One line, not two. The label already ends in "(live)", so the old separate LIVE
-            // badge under it was saying the same thing twice and forcing a second text row.
-            let name = style.label.replacingOccurrences(of: " (live)", with: "")
-            let nameSize = (name as NSString).size(withAttributes: labelAttrs)
-            let ty = y + (rowH - nameSize.height) / 2
-            (name as NSString).draw(at: NSPoint(x: ox + labelX, y: ty), withAttributes: labelAttrs)
-            if style.isLive {
-                let text = "LIVE" as NSString
-                let ts = text.size(withAttributes: liveAttrs)
-                let px = ox + labelX + nameSize.width + 8
-                let pill = NSRect(x: px, y: ty + 2.5, width: ts.width + 10, height: ts.height + 2)
-                NSColor(hex: "D97757")?.withAlphaComponent(0.16).setFill()
-                NSBezierPath(roundedRect: pill, xRadius: 4, yRadius: 4).fill()
-                text.draw(at: NSPoint(x: px + 5, y: ty + 3.5), withAttributes: liveAttrs)
-            }
+            y -= CGFloat((items.count + cols - 1) / cols) * cellH
         }
-        // Column divider.
-        NSColor(calibratedWhite: 1, alpha: 0.10).setFill()
-        NSBezierPath(rect: NSRect(x: colW, y: padY, width: 0.5, height: H - padY * 2)).fill()
+
         sheet.unlockFocus()
         guard let tiff = sheet.tiffRepresentation,
               let rep = NSBitmapImageRep(data: tiff),
