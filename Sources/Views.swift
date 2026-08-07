@@ -701,13 +701,12 @@ struct DetailCard: View {
                      })
             // The width the charts get is the card's 16pt padding PLUS this box's own inset, and
             // cutting the inset alone just moved the charts up against the box edge. So the box
-            // reaches OUT instead: a negative outer margin trims its distance from the card edge
-            // from 16pt to 10, and the inset inside it goes back up to 10 so nothing touches the
-            // border. Thinner outside, roomier inside, and the charts still end up wider than
-            // before either change.
+            // reaches OUT instead: -9 against the card's 16 leaves a 7pt margin outside it, while
+            // the inset inside stays at 10 so nothing touches the border. Thin outside, roomy
+            // inside, and the charts end up 12pt wider than they were before any of this.
             .padding(.horizontal, 10).padding(.vertical, 11)
             .background(RoundedRectangle(cornerRadius: 12).fill(p.raisedBg))
-            .padding(.horizontal, -6)
+            .padding(.horizontal, -9)
     }
 
     private func weekSection(p: Palette, wColor: Color, ringC: Color) -> some View {
