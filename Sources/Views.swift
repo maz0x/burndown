@@ -56,6 +56,15 @@ func qaSettingsPaneHeight(_ t: SettingsTab) -> CGFloat {
 
 struct Palette {
     var bg, ink, sub, faint, track, divider, live, session, weekly, warning, overLimit, raisedBg: Color
+    /// The hero hues, deepened enough to be READ rather than only seen.
+    ///
+    /// `session` and `weekly` are tuned as graphics: a dot, a bar in a groove, held to the 3:1 WCAG
+    /// asks of a graphical object. The moment one of them colours a NUMBER it is text, and text is
+    /// held to 4.5:1. Using the graphic version there failed in 28 of the 42 palette and scheme
+    /// combinations, so the text version is derived once, per palette, alongside every other
+    /// legibility correction. Filled in by `legible`; never set by hand.
+    var sessionText: Color = .clear
+    var weeklyText: Color = .clear
     // The selected whole-app palette. AppSettings keeps this in sync; views read it via of().
     static var current: PalettePreset = .stoneClay
     // raisedBg: inner chart-card / raised-surface fill. Derived per preset as bg blended
@@ -143,6 +152,9 @@ struct Palette {
         // hue and saturation untouched, so a theme still looks like itself.
         q.session   = deepen(p.session, over: [p.bg, p.track], dark: dark, 3.0)
         q.weekly    = deepen(p.weekly, over: [p.bg, p.track], dark: dark, 3.0)
+        // Same hues again, taken further, for the places they carry a number instead of a shape.
+        q.sessionText = deepen(q.session, over: [p.bg], dark: dark, 4.5)
+        q.weeklyText  = deepen(q.weekly, over: [p.bg], dark: dark, 4.5)
         return q
     }
 
@@ -274,9 +286,16 @@ struct CapLimitRow: View {
             .frame(width: nameWidth, alignment: .leading)
             HBar(pct: m.pct, color: m.active ? barColor : barColor.opacity(0.6), track: p.track, height: 5,
                  a11yLabel: "\(m.label) weekly cap")
+            // Tinted to its own bar, so the number and the bar it belongs to read as one thing.
+            // The binding cap keeps the session hue it is already marked with; the rest take the
+            // weekly slate at full strength, which still clears contrast because the roles were
+            // corrected at palette level.
+            // Tinted to its own bar, so the number and the bar it belongs to read as one thing,
+            // but in the TEXT-safe version of the hue: the graphic one is only held to 3:1.
             Text("\(Int((m.remaining * 100).rounded()))% left")
                 .font(.system(size: 12, weight: .medium, design: .monospaced)).monospacedDigit()
-                .foregroundStyle(p.ink).frame(width: valueWidth, alignment: .trailing)
+                .foregroundStyle(m.active ? p.sessionText : p.weeklyText)
+                .frame(width: valueWidth, alignment: .trailing)
         }
         .help("\(m.label): \(Int((m.pct * 100).rounded()))% of its own weekly cap used" + (m.resetAt.map { ", resets \(resetDayString($0))" } ?? ""))
     }

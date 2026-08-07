@@ -1,5 +1,15 @@
 # What's new in Burndown
 
+## 0.9.5
+
+- **The screenshot of the Insights window on the site was cut off down its right-hand side.** The
+  window was widened in 0.9.4 but the picture of it was still being drawn at the old, narrower
+  size, so the last column was sliced off mid-word in every published shot.
+- **The "% left" figure on each weekly limit now matches the colour of its own bar**, so the number
+  and the bar read as one thing rather than two. It uses a deepened version of that colour: the
+  hues used for bars and dots are tuned to be seen, not read, and using them for a number directly
+  fell below the readability standard in most of the themes.
+
 ## 0.9.4
 
 - **Insights opens in a fraction of a second instead of several.** The scan behind it read every

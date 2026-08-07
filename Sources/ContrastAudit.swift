@@ -65,6 +65,13 @@ enum ContrastAudit {
              fg: { $0.overLimit }, bg: { $0.bg }, decorative: false),
         Pair(name: "live on bg", where_: "the live indicator", size: 11, bold: false,
              fg: { $0.live }, bg: { $0.bg }, decorative: false),
+        // The cap rows tint their "% left" to match their bar, which turns a hue that is otherwise
+        // only ever SHOWN into one that is READ. That is a different bar entirely, so it is checked
+        // as text rather than assumed to be fine because the dot version passes.
+        Pair(name: "session as cap text", where_: "the binding cap's % left", size: 12, bold: false,
+             fg: { $0.sessionText }, bg: { $0.bg }, decorative: false),
+        Pair(name: "weekly as cap text", where_: "a cap row's % left", size: 12, bold: false,
+             fg: { $0.weeklyText }, bg: { $0.bg }, decorative: false),
         // --- structure ---
         // The FILLED part of a usage bar against its own groove is the pair that carries the
         // reading, and WCAG holds that to 3:1. The groove against the window behind it does not:

@@ -859,12 +859,17 @@ enum StyleSheet {
                          date: kv.value.date, tokens: kv.value.tokens,
                          cost: Double(kv.value.tokens) / 1_000_000 * 12.5)
         }
+        // Must be at least InsightsView's own minWidth. When the window was widened to a 900pt
+        // floor this render was left at 640, and a view cannot shrink below its minimum: it simply
+        // overflowed the canvas, so every published screenshot of Insights had its right-hand
+        // column sliced off mid-word. Rendering at the window's ideal width keeps the two in step.
+        let shotW: CGFloat = 1160
         let view = InsightsView(engine: engine, settings: settings, preview: (recs, sessions))
-            .frame(width: 640, height: 1500, alignment: .topLeading)
+            .frame(width: shotW, height: 1500, alignment: .topLeading)
             .background(p.bg)
             .environment(\.colorScheme, dark ? .dark : .light)
         let renderer = ImageRenderer(content: view)
-        renderer.proposedSize = ProposedViewSize(width: 640, height: 1500)
+        renderer.proposedSize = ProposedViewSize(width: shotW, height: 1500)
         renderer.scale = 2
         guard let img = renderer.nsImage, let tiff = img.tiffRepresentation,
               let rep = NSBitmapImageRep(data: tiff),
