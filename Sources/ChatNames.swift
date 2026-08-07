@@ -25,7 +25,18 @@ final class ChatNames: ObservableObject {
     }
 
     /// The name to show: the user's alias if set, else the harvested original.
-    func display(_ original: String) -> String { aliases[original] ?? original }
+    ///
+    /// The last line of defence against a raw session id reaching the reader. Both data paths now
+    /// carry real titles, but a record from an older cache, or a log whose title could not be
+    /// read, could still arrive here as a bare UUID, and a UUID on screen is never the right
+    /// answer. Checked at the point of display so no future caller can route around it.
+    func display(_ original: String) -> String {
+        if let a = aliases[original] { return a }
+        if looksLikeSessionID(original) {
+            return SessionTitles.shared.title(for: original) ?? untitledChatLabel(nil)
+        }
+        return original
+    }
 
     func setAlias(_ alias: String, for original: String) {
         let a = alias.trimmingCharacters(in: .whitespacesAndNewlines)

@@ -47,5 +47,49 @@ check(nearestSample(pool, to: t0.addingTimeInterval(110))?.v == 2, "closest by t
 check(nearestSample(pool, to: t0.addingTimeInterval(290))?.v == 3, "closest by time (later)")
 check(nearestSample([], to: t0) == nil, "empty -> nil")
 
+// MARK: modelWeekShareSeries - per-model lines on the "Session + week %" chart
+do {
+    let now = Date()
+    let reset = now.addingTimeInterval(3 * 86_400)          // weekly window resets in 3 days
+    func rec(_ ago: Double, _ model: String, _ tok: Int) -> UsageRecord {
+        UsageRecord(date: now.addingTimeInterval(-ago), model: model, project: "p", session: "s",
+                    input: tok, output: 0, cache5m: 0, cache1h: 0, cacheRead: 0)
+    }
+    let records = [rec(4 * 3600, "claude-fable-5", 100), rec(2 * 3600, "claude-fable-5", 300),
+                   rec(1 * 3600, "claude-opus-4-8", 100)]
+
+    let out = modelWeekShareSeries(records: records, weeklyPct: 0.50, weeklyResetAt: reset, now: now)
+    check(out.count == 2, "every model used gets a line, capped or not")
+    check(out.map(\.label) == ["Fable", "Opus"], "biggest consumer leads the legend")
+
+    // The whole point of the shared calibration: the model lines must ADD UP to the weekly
+    // percentage the card shows, so the chart can never contradict the number above it.
+    let ends = out.map { $0.samples.last?.v ?? 0 }
+    check(abs(ends.reduce(0, +) - 0.50) < 0.0001, "model lines sum to the reported weekly percentage")
+
+    // 400 of 500 tokens are Fable, so Fable owns 80% of the 50% consumed.
+    let fable = out.first { $0.label == "Fable" }!
+    check(abs((fable.samples.last?.v ?? 0) - 0.40) < 0.0001, "each line is its true share of the week")
+    check(fable.samples.first?.v == 0, "and starts the week at zero")
+    let rising = zip(fable.samples, fable.samples.dropFirst()).allSatisfy { $0.v <= $1.v + 0.0001 }
+    check(rising, "cumulative usage never goes down")
+
+    // An uncapped model still appears. This is the bug the measure change fixes: under the old
+    // per-cap measure Opus had no weekly ceiling of its own, so it drew no line at all.
+    check(out.contains { $0.label == "Opus" }, "a model with no weekly cap of its own still appears")
+
+    // No weekly reading means no scale to calibrate against, so there is nothing honest to draw.
+    let zeroed = modelWeekShareSeries(records: records, weeklyPct: 0, weeklyResetAt: reset, now: now)
+    check(zeroed.isEmpty, "0% weekly is skipped rather than dividing by zero")
+
+    // Records from before this weekly window must not count toward it.
+    let old = [rec(9 * 86_400, "claude-fable-5", 9_999)] + records
+    let scoped = modelWeekShareSeries(records: old, weeklyPct: 0.50, weeklyResetAt: reset, now: now)
+    check(abs((scoped.first { $0.label == "Fable" }?.samples.last?.v ?? 0) - 0.40) < 0.0001,
+          "last week's usage does not drag this week's line")
+    check(abs(scoped.map { $0.samples.last?.v ?? 0 }.reduce(0, +) - 0.50) < 0.0001,
+          "and the sum still lands on the weekly reading")
+}
+
 print(failures == 0 ? "\nALL PASS" : "\n\(failures) FAILURE(S)")
 exit(failures == 0 ? 0 : 1)

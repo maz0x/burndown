@@ -12,25 +12,6 @@ extension View {
     }
 }
 
-/// The whole self-explanation affordance: one faint 8.5pt question dot whose tooltip carries the
-/// plain-English note. Subtle by design: explanations take no space. Gated by the
-/// "Explain each section" setting; the tooltip on the label itself works even when the dot is off.
-struct ExplainDot: View {
-    var text: String
-    var p: Palette
-    var on: Bool = true
-    var body: some View {
-        if on {
-            Image(systemName: "questionmark.circle")
-                .font(.system(size: 8.5))
-                .foregroundStyle(p.faint).opacity(0.55)
-                .help(text)
-                .accessibilityLabel("What is this?")
-                .accessibilityHint(text)
-        }
-    }
-}
-
 // Preview an alert sound when the user picks one in Settings. Plays the exact bundled asset the
 // notification will use (falling back to the named system sound, or a beep for the default).
 func previewAlertSound(_ name: String) {
@@ -49,6 +30,29 @@ func gaugeColor(_ pct: Double, _ over: Bool) -> Color {
     return Color(red: 0.85, green: 0.47, blue: 0.34)                              // clay  #D97757
 }
 let kSlate = Color(red: 0.49, green: 0.56, blue: 0.65)   // time accent #7E8EA6
+
+/// Height of one Settings pane when QA renders it without a ScrollView.
+///
+/// Free, and shared with the snapshot renderer. It used to keep its own numbers, which is how a
+/// pane could grow in the app and still be captured at the old height, cutting the bottom off the
+/// screenshot without anything failing. Measured with docs/measure-panes.sh, never guessed.
+/// CUB_PANE_H overrides it, which is how the measuring pass gets a tall canvas to measure in.
+func qaSettingsPaneHeight(_ t: SettingsTab) -> CGFloat {
+    if let s = ProcessInfo.processInfo.environment["CUB_PANE_H"], let v = Double(s) { return CGFloat(v) }
+    let open = ProcessInfo.processInfo.environment["CUB_OPEN_DRAWERS"] != nil
+    // Measured by docs/measure-panes.sh, plus 6pt so a stray descender can never be shaved off.
+    // The old menu bar number was 274pt short of its own open drawers, so that screenshot had been
+    // going out with its bottom cut off.
+    switch t {
+    case .general:    return 705
+    case .menuBar:    return open ? 1260 : 686
+    case .popover:    return open ? 1483 : 1319
+    case .data:       return 3594
+    case .companions: return 436      // nothing to expand until a companion is switched on
+    case .appearance: return open ? 1336 : 797
+    case .alerts:     return 1088     // measured with alerts switched on, which is how it is shot
+    }
+}
 
 struct Palette {
     var bg, ink, sub, faint, track, divider, live, session, weekly, warning, overLimit, raisedBg: Color
@@ -74,7 +78,90 @@ struct Palette {
                        warning: Color(hex: dark ? "E0A23F" : "B8801C"), overLimit: Color(hex: dark ? "D2553A" : "A0341A"),
                        raisedBg: Color(nsColor: bgN.blended(to: track, 0.30)))
     }
+    // MARK: Legibility correction
+
+    /// Push a neutral tone toward the theme's own ink until it clears a contrast ratio.
+    private static func toward(_ fg: Color, _ ink: Color, over surfaces: [Color], _ ratio: Double) -> Color {
+        let f = NSColor(fg), i = NSColor(ink), s = surfaces.map { NSColor($0) }
+        func worst(_ c: NSColor) -> Double { s.map { NSColor.wcagContrast(c, $0) }.min() ?? 21 }
+        if worst(f) >= ratio { return fg }
+        var t: CGFloat = 0.04
+        while t <= 1 {
+            let c = f.blended(to: i, t)
+            if worst(c) >= ratio { return Color(nsColor: c) }
+            t += 0.04
+        }
+        return ink
+    }
+
+    /// Deepen (light scheme) or lift (dark scheme) a coloured role until it clears a ratio,
+    /// keeping its hue and saturation so the theme still looks like itself.
+    private static func deepen(_ fg: Color, over surfaces: [Color], dark: Bool, _ ratio: Double) -> Color {
+        let b = surfaces.map { NSColor($0) }
+        guard let f = NSColor(fg).usingColorSpace(.deviceRGB) else { return fg }
+        func worst(_ c: NSColor) -> Double { b.map { NSColor.wcagContrast(c, $0) }.min() ?? 21 }
+        if worst(f) >= ratio { return fg }
+        var h: CGFloat = 0, sat: CGFloat = 0, br: CGFloat = 0, a: CGFloat = 0
+        f.getHue(&h, saturation: &sat, brightness: &br, alpha: &a)
+        for step in 1...40 {
+            let k = CGFloat(step) / 40
+            let nb = dark ? br + (1 - br) * k : br * (1 - k)
+            let c = NSColor(hue: h, saturation: sat, brightness: nb, alpha: a)
+            if worst(c) >= ratio { return Color(nsColor: c) }
+        }
+        return Color(nsColor: NSColor(hue: h, saturation: sat, brightness: dark ? 1 : 0, alpha: a))
+    }
+
+    /// Every palette, corrected for legibility before anyone draws with it.
+    ///
+    /// The audit (docs/contrast-audit.csv, written by CUB_CONTRAST) found `faint` under WCAG AA in
+    /// all 42 palette-and-scheme combinations, which is exactly the "too faded and barely readable"
+    /// this was reported as, plus `sub` failing over filled rows and bubbles, and the warning,
+    /// live and over-limit roles failing wherever they are read as a sentence rather than shown as
+    /// a dot. Correcting 42 hand-written hex triples would fix today and rot the next time a theme
+    /// is added, so the correction lives here instead and no future theme can fail either.
+    ///
+    /// Only the ROLES THAT CARRY WORDS are corrected. The session and weekly hero hues are the
+    /// identity of each theme and are shown as bars and dots, so they are held to the 3:1 that
+    /// WCAG asks of a graphical object and otherwise left exactly as designed.
+    private static func legible(_ p: Palette, dark: Bool) -> Palette {
+        var q = p
+        q.faint = toward(p.faint, p.ink, over: [p.bg, p.track], 4.5)
+        q.sub   = toward(p.sub, p.ink, over: [p.bg, p.track, p.raisedBg], 4.5)
+        // faint must never end up stronger than sub: they are a hierarchy, and correcting only the
+        // weaker one can invert it.
+        if NSColor.wcagContrast(NSColor(q.sub), NSColor(p.bg))
+            < NSColor.wcagContrast(NSColor(q.faint), NSColor(p.bg)) {
+            q.sub = q.faint
+        }
+        q.warning   = deepen(p.warning, over: [p.bg], dark: dark, 4.5)
+        q.live      = deepen(p.live, over: [p.bg], dark: dark, 4.5)
+        q.overLimit = deepen(p.overLimit, over: [p.bg], dark: dark, 4.5)
+        // The hero hues are graphical, not textual: a dot on the window and a filled bar in its
+        // groove. 3:1 is what WCAG asks of those, and six themes drew a bar only 2.3:1 against its
+        // own track, which is a bar you cannot actually read. Held to 3:1 against BOTH surfaces,
+        // hue and saturation untouched, so a theme still looks like itself.
+        q.session   = deepen(p.session, over: [p.bg, p.track], dark: dark, 3.0)
+        q.weekly    = deepen(p.weekly, over: [p.bg, p.track], dark: dark, 3.0)
+        return q
+    }
+
+    /// Corrected palettes, cached. `of` is called from inside view bodies, so it has to be free
+    /// after the first call for a given theme.
+    private static var tuned: [String: Palette] = [:]
     static func of(_ s: ColorScheme) -> Palette {
+        let key = "\(current.rawValue)|\(s == .dark)"
+        if let hit = tuned[key] { return hit }
+        let v = legible(raw(s), dark: s == .dark)
+        tuned[key] = v
+        return v
+    }
+
+    /// The palettes as written, before the legibility correction. Audit-only, so the "before"
+    /// half of docs/ can be regenerated rather than trusted.
+    static func uncorrected(_ s: ColorScheme) -> Palette { raw(s) }
+
+    private static func raw(_ s: ColorScheme) -> Palette {
         let dark = s == .dark
         // pal(bg, ink, sub, faint, track, divider, live, SESSION, WEEKLY, WARNING, OVERLIMIT). session +
         // weekly are the two hero metric colors; warning + overLimit are the threshold + over-limit roles,
@@ -168,16 +255,28 @@ struct HBar: View {
 // Shared by the popover and the Account window so both speak the same language.
 struct CapLimitRow: View {
     let m: ScopedLimit; let p: Palette; var barColor: Color = kSlate; var nameWidth: CGFloat = 52
+    /// Width of the trailing "% left" column. Fixed, so every row's number ends on the same edge
+    /// as the bars above and below it instead of wherever its own digits happen to finish.
+    var valueWidth: CGFloat = 66
     var body: some View {
         HStack(spacing: 8) {
-            if m.active { Circle().fill(p.session).frame(width: 4, height: 4) } else { Spacer().frame(width: 4) }
-            Text(m.label).font(.system(size: 12, weight: m.active ? .semibold : .regular))
-                .foregroundStyle(m.active ? p.ink : p.sub).frame(width: nameWidth, alignment: .leading).lineLimit(1)
+            // The dot is drawn INSIDE the name column, not in front of it.
+            //
+            // It used to sit in its own slot with an empty spacer standing in when there was no
+            // dot, so a lone inactive row was pushed 12pt to the right of the section above it
+            // and looked indented for no reason a reader could see. Now the row always starts at
+            // the section's own left edge, and the dot lives in the space the label already has.
+            HStack(spacing: 5) {
+                if m.active { Circle().fill(p.session).frame(width: 4, height: 4) }
+                Text(m.label).font(.system(size: 12, weight: m.active ? .semibold : .regular))
+                    .foregroundStyle(m.active ? p.ink : p.sub).lineLimit(1)
+            }
+            .frame(width: nameWidth, alignment: .leading)
             HBar(pct: m.pct, color: m.active ? barColor : barColor.opacity(0.6), track: p.track, height: 5,
                  a11yLabel: "\(m.label) weekly cap")
             Text("\(Int((m.remaining * 100).rounded()))% left")
                 .font(.system(size: 12, weight: .medium, design: .monospaced)).monospacedDigit()
-                .foregroundStyle(p.ink).fixedSize()
+                .foregroundStyle(p.ink).frame(width: valueWidth, alignment: .trailing)
         }
         .help("\(m.label): \(Int((m.pct * 100).rounded()))% of its own weekly cap used" + (m.resetAt.map { ", resets \(resetDayString($0))" } ?? ""))
     }
@@ -203,7 +302,11 @@ struct ByModelSplit: View {
     let usage: [ModelUse]; let p: Palette
     var body: some View {
         let legend = Array(usage.prefix(4))
-        let rows = stride(from: 0, to: legend.count, by: 2).map { Array(legend[$0 ..< min($0 + 2, legend.count)]) }
+        // Three across, not two. Two per row put a lone third model on a line of its own and cost
+        // a whole row of the card's height for one word.
+        let perRow = legend.count <= 3 ? 3 : 2
+        let rows = stride(from: 0, to: legend.count, by: perRow)
+            .map { Array(legend[$0 ..< min($0 + perRow, legend.count)]) }
         VStack(alignment: .leading, spacing: 8) {
             GeometryReader { g in
                 let gap: CGFloat = 1.5
@@ -221,11 +324,12 @@ struct ByModelSplit: View {
                         ForEach(rows[ri]) { u in
                             HStack(spacing: 5) {
                                 Circle().fill(modelHue(u.label, p)).frame(width: 6, height: 6)
-                                Text(u.label).font(.system(size: 11)).foregroundStyle(p.sub).fixedSize()
+                                Text(u.label).font(.system(size: 10.5)).foregroundStyle(p.sub).fixedSize()
                                 Text(u.share < 0.005 ? "<1%" : "\(Int((u.share * 100).rounded()))%")
-                                    .font(.system(size: 11, design: .monospaced)).foregroundStyle(p.faint).monospacedDigit().fixedSize()
+                                    .font(.system(size: 10.5, design: .monospaced)).foregroundStyle(p.faint)
+                                    .monospacedDigit().fixedSize()
                             }
-                            .frame(width: 108, alignment: .leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         Spacer(minLength: 0)
                     }
@@ -304,7 +408,7 @@ struct DetailCard: View {
             HStack(spacing: 5) {
                 Text(t.uppercased()).font(.system(size: 11, weight: .semibold)).tracking(1.4)
                     .foregroundStyle(p.sub)
-                if let note { ExplainDot(text: note, p: p, on: settings.popoverExplain) }
+                if let note { InfoDot(text: note, p: p, accent: Color(hex: settings.accentHex), on: settings.popoverExplain) }
             }
             .padding(.bottom, settings.popoverCompact ? 6 : 8)
         }
@@ -425,11 +529,19 @@ struct DetailCard: View {
                 }
                 switch sec {
                 case .header:
-                    HStack(alignment: .firstTextBaseline, spacing: 8) {
-                        HStack(alignment: .firstTextBaseline, spacing: 4) {
-                            Text(title).font(.system(size: 16, weight: .bold)).foregroundStyle(p.ink).tracking(-0.1)
-                            Text("usage").font(.system(size: 16, weight: .semibold)).foregroundStyle(p.faint)
-                        }.lineLimit(1).minimumScaleFactor(0.6).layoutPriority(1)
+                    // Centred, not baseline-aligned. The heading is now a single concatenated Text
+                    // whose baseline comes from its first run, so a baseline-aligned badge beside
+                    // it sat visibly off the line.
+                    HStack(alignment: .center, spacing: 8) {
+                        // ONE Text, not two in a stack. As two, minimumScaleFactor shrank each
+                        // separately: the plan name scaled down to 60% and truncated to
+                        // "Claude Max..." while the word "usage" stayed at full size beside it, so
+                        // the label ended up looking bigger than the thing it labels. Concatenated
+                        // runs scale together, and the plan is the part that must survive.
+                        (Text(title).font(.system(size: 15.5, weight: .bold)).foregroundColor(p.ink)
+                         + Text(" usage").font(.system(size: 14, weight: .medium)).foregroundColor(p.faint))
+                            .tracking(-0.1)
+                            .lineLimit(1).minimumScaleFactor(0.7).layoutPriority(1)
                         Spacer(minLength: 6)
                         // Quiet-hours moon: a crescent leading the badge, text in the
                         // tooltip so the header title keeps its room; distinct from the connection state
@@ -578,9 +690,24 @@ struct DetailCard: View {
                      chartHover: settings.chartHover,
                      plotH: kChartH + CardResize.clampB(settings.cardChartBoost),
                      showChats: settings.showChatsBurning, chatsOpen: $settings.chatsExpanded,
-                     truncation: settings.chatTruncation, records: records, explain: settings.popoverExplain)
-            .padding(12)
+                     truncation: settings.chatTruncation, records: records, explain: settings.popoverExplain,
+                     hiddenSeries: Set(settings.hiddenUsageSeries),
+                     onToggleSeries: { key in
+                         if let i = settings.hiddenUsageSeries.firstIndex(of: key) {
+                             settings.hiddenUsageSeries.remove(at: i)
+                         } else {
+                             settings.hiddenUsageSeries.append(key)
+                         }
+                     })
+            // The width the charts get is the card's 16pt padding PLUS this box's own inset, and
+            // cutting the inset alone just moved the charts up against the box edge. So the box
+            // reaches OUT instead: a negative outer margin trims its distance from the card edge
+            // from 16pt to 10, and the inset inside it goes back up to 10 so nothing touches the
+            // border. Thinner outside, roomier inside, and the charts still end up wider than
+            // before either change.
+            .padding(.horizontal, 10).padding(.vertical, 11)
             .background(RoundedRectangle(cornerRadius: 12).fill(p.raisedBg))
+            .padding(.horizontal, -6)
     }
 
     private func weekSection(p: Palette, wColor: Color, ringC: Color) -> some View {
@@ -597,7 +724,7 @@ struct DetailCard: View {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 if settings.popoverEyebrows {
                     Text("THIS WEEK").font(.system(size: 11, weight: .semibold)).tracking(1.4).foregroundStyle(p.sub)
-                    ExplainDot(text: "Your weekly allowance across every model. Some models also carry their own weekly cap, listed below.", p: p, on: settings.popoverExplain)
+                    InfoDot(text: "Your weekly allowance across every model. Some models also carry their own weekly cap, listed below.", p: p, accent: Color(hex: settings.accentHex), on: settings.popoverExplain)
                 }
                 Spacer(minLength: 8)
                 if let rc = resetCaption {
@@ -636,9 +763,13 @@ struct DetailCard: View {
                     Spacer(minLength: 8)   // "LAST 7 DAYS" label right-aligned (design)
                     Text("LAST 7 DAYS").font(.system(size: 9, weight: .bold)).tracking(0.8)
                         .foregroundStyle(p.sub).padding(.bottom, 1)
+                    // The row-level .help() this replaces would have fired UNDER the mark too,
+                    // showing the same sentence twice. One affordance per thing.
+                    InfoDot(text: "Your daily usage over the last 7 days. The tallest bar is your busiest day, and today is the highlighted bar on the right.",
+                            p: p, accent: Color(hex: settings.accentHex), on: settings.popoverExplain)
+                        .padding(.bottom, 1)
                 }
                 .frame(height: 16, alignment: .bottom).padding(.top, 8)
-                .help("Your daily usage over the last 7 days, tallest bar = your busiest day. Today is the highlighted bar on the right.")
             }
             // ── PER MODEL: caps (a model with its own weekly limit) stay visible; the share split hides ──
             if !caps.isEmpty {
@@ -647,15 +778,33 @@ struct DetailCard: View {
                 }.padding(.top, 12)
             }
             if settings.showOpusShare, !usage.isEmpty {
-                Button { withAnimation(.emberEase(Dur.d120)) { settings.modelsExpanded.toggle() } } label: {
-                    HStack(spacing: 6) {
-                        Text("BY MODEL").font(.system(size: 10, weight: .semibold)).tracking(1.0).foregroundStyle(p.sub)
-                        Text("share of week").font(.system(size: 9)).foregroundStyle(p.faint)
-                        Spacer(minLength: 8)
-                        Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold))
-                            .foregroundStyle(p.faint).rotationEffect(.degrees(settings.modelsExpanded ? 90 : 0))
-                    }.frame(height: 22).contentShape(Rectangle())
-                }.buttonStyle(.plain).focusable(false).padding(.top, caps.isEmpty ? 12 : 9)
+                // The mark sits OUTSIDE the disclosure button. Nested inside its label, the button
+                // would swallow the tap and the explanation could never open. Text and chevron are
+                // each their own button, so the row still collapses from either end.
+                HStack(spacing: 6) {
+                    Button { withAnimation(.emberEase(Dur.d120)) { settings.modelsExpanded.toggle() } } label: {
+                        HStack(spacing: 6) {
+                            // Both fixed to one line. Without it, a narrow card wrapped "share of
+                            // week" onto two lines and then squeezed the heading itself down to
+                            // "BY MO...", so the one piece of text that names the section was the
+                            // first thing to break. The subtitle is the part that may disappear.
+                            // No subtitle. "share of week" could not fit beside the heading at any
+                            // card width and rendered as "share...", which is not a word. The info
+                            // mark next to it says the same thing properly.
+                            Text("BY MODEL").font(.system(size: 10, weight: .semibold)).tracking(1.0)
+                                .foregroundStyle(p.sub).fixedSize()
+                        }.contentShape(Rectangle())
+                    }.buttonStyle(.plain).focusable(false)
+                    InfoDot(text: "How this week's usage splits across the models you used, as a share of the week. Click the row to see the full list.",
+                            p: p, accent: Color(hex: settings.accentHex), on: settings.popoverExplain)
+                    Button { withAnimation(.emberEase(Dur.d120)) { settings.modelsExpanded.toggle() } } label: {
+                        HStack(spacing: 0) {
+                            Spacer(minLength: 8)
+                            Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold))
+                                .foregroundStyle(p.faint).rotationEffect(.degrees(settings.modelsExpanded ? 90 : 0))
+                        }.contentShape(Rectangle())
+                    }.buttonStyle(.plain).focusable(false)
+                }.frame(height: 22).padding(.top, caps.isEmpty ? 12 : 9)
                 if settings.modelsExpanded {
                     ByModelSplit(usage: usage, p: p).padding(.top, 6)
                 }
@@ -972,6 +1121,10 @@ struct MonitorChart: View {
     var truncation: ChatTruncation = .middle
     var records: [UsageRecord] = []   // per-call usage records (spike attribution on hover)
     var explain = false               // self-explanation layer: each chart's blurb under its title
+    /// The "Session + week %" legend switches, threaded through from settings so a hidden line
+    /// stays hidden after the card is closed and rebuilt.
+    var hiddenSeries: Set<String> = []
+    var onToggleSeries: (String) -> Void = { _ in }
     /// Contact sheets label each cell themselves, so they turn the per-chart title row off to
     /// avoid printing the name twice.
     var chrome = true
@@ -988,7 +1141,9 @@ struct MonitorChart: View {
                  sessionResetAt: sessionResetAt, weeklyResetAt: weeklyResetAt,
                  modelLimits: modelLimits,
                  accent: accent, secondary: secondary, p: p, plotH: plotH, style: chartStyle,
-                 window: burnSpan.seconds, days: chartDays, hover: chartHover)
+                 window: burnSpan.seconds, days: chartDays, hover: chartHover,
+                 currentRate: live.rate,
+                 hiddenSeries: hiddenSeries, onToggleSeries: onToggleSeries)
     }
 
     var body: some View {
@@ -1006,7 +1161,7 @@ struct MonitorChart: View {
                         .font(.system(size: 9.5, weight: .semibold)).tracking(1.0)
                         .foregroundStyle(p.faint)
                         .help(kind.blurb)
-                    ExplainDot(text: kind.blurb, p: p, on: explain)
+                    InfoDot(text: kind.blurb, p: p, accent: accent, on: explain)
                     Spacer()
                     if i == 0 {
                         Button { NotificationCenter.default.post(name: .openChartSettings, object: nil) } label: {
@@ -1036,42 +1191,42 @@ struct MonitorChart: View {
                 VStack(alignment: .leading, spacing: 12) {
                     // Eyebrow row: the count lives IN the eyebrow; the whole row is the
                     // collapse control, and its chevron reflects the state.
-                    Button {
-                        withAnimation(.emberEase(Dur.d240)) { chatsOpen.toggle() }
-                    } label: {
-                        HStack(spacing: 4) {
+                    // Same shape as BY MODEL: the mark cannot live inside the disclosure button or
+                    // the button eats its tap, so the label and the chevron are separate buttons
+                    // with the mark between them. The whole row still collapses.
+                    HStack(spacing: 4) {
+                        Button {
+                            withAnimation(.emberEase(Dur.d240)) { chatsOpen.toggle() }
+                        } label: {
                             Text(live.activeStreams.count == 1 ? "1 CHAT BURNING NOW" : "\(live.activeStreams.count) CHATS BURNING NOW")
                                 .font(.system(size: 11, weight: .semibold)).tracking(1.1).foregroundStyle(p.sub).fixedSize()
-                            Spacer(minLength: 6)
-                            Image(systemName: chatsOpen ? "chevron.down" : "chevron.right")
-                                .font(.system(size: 8, weight: .semibold)).foregroundStyle(p.faint)
+                                .contentShape(Rectangle())
                         }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel(chatsOpen ? "Hide burning chats" : "Show burning chats")
+                        InfoDot(text: "The conversations spending tokens right now, busiest first, each with its rate over the last minute. Hover a row to read its full name, and click the pencil to rename it.",
+                                p: p, accent: accent, on: explain)
+                        Button {
+                            withAnimation(.emberEase(Dur.d240)) { chatsOpen.toggle() }
+                        } label: {
+                            HStack(spacing: 0) {
+                                Spacer(minLength: 6)
+                                Image(systemName: chatsOpen ? "chevron.down" : "chevron.right")
+                                    .font(.system(size: 8, weight: .semibold)).foregroundStyle(p.faint)
+                            }.contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityHidden(true)
                     }
-                    .buttonStyle(.plain)
-                    .accessibilityLabel(chatsOpen ? "Hide burning chats" : "Show burning chats")
                     if chatsOpen {
                     ForEach(Array(live.activeStreams.prefix(3).enumerated()), id: \.offset) { i, s in
-                        HStack(spacing: 8) {
-                            Circle().fill(p.session.opacity(i == 0 ? 1.0 : 0.55)).frame(width: 5, height: 5)
-                            if renaming == s.name {
-                                TextField("", text: $renameText, onCommit: { chatNames.setAlias(renameText, for: s.name); renaming = nil })
-                                    .textFieldStyle(.plain).font(.system(size: 12.5)).foregroundStyle(p.ink)
-                            } else {
-                                Text(chatNames.display(s.name)).font(.system(size: 12.5)).foregroundStyle(p.ink)
-                                    .lineLimit(1).truncationMode(truncation == .end ? .tail : .middle)
-                                    .contextMenu {
-                                        Button("Rename") { renameText = chatNames.display(s.name); renaming = s.name }
-                                        if chatNames.aliases[s.name] != nil { Button("Reset to original") { chatNames.reset(s.name) } }
-                                    }
-                            }
-                            Spacer(minLength: 8)
-                            Text("\(fmtTok(s.tok))/min").font(.system(size: 12, design: .monospaced)).foregroundStyle(p.sub)
-                                .monospacedDigit()
-                        }
-                        .help(chatNames.display(s.name))
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityLabel(chatNames.display(s.name))
-                        .accessibilityValue("\(fmtTok(s.tok)) tokens per minute")
+                        ChatRow(tok: s.tok, rank: i, p: p, project: s.project, truncation: truncation,
+                                display: chatNames.display(s.name),
+                                renamed: chatNames.aliases[s.name] != nil,
+                                editing: renaming == s.name, renameText: $renameText,
+                                onBeginRename: { renameText = chatNames.display(s.name); renaming = s.name },
+                                onCommitRename: { chatNames.setAlias(renameText, for: s.name); renaming = nil },
+                                onReset: { chatNames.reset(s.name) })
                     }
                     // Max 3 rows, then the overflow is named in `faint`.
                     if live.activeStreams.count > 3 {
@@ -1081,7 +1236,9 @@ struct MonitorChart: View {
                     }
                 }
                 .padding(.top, 12)
-                .help("Claude chats burning tokens right now. Busiest first; the number is tokens over the last minute.")
+                // No .help here. It fired on hover at the same moment as the row's own name bubble,
+                // so hovering a chat produced TWO overlapping popups, one of them answering a
+                // question nobody had asked. The info mark beside the heading already says this.
             }
         }
     }
@@ -2170,9 +2327,14 @@ struct SettingsView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(p.bg)
         }
-        .frame(width: 660,
-               height: ProcessInfo.processInfo.environment["CUB_NOSCROLL"] != nil
-                   ? qaPaneHeight(tab ?? .general) : 640)
+        // CUB_PANE_MEASURE leaves the height unconstrained so the layout reports its OWN ideal
+        // height, which is what docs/measure-panes.sh reads. Measuring it off the pixels instead
+        // meant deciding what counts as ink, and the answer to "how tall is this pane" is a number
+        // SwiftUI already knows.
+        .frame(width: 660)
+        .frame(height: ProcessInfo.processInfo.environment["CUB_PANE_MEASURE"] != nil ? nil
+                   : (ProcessInfo.processInfo.environment["CUB_NOSCROLL"] != nil
+                      ? qaPaneHeight(tab ?? .general) : 640))
         .onAppear {
             login = loginInitially
             if let t = settings.pendingTab.flatMap({ SettingsTab(rawValue: $0) }) { tab = t; settings.pendingTab = nil }
@@ -2198,18 +2360,7 @@ struct SettingsView: View {
     /// drawers-open figures are larger because CUB_OPEN_DRAWERS expands every AdvancedCard.
     /// Measured from the rendered PNGs, not estimated. If a pane grows, re-measure rather than
     /// padding the number: too much slack leaves dead space at the bottom of a marketing shot.
-    private func qaPaneHeight(_ t: SettingsTab) -> CGFloat {
-        let open = ProcessInfo.processInfo.environment["CUB_OPEN_DRAWERS"] != nil
-        switch t {
-        case .general:    return 710
-        case .menuBar:    return open ? 980 : 730
-        case .popover:    return open ? 1465 : 1255
-        case .data:       return 3450
-        case .companions: return 445      // nothing to expand until a companion is switched on
-        case .appearance: return open ? 1285 : 758
-        case .alerts:     return 1050
-        }
-    }
+    private func qaPaneHeight(_ t: SettingsTab) -> CGFloat { qaSettingsPaneHeight(t) }
 
     private var updateFailed: Bool { if case .failed = updater.state { return true }; return false }
 
@@ -2813,6 +2964,10 @@ struct SettingsView: View {
                 Segmented(options: ColorMode.allCases.map { ($0.label, $0) }, selection: $settings.colorMode, p: p)
             }
             div(p)
+            row("Menu bar number", p, info: "Draw the number in the menu bar the same colour as the clock, so it stays readable over any wallpaper. The dot, arc and glow keep their colour either way, because that is what makes them readable as a gauge.") {
+                Segmented(options: [("System", true), ("Themed", false)], selection: $settings.menuBarSystemNumber, p: p)
+            }
+            div(p)
             row("Live indicator", p, info: "The LIVE badge color: follow the palette, use the accent, a fixed green, or no color.") {
                 Segmented(options: [("Theme", LiveColor.theme), ("Accent", .accent), ("Green", .green), ("None", .off)], selection: $settings.liveColor, p: p)
             }
@@ -2900,6 +3055,13 @@ struct SettingsView: View {
         card(p) {
             gslider("Popover size", p, Binding(get: { settings.textScale * 100 }, set: { settings.textScale = $0 / 100 }),
                     70...160, "%", "Scales the whole popover and floating window - text, numbers, chart, and spacing - from compact to large. Separate from this zoom, the card's bottom-right grip RESIZES the window at the same type size: drag sideways for a wider card, down for taller charts, double-click to reset. (Widget size is under Companions.)")
+            div(p)
+            // Was the last row inside the collapsed "Fine-tune" drawer at the bottom of this pane,
+            // where it was reported as missing rather than found. It controls the marks a reader
+            // meets FIRST in the card, so it belongs at the top of the pane that owns the card.
+            row("Explain each section", p, info: "Shows a small info mark beside each section and chart title in the popover. Click one for a plain-English explanation of what you are looking at.") {
+                Toggle("", isOn: $settings.popoverExplain).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(coral)
+            }
         }
         subhead("Sections", p)
         Text("Drag to reorder the panels in the popover. Use the eye to hide any you do not need. The app name stays pinned at the bottom.")
@@ -2943,10 +3105,7 @@ struct SettingsView: View {
         AdvancedCard(title: "Fine-tune", p: p, spacing: 0) {
             visRow("Section dividers", $settings.popoverDividers, "The hairlines between sections. Off leaves the spacing alone to separate them.", p, coral); div(p)
             visRow("Section eyebrows", $settings.popoverEyebrows, "The small uppercase labels (SESSION, THIS WEEK).", p, coral); div(p)
-            visRow("Compact spacing", $settings.popoverCompact, "Tighten the vertical spacing to fit more in less height.", p, coral); div(p)
-            row("Explain each section", p, info: "Shows a small, faint question dot beside each popover section and chart title. Hover it for a plain-English explanation. Off hides the dots; the tooltips on the labels themselves stay.") {
-                Toggle("", isOn: $settings.popoverExplain).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(coral)
-            }
+            visRow("Compact spacing", $settings.popoverCompact, "Tighten the vertical spacing to fit more in less height.", p, coral)
         }
     }
 
@@ -2968,7 +3127,8 @@ struct SettingsView: View {
                             sessionResetAt: engine.snapshot.sessionResetAt, weeklyResetAt: engine.snapshot.weeklyResetAt,
                             modelLimits: engine.snapshot.modelLimits,
                             accent: accent, secondary: kSlate, p: p, style: settings.chartStyle,
-                            window: settings.burnSpan.seconds, days: settings.chartDays, hover: false)
+                            window: settings.burnSpan.seconds, days: settings.chartDays, hover: false,
+                            currentRate: live.rate)
         }
         let series = StyleSheet.qaSampleSeries()
         return ChartCtx(burnSamples: series.burn, usageSamples: series.usage, weeklySamples: series.weekly,
@@ -2979,7 +3139,7 @@ struct SettingsView: View {
                         modelLimits: [ScopedLimit(label: "Fable", pct: 0.74, resetAt: nil, active: true, severity: "warning"),
                                       ScopedLimit(label: "Opus", pct: 0.18, resetAt: nil, active: false, severity: "normal")],
                         accent: accent, secondary: kSlate, p: p, style: settings.chartStyle,
-                        window: 6 * 3600, days: 14, hover: false)
+                        window: 6 * 3600, days: 14, hover: false, currentRate: 54_000)
     }
 
     private static let kMaxPopoverCharts = 6
@@ -3019,13 +3179,22 @@ struct SettingsView: View {
                     }
                 }
                 ChartBodyView(kind: k, ctx: ctx)
+                    // No live indicator in a preview, so the stat line under it should not leave
+                    // a hole where one would go and truncate its own caption to make room.
+                    .environment(\.chartHasCadence, false)
                     .allowsHitTesting(false)
                     .padding(.top, 6)   // room for top axis labels and the avg annotation
                     .frame(height: 104, alignment: .top)
                     .clipped()
                 Text(k.blurb)
-                    .font(.system(size: 9.5)).foregroundStyle(p.faint)
-                    .lineLimit(2, reservesSpace: true)
+                    // Was 9.5pt in `faint`, which is the palette's lowest-contrast tone: too pale
+                    // to read comfortably at that size, and the audit in docs/contrast-audit.csv
+                    // shows it failing 4.5:1 outright. `sub` at 10 is the informative-text pairing.
+                    .font(.system(size: 10)).foregroundStyle(p.sub)
+                    // Three, not two. Every blurb fits three lines at this width with room to
+                    // spare (measured, worst case holds down to a 185pt card), so nothing is cut
+                    // off mid-sentence, and reserving the space keeps the cards a matched height.
+                    .lineLimit(3, reservesSpace: true)
                     .multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -3336,23 +3505,44 @@ struct SettingRow<C: View>: View {
 struct InfoDot: View {
     var text: String; var p: Palette
     var accent: Color = Color(hex: kDefaultAccent)
+    /// Gated by "Explain each section" where the card uses it. Always on elsewhere.
+    var on: Bool = true
     @State private var show = false
-    @State private var hoverTok = UUID()
+    @State private var hover = false
+
+    /// ONE size, everywhere, matching the chart gear it sits beside in the card header: the gear
+    /// is an SF Symbol at 10.5, so the dot is 10.5 across. No per-context sizing - two marks doing
+    /// the same job at two different sizes is the inconsistency this component exists to end.
+    private static let d: CGFloat = 10.5
+
     var body: some View {
+        if on { dot }
+    }
+    private var dot: some View {
         ZStack {
-            Circle().strokeBorder(show ? accent : p.faint, lineWidth: 1)
-            Text("i").font(.system(size: 8.5, weight: .semibold))
-                .foregroundStyle(show ? accent : p.sub)
+            Circle().strokeBorder(show ? accent : (hover ? p.sub : p.faint), lineWidth: 1)
+            Text("i").font(.system(size: Self.d * 0.65, weight: .semibold))
+                .foregroundStyle(show ? accent : (hover ? p.sub : p.faint))
         }
-        .frame(width: 13, height: 13)
+        .frame(width: Self.d, height: Self.d)
+        // The gear's exact rest state: faint at half opacity, lifting to full on hover.
+        .opacity(show || hover ? 1 : 0.5)
+        // This mark is a SYMBOL, not text. In a `.firstTextBaseline` stack SwiftUI would otherwise
+        // align it by the baseline of the tiny "i" inside it, which sits lower than the label's
+        // own baseline and drops the dot a couple of points - visible next to "THIS WEEK" but not
+        // next to "SESSION", because those two rows use different stack alignments. Report the
+        // baseline from the mark's centre instead, so it lands level with the label either way.
+        .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + Self.d * 0.35 }
         .contentShape(Circle())
         .onTapGesture { withAnimation(.emberEase(Dur.d240)) { show.toggle() } }
-        .onHover { inside in
-            if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-            guard inside else { hoverTok = UUID(); return }
-            let tok = UUID(); hoverTok = tok
-            DispatchQueue.main.asyncAfter(deadline: .now() + Dur.d320) { if hoverTok == tok { show = true } }
-        }
+        // Tell the app to pin the card open while this bubble is up. The observer for this has
+        // existed since the marks were built, but nothing ever posted to it, so the card was one
+        // stray click away from vanishing underneath its own explanation.
+        .onChange(of: show) { NotificationCenter.default.post(name: .explainBubble, object: $0) }
+        // Same as the card's "?" marks: click to open, and hover only lifts the colour a little.
+        // No cursor swap.
+        .onHover { hover = $0 }
+        .animation(.easeInOut(duration: 0.15), value: hover)
         .accessibilityLabel("More information")
         .accessibilityValue(text)
         .accessibilityAddTraits(.isButton)
@@ -3364,6 +3554,122 @@ struct InfoDot: View {
                 .padding(11)
                 .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(p.raisedBg))
         }
+    }
+}
+
+/// One line of "chats burning now": dot, name, rate.
+///
+/// Two things the old inline version could not do. The full name lived in a `.help` tooltip, and
+/// AppKit does not run tooltips inside a popover, so the name was simply unreachable once
+/// truncated - including under the "Full on hover" setting, which had nothing behind it at all.
+/// And renaming was right-click only, with no sign anywhere that it existed. Hovering a row now
+/// shows the whole name in a quiet bubble and reveals a pencil; right-click still works.
+struct ChatRow: View {
+    let tok: Int
+    let rank: Int
+    let p: Palette
+    /// Shown under the name, where there is room for it.
+    var project: String = ""
+    let truncation: ChatTruncation
+    let display: String
+    let renamed: Bool
+    let editing: Bool
+    @Binding var renameText: String
+    let onBeginRename: () -> Void
+    let onCommitRename: () -> Void
+    let onReset: () -> Void
+
+    @State private var hover = false
+    @State private var showName = false
+    @State private var hoverToken = 0
+
+    /// "Full on hover" is the setting that asks for this outright, so it answers almost at once.
+    /// Otherwise the bubble waits long enough that reading down the list never triggers it.
+    private var delay: Double { truncation == .full ? 0.15 : 0.9 }
+
+    var body: some View {
+        // Two lines, not one.
+        //
+        // The rate used to sit on the same line as the name, so a 264pt card gave the name maybe
+        // half its width and every real chat title arrived as "Burndo...redesign". The name is the
+        // thing being identified, so it gets the whole line; the rate, the project and the pencil
+        // go underneath, where there is room for all three.
+        VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 7) {
+                Circle().fill(p.session.opacity(rank == 0 ? 1.0 : 0.55)).frame(width: 5, height: 5)
+                if editing {
+                    TextField("", text: $renameText, onCommit: onCommitRename)
+                        .textFieldStyle(.plain).font(.system(size: 12.5)).foregroundStyle(p.ink)
+                } else {
+                    Text(display).font(.system(size: 12.5)).foregroundStyle(p.ink)
+                        .lineLimit(1).truncationMode(truncation == .end ? .tail : .middle)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        // The bubble hangs off the name, beside the text it is completing.
+                        .popover(isPresented: $showName, arrowEdge: .bottom) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(display).font(.system(size: 11.5)).foregroundStyle(p.ink)
+                                    .frame(maxWidth: 260, alignment: .leading)
+                                    .fixedSize(horizontal: false, vertical: true)
+                                Text(renamed ? "Renamed by you" : "Click the pencil to rename")
+                                    .font(.system(size: 9.5)).foregroundStyle(p.faint)
+                            }
+                            .padding(11)
+                            .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(p.raisedBg))
+                        }
+                }
+            }
+            if !editing {
+                HStack(spacing: 6) {
+                    Text("\(fmtTok(tok))/min").font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(p.sub).monospacedDigit()
+                    if !project.isEmpty {
+                        Text("\u{00B7}").foregroundStyle(p.faint).font(.system(size: 10.5))
+                        Text(project).font(.system(size: 10.5)).foregroundStyle(p.faint)
+                            .lineLimit(1).truncationMode(.tail)
+                    }
+                    Spacer(minLength: 4)
+                    // Was a 9.5pt symbol, which at this size reads as a stray dash rather than a
+                    // pencil. Bigger, and on its own row where there is room for it.
+                    if hover {
+                        Button(action: onBeginRename) {
+                            Image(systemName: "pencil").font(.system(size: 11.5, weight: .medium))
+                                .foregroundStyle(p.sub)
+                                .padding(.horizontal, 4).padding(.vertical, 1)
+                                .background(RoundedRectangle(cornerRadius: 4).fill(p.track))
+                        }
+                        .buttonStyle(.plain).focusable(false)
+                        .accessibilityLabel("Rename this chat")
+                        .transition(.opacity)
+                    }
+                }
+                .padding(.leading, 12)
+            }
+        }
+        .contentShape(Rectangle())
+        .contextMenu {
+            Button("Rename") { onBeginRename() }
+            if renamed { Button("Reset to original") { onReset() } }
+        }
+        .onHover { inside in
+            withAnimation(.easeInOut(duration: 0.12)) { hover = inside }
+            // Each hover carries a token, so a bubble scheduled by a pointer that has already moved
+            // on never opens behind it.
+            hoverToken += 1
+            let mine = hoverToken
+            if inside {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                    if mine == hoverToken, hover, !editing { showName = true }
+                }
+            } else {
+                showName = false
+            }
+        }
+        // Same pin as the explanation marks: the card is transient, and a bubble opening inside it
+        // would otherwise be read as a click elsewhere and take the card down with it.
+        .onChange(of: showName) { NotificationCenter.default.post(name: .explainBubble, object: $0) }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(display)
+        .accessibilityValue("\(fmtTok(tok)) tokens per minute")
     }
 }
 
@@ -3677,6 +3983,49 @@ struct ResizeGrip: View {
     }
 }
 
+/// Wraps the card in a scroller only when it is taller than the screen allows.
+///
+/// Written as a modifier rather than an `if` in the body so the branch swaps ONE wrapper around
+/// identical content. Branching in the body would give SwiftUI two different view identities, and
+/// every piece of card state (open drawers, hidden series, selections) would reset each time the
+/// card crossed the threshold.
+struct ScrollWhenTall: ViewModifier {
+    let active: Bool
+    let height: CGFloat
+    func body(content: Content) -> some View {
+        if active {
+            ScrollView(.vertical, showsIndicators: true) { content }
+                .frame(height: height)
+                .scrollContentBackgroundHidden()
+                // macOS hides overlay scrollers until you actually scroll, so a capped card would
+                // otherwise just look truncated mid-chart. A short fade at the bottom edge says
+                // "this continues" without adding a permanent piece of chrome.
+                .overlay(alignment: .bottom) {
+                    LinearGradient(colors: [.black.opacity(0), .black.opacity(0.28)],
+                                   startPoint: .top, endPoint: .bottom)
+                        .frame(height: 22)
+                        .allowsHitTesting(false)
+                }
+        } else {
+            content
+        }
+    }
+}
+
+private extension View {
+    /// The ScrollView must not paint its own backing over the card's glass.
+    @ViewBuilder func scrollContentBackgroundHidden() -> some View {
+        if #available(macOS 13.0, *) { self.scrollContentBackground(.hidden) } else { self }
+    }
+}
+
+/// The card's height ceiling on a given screen. The maths lives in CardResize, where it is
+/// Foundation-pure and covered by run-cardresize-tests.sh; this only supplies the screen.
+func cardHeightCeiling(scale: CGFloat, screen: NSScreen?) -> CGFloat {
+    let vis = (screen ?? NSScreen.main)?.visibleFrame.height ?? 900
+    return CGFloat(CardResize.heightCeiling(visible: Double(vis), scale: Double(scale)))
+}
+
 struct MenuCard: View {
     @ObservedObject var engine: UsageEngine
     @ObservedObject var settings: AppSettings
@@ -3688,11 +4037,16 @@ struct MenuCard: View {
     var onSignIn: () -> Void = {}
     var onOpenLogs: () -> Void = {}
     var onResizing: (Bool) -> Void = { _ in }   // popover kills its size animation during a grip drag
+    /// The display this card is showing on, so the height ceiling matches the screen the user is
+    /// actually looking at rather than whichever one macOS calls main.
+    var hostScreen: NSScreen? = nil
     @Environment(\.colorScheme) private var scheme
     @State private var natH: CGFloat = 500
     // Corner-drag resize (reflow, not zoom): sideways drives settings.cardWidth, down drives
     // settings.cardChartBoost. The anchor holds both values at mouse-down so the drag is absolute.
-    @State private var dragStart: (w: Double, boost: Double)? = nil
+    /// Anchor for a grip drag: the width and boost at mouse-down, plus the largest boost this
+    /// drag may reach. All three are fixed for the whole gesture.
+    @State private var dragStart: (w: Double, boost: Double, maxBoost: Double)? = nil
     // The 7-day cost spark is O(records) with per-record price lookups; cache it so a card re-render
     // (the floating window redraws on every live update) does NOT recompute it every frame.
     @State private var spark: [Double] = []
@@ -3709,7 +4063,13 @@ struct MenuCard: View {
         // Redline heat: the whole card smolders as the session nears its cap.
         let s = engine.snapshot
         let heat = s.over ? 1.0 : max(0, (min(1, s.sessionPct) - 0.85) / 0.15)
-        DetailCard(snapshot: engine.snapshot, settings: settings, live: live,
+        // The card may not grow past the bottom of the screen. Under the ceiling nothing changes
+        // at all: same card, no scroller, content-sized as always. Over it, the card stops at the
+        // ceiling and scrolls, which is the only way the sections past the fold are reachable.
+        let ceiling = cardHeightCeiling(scale: scale, screen: hostScreen)
+        let overflows = natH > ceiling + 0.5
+        let shownH = min(natH, ceiling)
+        return DetailCard(snapshot: engine.snapshot, settings: settings, live: live,
                    refreshAnchor: engine.refreshAnchor, heartbeat: engine.heartbeat,
                    period: engine.refreshPeriod,
                    signedIn: engine.isSignedIn(), loading: !engine.ready,
@@ -3727,6 +4087,10 @@ struct MenuCard: View {
             // ever feed back into it.
             .fixedSize(horizontal: false, vertical: true)
             .background(GeometryReader { g in Color.clear.preference(key: ContentHeightKey.self, value: g.size.height) })
+            // Only when it overflows. A ScrollView here unconditionally would put a scroller on
+            // every card and, worse, propose its own height back into the measurement that the
+            // fixedSize above exists to protect.
+            .modifier(ScrollWhenTall(active: overflows, height: shownH))
             .scaleEffect(scale, anchor: .topLeading)
             // min(6000, natH): the measured height passes through @State on its way to a WINDOW
             // frame (the hosting view sizes the popover and floating panel from this). A single
@@ -3734,7 +4098,7 @@ struct MenuCard: View {
             // aborted the app (frame outside INT bounds, 2026-08-01). 6000pt is beyond any real
             // card and far inside AppKit's limits; both the write (onPreferenceChange) and this
             // read clamp, so no transient can ever become a window frame.
-            .frame(width: cw * scale, height: min(6000, natH) * scale, alignment: .topLeading)
+            .frame(width: cw * scale, height: min(6000, shownH) * scale, alignment: .topLeading)
             .background(CardSurface(settings: settings, p: p))
             .overlay(RedlineOverlay(heat: heat, radius: settings.glassCornerRadius, p: p))
             // Corner-drag resize. The grip lives HERE, not in DetailCard, so the ImageRenderer
@@ -3742,7 +4106,15 @@ struct MenuCard: View {
             .overlay(alignment: .bottomTrailing) {
                 ResizeGrip(p: p,
                     began: {
-                        dragStart = (cw, CardResize.clampB(settings.cardChartBoost))
+                        // The height ceiling is turned into a boost limit ONCE, here, from the
+                        // state at mouse-down. Recomputing it per frame from the live height and
+                        // the live boost (which is what the first version did) made the limit
+                        // chase its own tail: the card stopped tracking the cursor and crept in
+                        // odd jumps instead of following the drag one to one.
+                        let b = CardResize.clampB(settings.cardChartBoost)
+                        let room = CardResize.boostHeadroom(currentHeight: Double(natH),
+                                                            ceiling: Double(ceiling), charts: chartCount)
+                        dragStart = (cw, b, min(CardResize.maxBoost, b + room))
                         onResizing(true)
                     },
                     changed: { dx, dy in
@@ -3750,7 +4122,10 @@ struct MenuCard: View {
                         // Cursor deltas arrive in screen points; divide the zoom back out so the
                         // reflow happens in design points and the edges track the cursor 1:1.
                         settings.cardWidth = CardResize.width(start: a.w, dx: dx / scale)
-                        settings.cardChartBoost = CardResize.boost(start: a.boost, dy: dy / scale, charts: chartCount)
+                        // Absolute from the anchor, clamped by a limit fixed at mouse-down, so the
+                        // bottom edge follows the cursor exactly until it reaches the screen.
+                        settings.cardChartBoost = min(a.maxBoost,
+                            CardResize.boost(start: a.boost, dy: dy / scale, charts: chartCount))
                     },
                     ended: {
                         dragStart = nil

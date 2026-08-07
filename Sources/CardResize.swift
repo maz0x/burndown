@@ -38,4 +38,37 @@ enum CardResize {
         guard charts > 0 else { return clampB(start) }
         return clampB(start + dy / Double(charts))
     }
+
+    // MARK: - Height ceiling
+
+    /// Breathing room left between the bottom of the card and the bottom of the screen.
+    static let screenGap = 24.0
+
+    /// The tallest the card may be, in DESIGN points, given the screen space available to it.
+    ///
+    /// Without a ceiling the card is purely content-driven: switch on six charts and it grows
+    /// straight past the bottom of the display, with no way to reach whatever fell off the end.
+    /// `visible` is expected to be NSScreen.visibleFrame.height, which already excludes the menu
+    /// bar and the Dock, so the only thing left to reserve is the gap. Divided by the zoom,
+    /// because the card works in design points and the screen does not.
+    static func heightCeiling(visible: Double, scale: Double) -> Double {
+        // Clamped to the zoom range the app actually offers. A bare divide-by-zero guard let a
+        // garbage scale turn into a garbage ceiling (scale 0 gave a ceiling ten times the screen),
+        // which is exactly the ceiling failing to be a ceiling.
+        max(240, (visible - screenGap) / max(minScale, min(maxScale, scale)))
+    }
+
+    /// The popover zoom range, matching the Settings slider.
+    static let minScale = 0.7
+    static let maxScale = 1.6
+
+    /// How much bigger the chart boost may get before the card would pass the ceiling.
+    ///
+    /// The boost applies to every visible chart, so the headroom is shared between them. Already
+    /// over the ceiling (more charts were switched on since), this returns 0: the drag can shrink
+    /// the card but never grow it further off the screen.
+    static func boostHeadroom(currentHeight: Double, ceiling: Double, charts: Int) -> Double {
+        guard charts > 0 else { return maxBoost }
+        return max(0, (ceiling - currentHeight) / Double(charts))
+    }
 }

@@ -25,9 +25,78 @@ struct ChartCtx {
     var window: TimeInterval = 3600
     var days: Int = 14
     var hover: Bool = true
+    /// The live tokens-per-minute reading, so the burn chart's headline and the Session line
+    /// cannot disagree. They used to: the Session line read the last 60 seconds while the chart
+    /// read its most recent SAMPLE, so the card showed "0 tok/min" directly above "1k / min".
+    var currentRate: Double = 0
+    /// Series the user has switched off in the "Session + week %" legend, and the callback that
+    /// toggles one. Supplied by the card (persisted); the Settings gallery leaves them inert.
+    var hiddenSeries: Set<String> = []
+    var onToggleSeries: (String) -> Void = { _ in }
     /// Window start, clamped to the earliest sample for the "all time" sentinel.
     func lower(_ earliest: Date?, now: Date) -> Date {
         window >= 3.0e9 ? (earliest ?? now.addingTimeInterval(-1800)) : now.addingTimeInterval(-window)
+    }
+
+    /// A clock that only moves every 15 seconds.
+    ///
+    /// Charts take their window from "now", so with the real clock no two renders ever agree and a
+    /// cache keyed on the window can never hit. Moving a mouse across a chart re-renders it dozens
+    /// of times a second. Fifteen seconds of staleness is invisible on an hour-wide plot and turns
+    /// all of those renders into one piece of work.
+    var tick: Date {
+        Date(timeIntervalSinceReferenceDate:
+                (Date().timeIntervalSinceReferenceDate / 15).rounded(.down) * 15)
+    }
+
+    /// Cheap fingerprint of everything a roll-up over `records` depends on.
+    ///
+    /// Records are appended to, and trimmed from the front by the retention setting, so count alone
+    /// is not enough: a trim plus an append leaves it unchanged. First and last dates close that.
+    var dataKey: String {
+        "\(records.count)|\(records.first?.date.timeIntervalSince1970 ?? 0)"
+        + "|\(records.last?.date.timeIntervalSince1970 ?? 0)|\(days)|\(window)"
+        + "|\(tick.timeIntervalSinceReferenceDate)"
+    }
+}
+
+/// One slot of scratch memory so a chart body can skip an aggregation it has already done.
+///
+/// Every chart here rolls up the whole retained history on each render, and the card re-renders on
+/// the live tick AND on every mouse move while a chart is hovered. Held as `@State`, this survives
+/// those renders; the chart asks for its value by a cheap key and only pays when the key changes.
+/// Writing to it during `body` is deliberate: it is a cache, it publishes nothing, so it cannot
+/// invalidate the view it lives in.
+final class ChartMemo {
+    private var key: String = ""
+    private var box: Any?
+    func value<V>(_ k: String, _ make: () -> V) -> V {
+        if k == key, let v = box as? V { return v }
+        let v = make()
+        key = k; box = v
+        return v
+    }
+}
+
+/// The same idea as ChartMemo, but with a slot per named result.
+///
+/// A chart needs one cached aggregation; a window full of tables and charts needs several, all
+/// invalidated by the same thing (the scope changed, or the scan landed). One of these holds them
+/// all, so a hover redraw recomputes nothing.
+final class Memo {
+    private var slots: [String: (key: String, value: Any)] = [:]
+    func value<V>(_ name: String, _ key: String, _ make: () -> V) -> V {
+        if let hit = slots[name], hit.key == key, let v = hit.value as? V { return v }
+        let v = make()
+        slots[name] = (key, v)
+        return v
+    }
+}
+
+extension Double {
+    func rounded(toPlaces n: Int) -> Double {
+        let f = pow(10.0, Double(n))
+        return (self * f).rounded() / f
     }
 }
 
@@ -72,17 +141,91 @@ struct ChartBodyView: View {
     }
 }
 
-/// The one-line summary under every chart. Bold headline, faint continuation.
-@ViewBuilder func statLine(_ big: String, _ small: String, _ p: Palette, tint: Color? = nil) -> some View {
-    HStack(spacing: 4) {
-        Text(big).font(.system(size: 11, weight: .semibold)).foregroundStyle(tint ?? p.ink)
-            .monospacedDigit().lineLimit(1).fixedSize()
-        if !small.isEmpty {
-            Text(small).font(.system(size: 9.5)).foregroundStyle(p.faint).lineLimit(1)
-        }
-        Spacer(minLength: 4)
+/// True where a LiveCadence indicator sits on top of the stat line, so the line has to leave room
+/// for it. The Settings gallery draws chart bodies WITHOUT one, and reserving 52pt there for
+/// nothing was cutting off the end of every preview's caption.
+private struct CadenceReserveKey: EnvironmentKey { static let defaultValue = true }
+extension EnvironmentValues {
+    var chartHasCadence: Bool {
+        get { self[CadenceReserveKey.self] }
+        set { self[CadenceReserveKey.self] = newValue }
     }
-    .padding(.leading, 26).padding(.trailing, 52)   // room for the cadence indicator at the trailing edge
+}
+
+/// The one-line summary under every chart. Bold headline, faint continuation.
+///
+/// `gutter` is the 26pt indent that lines the summary up with a plotted chart's y-axis labels.
+/// Charts drawn as plain ROWS have no axis and no gutter, and indenting their summary by 26pt just
+/// left it hanging in space away from the rows it summarises.
+func statLine(_ big: String, _ small: String, _ p: Palette, tint: Color? = nil,
+              gutter: Bool = true, trailing: Bool = false) -> some View {
+    StatLine(big: big, small: small, p: p, tint: tint, gutter: gutter, trailingAligned: trailing)
+}
+
+struct StatLine: View {
+    let big: String, small: String, p: Palette
+    var tint: Color? = nil
+    var gutter: Bool = true
+    /// Push the summary to the RIGHT, under a column of numbers it is the total of.
+    var trailingAligned: Bool = false
+    @Environment(\.chartHasCadence) private var cadence
+    var body: some View {
+        HStack(spacing: 4) {
+            if trailingAligned { Spacer(minLength: 4) }
+            if !small.isEmpty, trailingAligned {
+                Text(small).font(.system(size: 9.5)).foregroundStyle(p.faint).lineLimit(1)
+            }
+            Text(big).font(.system(size: 11, weight: .semibold)).foregroundStyle(tint ?? p.ink)
+                .monospacedDigit().lineLimit(1).fixedSize()
+            if !small.isEmpty, !trailingAligned {
+                Text(small).font(.system(size: 9.5)).foregroundStyle(p.faint).lineLimit(1)
+            }
+            if !trailingAligned { Spacer(minLength: 4) }
+        }
+        .padding(.leading, gutter ? 26 : 2)
+        .padding(.trailing, cadence ? 52 : 8)
+    }
+}
+
+/// The mark in a chart legend: a short length of the line it stands for, dashed when the line is.
+struct LegendSwatch: View {
+    let colour: Color
+    let dashed: Bool
+    var body: some View {
+        Capsule().fill(colour)
+            .frame(width: 9, height: 2.5)
+            .mask(alignment: .leading) {
+                if dashed {
+                    HStack(spacing: 1.5) {
+                        Capsule().frame(width: 3)
+                        Capsule().frame(width: 3)
+                    }
+                } else {
+                    Capsule()
+                }
+            }
+            .frame(width: 9, height: 6)   // same footprint as the dot it replaced
+    }
+}
+
+/// A categorical x axis that labels only some of its categories.
+///
+/// `AxisMarks` over a categorical scale draws a label for EVERY category. At 90 days that is 90
+/// labels crammed into 264pt, which stops being text and becomes the grey smear under the bars.
+/// Thinning counts back from the newest, so the most recent day always keeps its label, and hover
+/// still names every single bar exactly, so nothing is actually lost.
+func thinnedCatXAxis(_ names: [String], _ p: Palette, size: CGFloat = 8,
+                     maxLabels: Int = 7) -> some AxisContent {
+    let step = max(1, Int((Double(names.count) / Double(maxLabels)).rounded(.up)))
+    let last = names.count - 1
+    let keep = names.enumerated().filter { (last - $0.offset) % step == 0 }.map { $0.element }
+    return AxisMarks(values: keep) { v in
+        AxisValueLabel {
+            if let s = v.as(String.self) {
+                Text(s).font(.system(size: size, design: .monospaced)).foregroundStyle(p.faint)
+            }
+        }
+    }
 }
 
 // MARK: - 1/2. Burn rate (line, steps)
@@ -91,11 +234,14 @@ struct BurnRateChart: View {
     let ctx: ChartCtx
     var stepped = false
     @State private var sel: TimedSample?
+    @State private var memo = ChartMemo()
     var body: some View {
         let p = ctx.p
-        let now = Date()
+        let now = ctx.tick
         let lower = ctx.lower(ctx.burnSamples.first?.t, now: now)
-        let win = ctx.burnSamples.filter { $0.t >= lower }
+        let win = memo.value(ctx.dataKey + "|burn\(ctx.burnSamples.count)") {
+            ctx.burnSamples.filter { $0.t >= lower }
+        }
         let mean = win.isEmpty ? 0 : win.map(\.v).reduce(0, +) / Double(win.count)
         let yMax = burnCeiling(percentile(win.map(\.v), 0.97))
         // Steps stay raw (inventing slopes between bursts is exactly what the stepped view avoids);
@@ -161,7 +307,7 @@ struct BurnRateChart: View {
                 .accessibilityLabel("Burn rate")
                 .accessibilityValue("Average \(fmtTok(Int(mean))) tokens per minute, peak \(fmtTok(Int(disp.map(\.v).max() ?? 0)))")
             }
-            statLine(sel.map { "\(fmtTok(Int($0.v))) / min" } ?? "\(fmtTok(Int(disp.last?.v ?? 0))) / min",
+            statLine(sel.map { "\(fmtTok(Int($0.v))) / min" } ?? "\(fmtTok(Int(max(0, ctx.currentRate)))) / min",
                      sel != nil ? relTimeLabel(sel!.t, now: now) : "· avg \(fmtTok(Int(mean)))", p)
         }
     }
@@ -172,12 +318,13 @@ struct BurnRateChart: View {
 struct VolumeBarsChart: View {
     let ctx: ChartCtx
     @State private var sel: TokBucket?
+    @State private var memo = ChartMemo()
     var body: some View {
         let p = ctx.p
-        let now = Date()
+        let now = ctx.tick
         let lower = ctx.lower(ctx.records.first?.date, now: now)
         let n = 16
-        let buckets = bucketRecords(ctx.records, from: lower, to: now, buckets: n)
+        let buckets = memo.value(ctx.dataKey) { bucketRecords(ctx.records, from: lower, to: now, buckets: n) }
         let peak = buckets.map(\.v).max() ?? 0
         let total = buckets.reduce(0) { $0 + $1.v }
         let per = now.timeIntervalSince(lower) / Double(n)
@@ -231,11 +378,12 @@ struct VolumeBarsChart: View {
 struct CumulativeChart: View {
     let ctx: ChartCtx
     @State private var sel: TokBucket?
+    @State private var memo = ChartMemo()
     var body: some View {
         let p = ctx.p
-        let now = Date()
+        let now = ctx.tick
         let lower = ctx.lower(ctx.records.first?.date, now: now)
-        let pts = cumulativeRecords(ctx.records, from: lower, to: now, buckets: 90)
+        let pts = memo.value(ctx.dataKey) { cumulativeRecords(ctx.records, from: lower, to: now, buckets: 90) }
         let total = pts.last?.v ?? 0
         return VStack(alignment: .leading, spacing: 5) {
             if total == 0 {
@@ -436,32 +584,80 @@ struct BurndownChart: View {
 struct UsageLinesChart: View {
     let ctx: ChartCtx
     @State private var selT: Date?
+    @State private var memo = ChartMemo()
     var body: some View {
         let p = ctx.p
-        let now = Date()
+        let now = ctx.tick
         let lower = ctx.lower(ctx.usageSamples.first?.t, now: now)
         let s = bucketed(ctx.usageSamples.filter { $0.t >= lower }, lower: lower, upper: now, buckets: 120, pickMax: false)
         let w = bucketed(ctx.weeklySamples.filter { $0.t >= lower }, lower: lower, upper: now, buckets: 120, pickMax: false)
+        // One line per model, each showing the share of the weekly allowance that model accounted
+        // for, so the model lines add up to the Week line. See modelWeekShareSeries in ChartData.swift.
+        // Memoised: it walks a week of records, and this body re-runs on every mouse move.
+        let models = memo.value(ctx.dataKey + "|wk\(ctx.weeklyPct)") {
+            modelWeekShareSeries(records: ctx.records, weeklyPct: ctx.weeklyPct,
+                                 weeklyResetAt: ctx.weeklyResetAt, now: now)
+                .map { (label: $0.label,
+                        samples: bucketed($0.samples.filter { $0.t >= lower }, lower: lower, upper: now,
+                                          buckets: 120, pickMax: false)) }
+        }
+        let shown = { (k: String) in !ctx.hiddenSeries.contains(k) }
         let selS = selT.flatMap { nearestSample(s, to: $0) }
         let selW = selT.flatMap { nearestSample(w, to: $0) }
+        // Everything the legend can offer, in draw order, with its colour.
+        // `derived` marks the model lines: measured readings are solid, the per-model split is
+        // worked out from the local logs, and the legend says which is which.
+        let series: [(key: String, colour: Color, derived: Bool)] =
+            [(key: "Session", colour: ctx.accent, derived: false),
+             (key: "Week", colour: ctx.secondary, derived: false)]
+            + models.map { (key: $0.label, colour: modelHue($0.label, p), derived: true) }
         return VStack(alignment: .leading, spacing: 5) {
             if s.isEmpty && w.isEmpty {
                 chartPlaceholder("Warming up, collecting samples", p)
             } else {
                 Chart {
-                    ForEach(s, id: \.t) { pt in
-                        LineMark(x: .value("t", pt.t), y: .value("v", pt.v), series: .value("k", "Session"))
-                            .foregroundStyle(ctx.accent).lineStyle(StrokeStyle(lineWidth: 1.6)).interpolationMethod(.monotone)
+                    if shown("Session") {
+                        ForEach(s, id: \.t) { pt in
+                            LineMark(x: .value("t", pt.t), y: .value("v", pt.v), series: .value("k", "Session"))
+                                .foregroundStyle(ctx.accent).lineStyle(StrokeStyle(lineWidth: 1.6)).interpolationMethod(.monotone)
+                        }
                     }
-                    ForEach(w, id: \.t) { pt in
-                        LineMark(x: .value("t", pt.t), y: .value("v", pt.v), series: .value("k", "Week"))
-                            .foregroundStyle(ctx.secondary).lineStyle(StrokeStyle(lineWidth: 1.6)).interpolationMethod(.monotone)
+                    if shown("Week") {
+                        ForEach(w, id: \.t) { pt in
+                            LineMark(x: .value("t", pt.t), y: .value("v", pt.v), series: .value("k", "Week"))
+                                .foregroundStyle(ctx.secondary).lineStyle(StrokeStyle(lineWidth: 1.6)).interpolationMethod(.monotone)
+                        }
+                    }
+                    ForEach(models, id: \.label) { m in
+                        if shown(m.label) {
+                            ForEach(m.samples, id: \.t) { pt in
+                                LineMark(x: .value("t", pt.t), y: .value("v", pt.v), series: .value("k", m.label))
+                                    .foregroundStyle(modelHue(m.label, p))
+                                    // Thinner and dashed, so a model never competes with the two
+                                    // headline lines and you can tell a derived line from a measured one.
+                                    .lineStyle(StrokeStyle(lineWidth: 1.2, dash: [3, 2]))
+                                    .interpolationMethod(.monotone)
+                            }
+                        }
                     }
                     if let t = selT {
                         RuleMark(x: .value("t", t)).foregroundStyle(p.ink.opacity(0.25))
                             .annotation(position: .top, alignment: .leading, spacing: 2) {
-                                chartCallout("S \(Int(((selS?.v ?? 0) * 100).rounded()))%  ·  W \(Int(((selW?.v ?? 0) * 100).rounded()))%",
-                                             relTimeLabel(t, now: now), p)
+                                // The model lines are on this chart, so they belong in its readout.
+                                // Showing only S and W meant hovering a chart with five lines on it
+                                // answered for two of them and left the rest to be guessed at.
+                                // Hidden series are left out: the legend switched them off.
+                                let each = models.compactMap { m -> String? in
+                                    guard shown(m.label), let v = nearestSample(m.samples, to: t)?.v,
+                                          v >= 0.005 else { return nil }
+                                    return "\(m.label) \(Int((v * 100).rounded()))%"
+                                }
+                                chartCallout(
+                                    (shown("Session") ? "S \(Int(((selS?.v ?? 0) * 100).rounded()))%" : "")
+                                    + (shown("Session") && shown("Week") ? "  \u{00B7}  " : "")
+                                    + (shown("Week") ? "W \(Int(((selW?.v ?? 0) * 100).rounded()))%" : ""),
+                                    relTimeLabel(t, now: now), p,
+                                    detail: each.isEmpty ? nil : each.joined(separator: "  \u{00B7}  "))
                             }
                     }
                 }
@@ -477,21 +673,37 @@ struct UsageLinesChart: View {
                     guard let pt, let d: Date = plotValue(proxy, geo, pt, as: Date.self) else { selT = nil; return }
                     selT = d
                 }
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Session and weekly percentage")
-                .accessibilityValue("Session \(Int(ctx.sessionPct * 100)) percent, week \(Int(ctx.weeklyPct * 100)) percent")
             }
-            HStack(spacing: 8) {
-                legendDot("Session", ctx.accent, p)
-                legendDot("Week", ctx.secondary, p)
-                Spacer(minLength: 4)
-            }.padding(.leading, 26).padding(.trailing, 52)
-        }
-    }
-    private func legendDot(_ t: String, _ c: Color, _ p: Palette) -> some View {
-        HStack(spacing: 4) {
-            Circle().fill(c).frame(width: 5, height: 5)
-            Text(t).font(.system(size: 10)).foregroundStyle(p.sub)
+            // The legend doubles as the switch: click a name to drop its line, click again to
+            // bring it back. A hidden series fades rather than disappearing, so you can always
+            // see what you turned off and how to get it back.
+            // Every model in use gets an entry, so this can reach six. Six across one line runs off
+            // the edge of a 264pt card, so it wraps in threes.
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(Array(stride(from: 0, to: series.count, by: 3)), id: \.self) { start in
+                    HStack(spacing: 10) {
+                        ForEach(series[start..<min(start + 3, series.count)], id: \.key) { item in
+                            Button { ctx.onToggleSeries(item.key) } label: {
+                                HStack(spacing: 4) {
+                                    // The swatch matches the STROKE, not just the colour. Session
+                                    // and Fable can land on nearly the same hue (Fable's family
+                                    // colour is clay, and clay is also the default accent), as can
+                                    // Week and Opus. Solid versus dashed tells them apart even
+                                    // when the colours do not.
+                                    LegendSwatch(colour: item.colour, dashed: item.derived)
+                                    Text(item.key).font(.system(size: 9.5)).foregroundStyle(p.sub).fixedSize()
+                                }
+                                .opacity(shown(item.key) ? 1 : 0.32)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain).focusable(false)
+                            .accessibilityLabel("\(item.key), \(shown(item.key) ? "shown" : "hidden"). Click to toggle.")
+                        }
+                        Spacer(minLength: 0)
+                    }
+                }
+            }
+            .animation(.easeInOut(duration: 0.15), value: ctx.hiddenSeries)
         }
     }
 }
@@ -501,12 +713,13 @@ struct UsageLinesChart: View {
 struct ByModelChart: View {
     let ctx: ChartCtx
     @State private var sel: Date?
+    @State private var memo = ChartMemo()
     var body: some View {
         let p = ctx.p
-        let now = Date()
+        let now = ctx.tick
         let lower = ctx.lower(ctx.records.first?.date, now: now)
         let n = 14
-        let rects = modelStackRects(ctx.records, from: lower, to: now, buckets: n)
+        let rects = memo.value(ctx.dataKey) { modelStackRects(ctx.records, from: lower, to: now, buckets: n) }
         let families = Array(Set(rects.map(\.key))).sorted()
         let colTop = rects.map(\.y1).max() ?? 0
         let total = rects.reduce(0) { $0 + ($1.y1 - $1.y0) }
@@ -566,11 +779,12 @@ struct ByModelChart: View {
 struct ByProjectChart: View {
     let ctx: ChartCtx
     @State private var sel: CatValue?
+    @State private var memo = ChartMemo()
     var body: some View {
         let p = ctx.p
-        let now = Date()
+        let now = ctx.tick
         let lower = ctx.lower(ctx.records.first?.date, now: now)
-        let rows = topProjects(ctx.records, from: lower)
+        let rows = memo.value(ctx.dataKey) { topProjects(ctx.records, from: lower) }
         let total = rows.reduce(0) { $0 + $1.v }
         return VStack(alignment: .leading, spacing: 5) {
             if rows.isEmpty {
@@ -620,9 +834,10 @@ struct ByProjectChart: View {
 struct CostPerDayChart: View {
     let ctx: ChartCtx
     @State private var sel: CatValue?
+    @State private var memo = ChartMemo()
     var body: some View {
         let p = ctx.p
-        let rows = costPerDay(ctx.records, days: ctx.days)
+        let rows = memo.value(ctx.dataKey) { costPerDay(ctx.records, days: ctx.days) }
         let peak = rows.map(\.v).max() ?? 0
         let total = rows.reduce(0) { $0 + $1.v }
         return VStack(alignment: .leading, spacing: 5) {
@@ -647,15 +862,7 @@ struct CostPerDayChart: View {
                         }
                     }
                 }
-                .chartXAxis {
-                    AxisMarks { v in
-                        AxisValueLabel {
-                            if let s = v.as(String.self) {
-                                Text(s).font(.system(size: 8.5, design: .monospaced)).foregroundStyle(p.faint)
-                            }
-                        }
-                    }
-                }
+                .chartXAxis { thinnedCatXAxis(rows.map(\.name), p, size: 8.5, maxLabels: 7) }
                 .chartPlotStyle { $0.background(Color.clear) }
                 .transaction { $0.animation = nil }
                 .frame(height: ctx.plotH)
@@ -679,9 +886,10 @@ struct CostPerDayChart: View {
 struct HourProfileChart: View {
     let ctx: ChartCtx
     @State private var sel: TokBucket?
+    @State private var memo = ChartMemo()
     var body: some View {
         let p = ctx.p
-        let rows = hourOfDayProfile(ctx.records, days: ctx.days)
+        let rows = memo.value(ctx.dataKey) { hourOfDayProfile(ctx.records, days: ctx.days) }
         let peak = rows.map(\.v).max() ?? 0
         let busiest = rows.max { $0.v < $1.v }
         let thisHour = Calendar.current.component(.hour, from: Date())
@@ -736,11 +944,12 @@ struct HourProfileChart: View {
 struct DayHeatmapChart: View {
     let ctx: ChartCtx
     @State private var sel: HeatCell?
+    @State private var memo = ChartMemo()
     var body: some View {
         let p = ctx.p
         // Weekday labels repeat past 7 days, which would collide on the axis, so the grid is a week.
         let days = min(7, max(3, ctx.days))
-        let cells = heatCells(ctx.records, days: days)
+        let cells = memo.value(ctx.dataKey) { heatCells(ctx.records, days: days) }
         let peak = cells.map(\.v).max() ?? 0
         let dayLabels = cells.filter { $0.hour == 0 }.map(\.dayLabel)
         return VStack(alignment: .leading, spacing: 5) {

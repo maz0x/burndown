@@ -91,5 +91,47 @@ check(mdLines[2] == "| 2025-06-15 | 2 | 2000000 | 10.0000 |",
 check(mdLines[3] == "| 2025-06-16 | 2 | 3000000 | 33.0000 |",
       "day 1: 2 records, 3M tokens, $33.00 (sonnet $3 + $30)")
 
+// --- the report ---
+// The old Markdown export was a four-column per-day table and nothing else, which is what made it
+// useless: no totals, no models, no projects, no chats, and no statement of what period it covers.
+let repRecs = [
+    UsageRecord(date: base, model: "claude-opus-5", project: "Home folder",
+                session: "Redesign the settings", input: 1000, output: 500, cache5m: 0, cache1h: 0, cacheRead: 0),
+    UsageRecord(date: base.addingTimeInterval(86_400), model: "claude-fable-5", project: "site",
+                session: "Rebuild the site", input: 200, output: 100, cache5m: 0, cache1h: 0, cacheRead: 0),
+]
+let repSessions = [
+    SessionUsage(id: "/a.jsonl", title: "Redesign the settings", project: "Home folder",
+                 date: base, tokens: 1500, cost: 12.5),
+    SessionUsage(id: "/b.jsonl", title: "Rebuild the site", project: "site",
+                 date: base.addingTimeInterval(86_400), tokens: 300, cost: 1.25),
+]
+let report = exportReportMarkdown(records: repRecs, sessions: repSessions, scopeLabel: "7 days",
+                                  generated: base.addingTimeInterval(2 * 86_400), calendar: utc)
+for section in ["# Burndown usage report", "## Summary", "## By model", "## By project",
+                "## Biggest conversations", "## Day by day"] {
+    check(report.contains(section), "the report has a \(section) section")
+}
+check(report.contains("**Period:** 7 days"), "it says what period it covers")
+check(report.contains("Redesign the settings"), "conversations are named")
+check(report.contains("site"), "projects are named")
+check(report.contains("Dollar figures are an estimate"), "and it explains what the money means")
+check(!report.contains("| 0 | 0 |"), "no empty filler rows")
+// Deterministic: the same input twice must produce the same bytes, or a diff is meaningless.
+let again = exportReportMarkdown(records: repRecs, sessions: repSessions, scopeLabel: "7 days",
+                                 generated: base.addingTimeInterval(2 * 86_400), calendar: utc)
+check(report == again, "the same input produces the same bytes")
+// A title containing a pipe must not break the table it sits in.
+let piped = [SessionUsage(id: "/c.jsonl", title: "a | b", project: "p",
+                          date: base.addingTimeInterval(86_400), tokens: 5, cost: 0.1)]
+let escaped = exportReportMarkdown(records: repRecs, sessions: piped, scopeLabel: "7 days",
+                                   generated: base.addingTimeInterval(2 * 86_400), calendar: utc)
+check(escaped.contains("a \\| b"), "a pipe in a title is escaped, not left to break the table")
+// Nothing to report is still a valid document rather than a crash or a blank file.
+let empty = exportReportMarkdown(records: [], sessions: [], scopeLabel: "Today",
+                                 generated: base.addingTimeInterval(2 * 86_400), calendar: utc)
+check(empty.contains("# Burndown usage report") && empty.contains("**Period:** Today"),
+      "an empty period still produces a real report")
+
 print(failures == 0 ? "\nALL EXPORT TESTS PASSED" : "\n\(failures) FAILURE(S)")
 exit(failures == 0 ? 0 : 1)

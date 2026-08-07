@@ -57,5 +57,35 @@ check(hoursText(0.5) == "30m", "under an hour renders as minutes")
 check(hoursText(0) == "0m", "zero renders as 0m")
 check(hoursText(-5) == "0m", "negative durations clamp to 0m")
 
+print("paceReading:")
+// A five hour session window, one hour in.
+let H = 3600.0, W5 = 5 * H
+check(paceReading(pct: 0.2, secondsToReset: 4 * H, window: W5)?.ratio == 1.0,
+      "20% spent one fifth of the way in is exactly 1.0x")
+check(abs((paceReading(pct: 0.4, secondsToReset: 4 * H, window: W5)?.ratio ?? 0) - 2.0) < 0.001,
+      "twice the budget for the time elapsed reads 2.0x")
+check(paceReading(pct: 0.5, secondsToReset: W5 - 30, window: W5) == nil,
+      "the first minute of a window says nothing rather than a wild number")
+
+// Overspending: 40% gone in the first hour empties the budget 90 minutes before the reset.
+let hot = paceReading(pct: 0.4, secondsToReset: 4 * H, window: W5)!
+check(abs((hot.secondsToEmpty ?? 0) - 1.5 * H) < 1, "60% left at 40% per hour is 90 minutes")
+check(abs((hot.dryEarlyBy ?? 0) - 2.5 * H) < 1, "which lands 2h 30m short of the reset")
+check(hot.caption.contains("before the reset"), "and the caption says so in plain words")
+
+// Comfortable: on pace to coast to the reset.
+let calm = paceReading(pct: 0.1, secondsToReset: 4 * H, window: W5)!
+check(calm.dryEarlyBy == nil, "a comfortable pace never runs dry early")
+check(calm.caption.contains("lasts past the reset"), "and says it lasts")
+
+// Spending nothing must not divide by zero or claim a run-out.
+let idle = paceReading(pct: 0, secondsToReset: 4 * H, window: W5)!
+check(idle.secondsToEmpty == nil && idle.ratio == 0, "no spend means no projection and 0.0x")
+
+// Already at the cap.
+let done = paceReading(pct: 1.0, secondsToReset: 2 * H, window: W5, atLimitLabel: "limit")!
+check(done.caption.hasPrefix("limit reached"), "at the cap it reports the cap, not a forecast")
+check(done.secondsToEmpty == nil || done.secondsToEmpty == 0, "with nothing left to project")
+
 print(failures == 0 ? "\nALL PACING TESTS PASSED" : "\n\(failures) FAILURE(S)")
 exit(failures == 0 ? 0 : 1)

@@ -7,7 +7,7 @@ cd "$(dirname "$0")"
 OUT="$(mktemp -d)/burndown-forecast-tests"
 
 echo "→ Building forecast test binary (Forecast)"
-swiftc -O -o "$OUT" Sources/Forecast.swift Tests/forecast/main.swift
+swiftc -O -o "$OUT" Sources/Forecast.swift Sources/Format.swift Tests/forecast/main.swift
 
 echo "→ Running"
 "$OUT"

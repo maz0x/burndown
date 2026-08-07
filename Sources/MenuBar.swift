@@ -4,6 +4,15 @@ struct GlyphData {
     var pct: Double          // primary usage 0…1
     var pctText: String      // "46%"
     var primary: NSColor
+    /// The colour for the NUMBER specifically, when it should differ from `primary`.
+    ///
+    /// The menu bar is a strip of system-tinted glyphs that adapt to whatever wallpaper is behind
+    /// them, and a themed number sitting among them is the one thing that fights its background.
+    /// The dot, the arc and the glow keep the accent (that is what makes them readable AS a
+    /// gauge); the digits default to the same label colour the clock uses.
+    var numberColor: NSColor? = nil
+    /// Whatever the number should be drawn in.
+    var digits: NSColor { numberColor ?? primary }
     var secFrac: Double      // secondary fill 0…1 (time remaining, or weekly usage)
     var secText: String      // "4h31m" or "13%"
     var secondary: NSColor
@@ -126,7 +135,7 @@ enum MenuBarRenderer {
         case .stack:  return stack(g)
         case .ring:   return ring(g)
         case .orbit:  return orbit(g)
-        case .mini:   return textImage(g.pctText, PRIMARY, .semibold, g.primary)
+        case .mini:   return textImage(g.pctText, PRIMARY, .semibold, g.digits)
         case .arc:    return arc(g)
         case .pie:    return pie(g)
         case .dual:   return dual(g)
@@ -187,7 +196,7 @@ enum MenuBarRenderer {
 
     // % over weekly/time - two stacked lines, color-coded, just text-width wide.
     private static func stack(_ g: GlyphData) -> NSImage {
-        let at = attrs(11, .semibold, g.primary), ab = attrs(9.5, .medium, g.secondary)
+        let at = attrs(11, .semibold, g.digits), ab = attrs(9.5, .medium, g.secondary)
         let t = (g.pctText as NSString).size(withAttributes: at), b = (g.secText as NSString).size(withAttributes: ab)
         let w = max(ceil(t.width), ceil(b.width)), h = ceil(t.height) + ceil(b.height) - 1
         return img(w, h) {
@@ -199,7 +208,7 @@ enum MenuBarRenderer {
     // A single ring (time remaining) with the usage % inside it. Tiniest.
     private static func ring(_ g: GlyphData) -> NSImage {
         let s: CGFloat = 19, num = g.pctText.replacingOccurrences(of: "%", with: "")
-        let a = attrs(9, .bold, g.primary); let ts = (num as NSString).size(withAttributes: a)
+        let a = attrs(9, .bold, g.digits); let ts = (num as NSString).size(withAttributes: a)
         return img(s, s) {
             drawRing(NSRect(x: 0, y: 0, width: s, height: s), 2.2, g.secFrac, g.secondary)
             (num as NSString).draw(at: NSPoint(x: (s - ts.width)/2, y: (s - ts.height)/2), withAttributes: a)
@@ -221,7 +230,7 @@ enum MenuBarRenderer {
     // The % with a live burn-rate spark stacked underneath - tall, never wide.
     // In "Both" mode it also grows a slim weekly progress bar at the very bottom.
     private static func pulse(_ g: GlyphData) -> NSImage {
-        let a = attrs(11.5, .semibold, g.primary)
+        let a = attrs(11.5, .semibold, g.digits)
         let ts = (g.pctText as NSString).size(withAttributes: a)
         let sh: CGFloat = 5, gap: CGFloat = 1.5
         let wk = g.hasSecondary                       // show the weekly bar?
@@ -255,7 +264,7 @@ enum MenuBarRenderer {
     private static func pace(_ g: GlyphData) -> NSImage {
         let s: CGFloat = 22
         let num = g.pctText.replacingOccurrences(of: "%", with: "")   // "46" reads cleaner inside
-        let a = attrs(10, .bold, g.primary)
+        let a = attrs(10, .bold, g.digits)
         let ts = (num as NSString).size(withAttributes: a)
         let frac = max(0, min(1, g.needle))
         let startA: CGFloat = 235, sweep: CGFloat = 290               // gap centered at the bottom
@@ -276,7 +285,7 @@ enum MenuBarRenderer {
 
     // A live burn-rate sparkline beside the %.
     private static func burn(_ g: GlyphData) -> NSImage {
-        let sw: CGFloat = 30, sh: CGFloat = 13, gap: CGFloat = 4, a = attrs(PRIMARY, .semibold, g.primary)
+        let sw: CGFloat = 30, sh: CGFloat = 13, gap: CGFloat = 4, a = attrs(PRIMARY, .semibold, g.digits)
         let ts = (g.pctText as NSString).size(withAttributes: a), w = sw + gap + ceil(ts.width), h = max(sh, ceil(ts.height)), y0 = (h - sh)/2
         return img(w, h) {
             let base = NSBezierPath(); base.move(to: NSPoint(x: 0, y: y0)); base.line(to: NSPoint(x: sw, y: y0))
@@ -296,8 +305,8 @@ enum MenuBarRenderer {
 
     // The % beside a token figure that rolls (odometer) when it changes.
     private static func roll(_ g: GlyphData) -> NSImage {
-        let ap = attrs(12.5, .semibold, g.primary)
-        let at = attrs(12.5, .semibold, g.active ? g.primary : g.secondary)
+        let ap = attrs(12.5, .semibold, g.digits)
+        let at = attrs(12.5, .semibold, g.active ? g.digits : g.secondary)
         let pT = g.pctText as NSString, pS = pT.size(withAttributes: ap)
         let tokNew = g.tokText as NSString, tokOld = (g.rollFrom.isEmpty ? g.tokText : g.rollFrom) as NSString
         let tN = tokNew.size(withAttributes: at), tO = tokOld.size(withAttributes: at)
@@ -363,7 +372,7 @@ enum MenuBarRenderer {
     // A glowing ember beside the %: the dot's core + halo swell and brighten with the
     // live rate, and settle to a dim coal at rest.
     private static func ember(_ g: GlyphData) -> NSImage {
-        let a = attrs(PRIMARY, .semibold, g.primary)
+        let a = attrs(PRIMARY, .semibold, g.digits)
         let ts = (g.pctText as NSString).size(withAttributes: a)
         let slot: CGFloat = 11, gap: CGFloat = 4
         let w = slot + gap + ceil(ts.width), h = max(slot, ceil(ts.height))
@@ -385,7 +394,7 @@ enum MenuBarRenderer {
     // heavy Opus run, it flickers and throws sparks while tokens flow, and rages toward the
     // limit (redline). Idle = a calm banked coal. This is Burndown's signature glyph.
     private static func flame(_ g: GlyphData) -> NSImage {
-        let a = attrs(PRIMARY, .semibold, g.primary)
+        let a = attrs(PRIMARY, .semibold, g.digits)
         let ts = (g.pctText as NSString).size(withAttributes: a)
         // Geometry: 13pt slot + 4pt gap + text; cx = 6.5, baseY = 1.5 + botPad.
         // FLAME ADJUST scales the flame, so the slot has to widen with it or a big flame clips.
@@ -1166,7 +1175,7 @@ enum MenuBarRenderer {
     // A comet beside the %: a bright head with a tail that streaks longer + brighter the
     // faster you burn, fading to a dim coal at rest.
     private static func comet(_ g: GlyphData) -> NSImage {
-        let a = attrs(PRIMARY, .semibold, g.primary)
+        let a = attrs(PRIMARY, .semibold, g.digits)
         let ts = (g.pctText as NSString).size(withAttributes: a)
         let tail: CGFloat = 18, gap: CGFloat = 4, headR: CGFloat = 2.3
         let w = tail + gap + ceil(ts.width), h = max(8, ceil(ts.height)), cy = h/2
@@ -1187,7 +1196,7 @@ enum MenuBarRenderer {
 
     // A static half-circle gauge filled to the usage %, with the % beside it.
     private static func arc(_ g: GlyphData) -> NSImage {
-        let gw: CGFloat = 22, gh: CGFloat = 12, gap: CGFloat = 3, a = attrs(PRIMARY, .semibold, g.primary)
+        let gw: CGFloat = 22, gh: CGFloat = 12, gap: CGFloat = 3, a = attrs(PRIMARY, .semibold, g.digits)
         let ts = (g.pctText as NSString).size(withAttributes: a)
         let w = gw + gap + ceil(ts.width), h = max(gh, ceil(ts.height))
         let frac = max(0, min(1, g.pct))
@@ -1239,7 +1248,7 @@ enum MenuBarRenderer {
 
     // A status dot colored by level, beside the %. Clean and quiet.
     private static func dot(_ g: GlyphData) -> NSImage {
-        let a = attrs(PRIMARY, .semibold, g.primary)
+        let a = attrs(PRIMARY, .semibold, g.digits)
         let ts = (g.pctText as NSString).size(withAttributes: a)
         let d: CGFloat = 7, gap: CGFloat = 4
         let w = d + gap + ceil(ts.width), h = max(d, ceil(ts.height))
@@ -1253,7 +1262,7 @@ enum MenuBarRenderer {
     // A round dial: a full ring with a needle pointing from 12 o'clock, clockwise, to
     // the usage %. The % sits beside it.
     private static func dial(_ g: GlyphData) -> NSImage {
-        let s: CGFloat = 17, gap: CGFloat = 3, a = attrs(11, .semibold, g.primary)
+        let s: CGFloat = 17, gap: CGFloat = 3, a = attrs(11, .semibold, g.digits)
         let ts = (g.pctText as NSString).size(withAttributes: a)
         let w = s + gap + ceil(ts.width), h = max(s, ceil(ts.height))
         let frac = max(0, min(1, g.pct))
@@ -1274,7 +1283,7 @@ enum MenuBarRenderer {
 
     // Session % big and leading, weekly % small beneath - aligned, color-coded.
     private static func twins(_ g: GlyphData) -> NSImage {
-        let top = attrs(11.5, .semibold, g.primary), bot = attrs(8, .semibold, g.secondary)
+        let top = attrs(11.5, .semibold, g.digits), bot = attrs(8, .semibold, g.secondary)
         let l1 = g.pctText as NSString, l2 = "wk \(g.secText)" as NSString
         let s1 = l1.size(withAttributes: top), s2 = l2.size(withAttributes: bot)
         let w = max(ceil(s1.width), ceil(s2.width)), h = ceil(s1.height) + ceil(s2.height) - 2
@@ -1365,7 +1374,7 @@ enum MenuBarRenderer {
 
     // Session % (big, leading) beside the weekly reset countdown ("3d 4h"), small + quiet.
     private static func weeklyClock(_ g: GlyphData) -> NSImage {
-        let big = attrs(11.5, .semibold, g.primary), small = attrs(8, .semibold, g.secondary)
+        let big = attrs(11.5, .semibold, g.digits), small = attrs(8, .semibold, g.secondary)
         let l1 = g.pctText as NSString
         let wk = g.weekLeftText.isEmpty ? g.secText : g.weekLeftText
         let l2 = wk as NSString   // just the countdown (no "wk" prefix; saves horizontal space)

@@ -56,7 +56,8 @@ check(byProj.first?.key == "alpha" && byProj.first?.tokens == 2_000_000, "alpha 
 check(byProj.contains { $0.key == "beta" && $0.tokens == 1_000_000 }, "beta 1M")
 let unk = rollupByProject([UsageRecord(date: d("2026-06-01T10:00:00Z"), model: "claude-haiku-4-5",
                                        project: "", input: 10, output: 0, cache5m: 0, cache1h: 0, cacheRead: 0)])
-check(unk.first?.key == "(unknown)", "empty project -> (unknown)")
+check(unk.first?.key == kUnknownProject, "a record with no project reads as \"No folder recorded\"")
+check(!kUnknownProject.hasPrefix("("), "and not as a parenthesised placeholder the reader has to decode")
 
 // --- rollup by session (per-chat) ---
 let sessRecs = [
@@ -83,6 +84,64 @@ check(win.count == 1 && win.first?.project == "beta", "window keeps only the 202
 
 // --- empty input is safe ---
 check(totals([]).tokens == 0 && rollupByDay([], calendar: utc).isEmpty, "empty records aggregate cleanly")
+
+// --- quiet days must survive as zeros ---
+// Two records three days apart: the days between them still have to exist, or the chart's axis
+// jumps from 01 to 05 and reads as if those days never happened.
+let sparse = [
+    UsageRecord(date: d("2026-06-01T10:00:00Z"), model: "claude-opus-5", project: "a", session: "s",
+                input: 10, output: 0, cache5m: 0, cache1h: 0, cacheRead: 0),
+    UsageRecord(date: d("2026-06-04T10:00:00Z"), model: "claude-opus-5", project: "a", session: "s",
+                input: 20, output: 0, cache5m: 0, cache1h: 0, cacheRead: 0),
+]
+let filled = rollupByDaysBack(sparse, days: 5, now: d("2026-06-05T12:00:00Z"), calendar: utc)
+check(filled.count == 5, "asking for five days back gives five days")
+check(filled.map(\.key) == ["2026-06-01", "2026-06-02", "2026-06-03", "2026-06-04", "2026-06-05"],
+      "and they are consecutive, oldest first, with no gaps")
+check(filled[1].tokens == 0 && filled[2].tokens == 0, "the quiet days come back as zeros")
+check(filled[0].tokens == 10 && filled[3].tokens == 20, "the busy days keep their numbers")
+check(rollupByDaysBack([], days: 3, now: d("2026-06-05T12:00:00Z"), calendar: utc).count == 3,
+      "no records at all still gives a full run of zero days")
+// Records older than the window must not leak in.
+let old = [UsageRecord(date: d("2026-05-01T10:00:00Z"), model: "claude-opus-5", project: "a",
+                       session: "s", input: 999, output: 0, cache5m: 0, cache1h: 0, cacheRead: 0)]
+check(rollupByDaysBack(old + sparse, days: 5, now: d("2026-06-05T12:00:00Z"), calendar: utc)
+        .reduce(0) { $0 + $1.tokens } == 30, "older records stay outside the window")
+
+// --- one conversation split across several log files ---
+// Claude Code opens a new log when a chat is resumed or compacted, so a long piece of work shows
+// up as several files with the same title. Listed raw that is four identical rows.
+let split = [
+    SessionUsage(id: "/1.jsonl", title: "Long piece of work", project: "Home folder",
+                 date: d("2026-06-01T10:00:00Z"), tokens: 100, cost: 1),
+    SessionUsage(id: "/2.jsonl", title: "Long piece of work", project: "Home folder",
+                 date: d("2026-06-02T10:00:00Z"), tokens: 200, cost: 2),
+    SessionUsage(id: "/3.jsonl", title: "Something else", project: "Home folder",
+                 date: d("2026-06-01T10:00:00Z"), tokens: 50, cost: 0.5),
+    // Same title, DIFFERENT project: a genuinely separate piece of work, kept separate.
+    SessionUsage(id: "/4.jsonl", title: "Long piece of work", project: "site",
+                 date: d("2026-06-01T10:00:00Z"), tokens: 30, cost: 0.3),
+]
+let merged = mergeSessions(split)
+check(merged.count == 3, "same title and project merge, a different project does not")
+let big = merged.first { $0.title == "Long piece of work" && $0.project == "Home folder" }!
+check(big.tokens == 300 && big.cost == 3, "tokens and cost add up")
+check(big.parts == 2, "and the row says how many logs it took")
+check(big.date == d("2026-06-02T10:00:00Z"), "the date is the most recent of them")
+check(merged.first { $0.project == "site" }?.parts == 1, "a single-log conversation stays a single part")
+check(mergeSessions([]).isEmpty, "nothing in, nothing out")
+// Two different untitled chats on the same day share a GENERATED label. Merging on that would add
+// together work that has nothing to do with each other.
+let untitled = [
+    SessionUsage(id: "/u1.jsonl", title: "Untitled chat \u{00B7} Aug 1", project: "Home folder",
+                 date: d("2026-06-01T10:00:00Z"), tokens: 100, cost: 1),
+    SessionUsage(id: "/u2.jsonl", title: "Untitled chat \u{00B7} Aug 1", project: "Home folder",
+                 date: d("2026-06-01T18:00:00Z"), tokens: 900, cost: 9),
+]
+check(mergeSessions(untitled).count == 2, "untitled chats are never merged into each other")
+// Order in equals order out, so the list does not reshuffle itself between renders.
+check(merged.map(\.title) == ["Long piece of work", "Something else", "Long piece of work"],
+      "first-seen order is preserved")
 
 if failures == 0 { print("ALL AGGREGATION TESTS PASSED") }
 else { print("\(failures) FAILURE(S)"); exit(1) }

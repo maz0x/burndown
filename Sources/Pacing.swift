@@ -58,3 +58,51 @@ func hoursText(_ hours: Double) -> String {
     }
     return "\(Int(h.rounded()))h"
 }
+
+// MARK: - Pace strips (the "Pace" chart)
+
+/// One row of the pace chart: how fast a budget is going against how fast its window refills.
+///
+/// Kept here, Foundation-pure and tested, rather than inside the chart body, because "am I
+/// overspending, and by how much" is the actual claim the chart makes and it should not live
+/// somewhere a test cannot reach it.
+struct PaceReading {
+    /// Spent share of the budget divided by elapsed share of the window. 1.0 is exactly on pace.
+    let ratio: Double
+    /// Seconds until the budget is gone at this pace. nil when nothing is being spent.
+    let secondsToEmpty: Double?
+    /// Seconds of window still to run once the budget is gone, when that happens first.
+    let dryEarlyBy: Double?
+    /// Plain English, for the line under the bar.
+    let caption: String
+}
+
+/// nil when the window has barely started, because a pace read off the first minute of a five hour
+/// window is noise, not information.
+func paceReading(pct: Double, secondsToReset: Double, window: Double, atLimitLabel: String = "limit") -> PaceReading? {
+    let elapsed = window - max(0, secondsToReset)
+    guard elapsed > 60, window > 0 else { return nil }
+    let timeShare = min(1, elapsed / window)
+    guard timeShare > 0.01 else { return nil }
+    let ratio = pct / timeShare
+
+    let used = max(0, pct)
+    let ratePerSecond = used / elapsed
+    let remaining = max(0, 1 - used)
+    let toEmpty: Double? = ratePerSecond > 0 ? remaining / ratePerSecond : nil
+    let left = max(0, secondsToReset)
+
+    var dryEarlyBy: Double? = nil
+    let caption: String
+    if used >= 1 {
+        caption = "\(atLimitLabel) reached, resets in \(compactETA(left))"
+    } else if let t = toEmpty, t < left {
+        dryEarlyBy = left - t
+        caption = "at this pace the \(atLimitLabel) arrives \(compactETA(left - t)) before the reset"
+    } else if toEmpty == nil {
+        caption = "nothing spent in this window yet"
+    } else {
+        caption = "at this pace it lasts past the reset"
+    }
+    return PaceReading(ratio: ratio, secondsToEmpty: toEmpty, dryEarlyBy: dryEarlyBy, caption: caption)
+}

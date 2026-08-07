@@ -19,7 +19,7 @@ final class LiveActivity: ObservableObject {
     @Published private(set) var history: [Double] = []  // recent normalized rate samples (for the menu-bar spark, ~1.2s)
     /// Concurrent burn attribution: the chats/sessions that produced tokens in the last 60 s,
     /// as (display name, tokens), busiest first. Two or more = parallel sessions competing.
-    @Published private(set) var activeStreams: [(name: String, tok: Int)] = []
+    @Published private(set) var activeStreams: [(name: String, project: String, tok: Int)] = []
     /// Demo mode: synthesizes organic burn activity so every live surface (flame, charts, tide,
     /// popover) can be seen in motion without spending real tokens. Never persisted to disk.
     @Published private(set) var demo = false
@@ -190,7 +190,8 @@ final class LiveActivity: ObservableObject {
     func seedForPreview(history: [Double], rate: Double, active: Bool) {
         self.history = history; self.rate = rate; self.active = active
         // Exercise the parallel-sessions rows with distinct chat titles (full-name presentation QA).
-        activeStreams = [("Rebuild the marketing site", 9_400), ("Debug the sync worker", 3_200)]
+        activeStreams = [("Rebuild the marketing site", "Fine Print Doctor", 9_400),
+                         ("Debug the sync worker", "Burndown", 3_200)]
         let now = Date()
         let src = history.isEmpty ? [0.0] : history
         func lerp(_ f: Double) -> Double {       // sample the pattern at 0…1
@@ -244,9 +245,9 @@ final class LiveActivity: ObservableObject {
         if hist.count > Self.HISTORY_LEN { hist.removeFirst(hist.count - Self.HISTORY_LEN) }
         history = hist
         pulse += 1
-        activeStreams = [("Rebuild the marketing site", Int(rate * 0.6)),
-                         ("Debug the sync worker", Int(rate * 0.3)),
-                         ("Draft the launch email", Int(rate * 0.1))]
+        activeStreams = [("Rebuild the marketing site", "Fine Print Doctor", Int(rate * 0.6)),
+                         ("Debug the sync worker", "Burndown", Int(rate * 0.3)),
+                         ("Draft the launch email", "Home folder", Int(rate * 0.1))]
         // Feed the burn chart a point every ~4 s (in memory only; persistence is demo-gated).
         if Date().timeIntervalSince(lastDemoBurn) > 4 { lastDemoBurn = Date(); recordBurn() }
     }
@@ -347,7 +348,7 @@ final class LiveActivity: ObservableObject {
         var byPath: [String: Int] = [:]
         for e in events where e.ts >= recent60 { byPath[e.path, default: 0] += e.tok }
         let streams = byPath.sorted { $0.value > $1.value }.prefix(3)
-            .map { (name: streamName($0.key), tok: $0.value) }
+            .map { let n = streamName($0.key); return (name: n.name, project: n.project, tok: $0.value) }
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             guard !self.demo else { return }   // demo owns the published state while it runs
@@ -381,15 +382,17 @@ final class LiveActivity: ObservableObject {
     /// FULL, human-readable label for one burning chat. Prefers the chat's real TITLE
     /// (so three chats in the same project stay distinguishable), then the project name,
     /// then the encoded folder - never a chopped fragment, never three identical rows.
-    private func streamName(_ path: String) -> String {
-        if let t = titleByPath[path] { return t }
+    /// The conversation's name and the project it runs in.
+    ///
+    /// This used to fall back to "project + the last four characters of the session id", which is
+    /// how "Home folder \u{00B7} 735f" ended up where a chat name belongs. The shared title index
+    /// knows the real name, and reads it from the file itself when it does not.
+    private func streamName(_ path: String) -> (name: String, project: String) {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
-        if let cwd = cwdByPath[path] {
-            // No title yet: disambiguate same-project siblings with the session id's tail.
-            let tail = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent.suffix(4)
-            return cleanProjectName(cwd: cwd, home: home) + " · " + tail
-        }
-        let folder = URL(fileURLWithPath: path).deletingLastPathComponent().lastPathComponent
-        return folder.isEmpty ? "chat" : folder
+        let project = cwdByPath[path].map { cleanProjectName(cwd: $0, home: home) } ?? ""
+        if let t = titleByPath[path] { return (t, project) }
+        let sid = URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+        let title = UsageEngine.resolvedTitle(sid: sid, url: URL(fileURLWithPath: path))
+        return (title, project)
     }
 }

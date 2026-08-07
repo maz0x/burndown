@@ -14,6 +14,10 @@ check(UpdateLogic.isNewer("1.1", than: "1.0"), "1.1 is newer than 1.0")
 check(!UpdateLogic.isNewer("1.0", than: "1.0"), "same version is not newer")
 check(!UpdateLogic.isNewer("0.9", than: "1.0"), "older version is not newer")
 check(UpdateLogic.isNewer("1.10", than: "1.9"), "1.10 beats 1.9 numerically, not alphabetically")
+// The 0.9.x series does not "run out" at 0.9.9: each dot-segment is an integer, not a digit,
+// so the patch number keeps counting and 1.0 stays reserved for when it is actually earned.
+check(UpdateLogic.isNewer("0.9.10", than: "0.9.9"), "0.9.10 beats 0.9.9, so the 0.9 series can run on")
+check(UpdateLogic.isNewer("0.9.100", than: "0.9.99"), "and it keeps going past two digits")
 check(UpdateLogic.isNewer("2.0", than: "1.99"), "major version wins")
 check(UpdateLogic.isNewer("1.0.1", than: "1.0"), "patch release is newer than its base")
 check(!UpdateLogic.isNewer("1.0", than: "1.0.1"), "base is not newer than its patch")

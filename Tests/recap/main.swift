@@ -94,5 +94,15 @@ let tie = [
 let rt = recap(tie, label: "Tie", calendar: cal)
 check(rt.busiestDay == "2026-06-10", "equal-token days resolve to the earlier date")
 
+// The home bucket is not a finding: it collects everything not run inside a project folder, so
+// naming it as the "top project" says nothing at all.
+var homeTop = RecapSummary(label: "7 days", totalTokens: 1000, costUSD: 5, dayCount: 3,
+                           topProject: kHomeProject, topModelFamily: "Opus", busiestDay: "2026-06-02")
+check(!recapText(homeTop).contains("top project"), "the home bucket is never named as the top project")
+check(recapText(homeTop).contains("mostly Opus"), "but the rest of the sentence still reads")
+homeTop = RecapSummary(label: "7 days", totalTokens: 1000, costUSD: 5, dayCount: 3,
+                       topProject: "Fine Print Doctor", topModelFamily: "Opus", busiestDay: "2026-06-02")
+check(recapText(homeTop).contains("top project Fine Print Doctor"), "a real project still gets named")
+
 print(failures == 0 ? "\nALL RECAP TESTS PASSED" : "\n\(failures) FAILURE(S)")
 exit(failures == 0 ? 0 : 1)

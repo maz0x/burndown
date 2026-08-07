@@ -800,17 +800,24 @@ enum StyleSheet {
     @MainActor
     static func renderSettings(to path: String, dark: Bool) {
         let settings = qaSettings()
-        // The Charts gallery pane is far taller than the rest; give its QA render the full height.
+        // Height comes from the same table the window itself uses. This used to hold its own pair
+        // of numbers, so a pane could grow in the app and still be captured at the old height:
+        // a screenshot with its bottom quietly cut off, and nothing to fail.
         let noScroll = ProcessInfo.processInfo.environment["CUB_NOSCROLL"] != nil
-        let isCharts = ProcessInfo.processInfo.environment["CUB_TAB"] == "data"
-        let h: CGFloat = noScroll ? (isCharts ? 3450 : 1180) : 580
+        let tab = ProcessInfo.processInfo.environment["CUB_TAB"].flatMap { SettingsTab(rawValue: $0) } ?? .general
+        let h: CGFloat = noScroll ? qaSettingsPaneHeight(tab) : 580
         let view = SettingsView(settings: settings, engine: UsageEngine(), live: LiveActivity(),
                                 loginInitially: false, onLogin: { _ in })
-            .frame(width: 660, height: h)
+            .frame(width: 660)
             .environment(\.colorScheme, dark ? .dark : .light)
         let renderer = ImageRenderer(content: view)
-        renderer.proposedSize = ProposedViewSize(width: 660, height: h)
+        let measuring = ProcessInfo.processInfo.environment["CUB_PANE_MEASURE"] != nil
+        renderer.proposedSize = ProposedViewSize(width: 660, height: measuring ? nil : h)
         renderer.scale = 2
+        if measuring, let img = renderer.nsImage {
+            // scale 2, so the pixel height is twice the point height.
+            print("\(ProcessInfo.processInfo.environment["CUB_TAB"] ?? "general")\t\(Int(img.size.height))")
+        }
         guard let img = renderer.nsImage, let tiff = img.tiffRepresentation,
               let rep = NSBitmapImageRep(data: tiff),
               let png = rep.representation(using: .png, properties: [:]) else { return }

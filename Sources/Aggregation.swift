@@ -15,7 +15,7 @@ struct UsageRecord {
     let date: Date
     let model: String
     /// Project / repo name (typically the last path component of the session cwd); "" if unknown.
-    let project: String
+    var project: String   // resolved display name, not the encoded folder
     /// Conversation / session log file name (per-chat attribution); defaults to "" so existing
     /// call sites that do not pass it keep compiling.
     var session: String = ""
@@ -89,7 +89,7 @@ func rollupByModelFamily(_ records: [UsageRecord]) -> [UsageRollup] {
 }
 
 func rollupByProject(_ records: [UsageRecord]) -> [UsageRollup] {
-    rollup(records) { $0.project.isEmpty ? "(unknown)" : $0.project }
+    rollup(records) { $0.project.isEmpty ? kUnknownProject : $0.project }
 }
 
 func rollupBySession(_ records: [UsageRecord]) -> [UsageRollup] {
@@ -98,20 +98,69 @@ func rollupBySession(_ records: [UsageRecord]) -> [UsageRollup] {
 
 /// One conversation's total usage (a session log file), labeled by its actual title rather than
 /// its folder, because most sessions run from the home directory and would otherwise all collapse
-/// to "Home". This is what the Insights "Biggest chats" and "By project" views display.
-struct SessionUsage {
-    let id: String       // sessionId / file name
-    let title: String    // customTitle / aiTitle / first user message / "(untitled chat)"
-    let project: String  // clean name from the real cwd ("Home", "website", "research", ...)
+/// to "Home folder". This is what the Insights "Biggest chats" and "By project" views display.
+struct SessionUsage: Identifiable {
+    let id: String       // the log's path: unique, so lists can key on it
+    let title: String    // customTitle / aiTitle / first user message / "Untitled chat"
+    let project: String  // clean name from the real cwd ("Home folder", "website", "research", ...)
     let date: Date       // last activity in the session
     let tokens: Int
     let cost: Double
 }
 
-/// A short, readable project name from a real cwd path. The home directory becomes "Home".
+/// Merge session logs that belong to the same conversation.
+///
+/// Claude Code starts a NEW log file when a conversation is resumed or compacted, so one long
+/// piece of work can be four files. Listed raw, that is four identical rows in "biggest chats",
+/// same name, same day, four different numbers, and no way to tell what happened. The reader
+/// thinks in conversations, not log files, so rows are merged by name and project: tokens and cost
+/// add up, the date is the most recent, and `parts` says how many files it took.
+struct MergedSession: Identifiable {
+    let id: String
+    let title: String
+    let project: String
+    let date: Date
+    let tokens: Int
+    let cost: Double
+    let parts: Int
+}
+
+func mergeSessions(_ sessions: [SessionUsage]) -> [MergedSession] {
+    var by: [String: MergedSession] = [:]
+    var order: [String] = []
+    for s in sessions {
+        // A generated "Untitled chat" label is not a name, so it cannot be used to decide that two
+        // logs are the same conversation. Those rows stay separate, keyed by their own id.
+        let key = isGeneratedTitle(s.title) ? s.id : s.project + "\u{0000}" + s.title
+        if let e = by[key] {
+            by[key] = MergedSession(id: e.id, title: e.title, project: e.project,
+                                    date: max(e.date, s.date), tokens: e.tokens + s.tokens,
+                                    cost: e.cost + s.cost, parts: e.parts + 1)
+        } else {
+            by[key] = MergedSession(id: key, title: s.title, project: s.project, date: s.date,
+                                    tokens: s.tokens, cost: s.cost, parts: 1)
+            order.append(key)
+        }
+    }
+    return order.compactMap { by[$0] }
+}
+
+/// Shown when a session's working directory could not be read from its log at all. Distinct from
+/// kHomeProject, which is a real answer: this one means "the log did not say".
+let kUnknownProject = "No folder recorded"
+
+/// The bucket for sessions started from the home directory rather than a project folder.
+/// Named once: the label, the "is this the home bucket" checks in Insights, and the parser that
+/// produces it all have to agree, and three copies of a string literal is how they stop agreeing.
+let kHomeProject = "Home folder"
+
+/// A short, readable project name from a real cwd path.
+///
+/// Sessions started straight from the home directory become "Home folder". A bare "Home" was
+/// honest but read like somebody's project called Home, sitting in a list of real project names.
 func cleanProjectName(cwd: String, home: String) -> String {
-    if cwd.isEmpty { return "(unknown)" }
-    if cwd == home { return "Home" }
+    if cwd.isEmpty { return kUnknownProject }
+    if cwd == home { return kHomeProject }
     let last = (cwd as NSString).lastPathComponent
     return last.isEmpty ? cwd : last
 }
@@ -125,6 +174,30 @@ func dayKey(_ date: Date, calendar: Calendar = .current) -> String {
 /// Day rollups in chronological order (for trend charts and the heatmap), not token-sorted.
 func rollupByDay(_ records: [UsageRecord], calendar: Calendar = .current) -> [UsageRollup] {
     rollup(records) { dayKey($0.date, calendar: calendar) }.sorted { $0.key < $1.key }
+}
+
+/// Day rollups for a fixed run of calendar days, quiet days included.
+///
+/// `rollupByDay` only produces a row for a day that HAS usage, so a day off simply vanished from
+/// the 14-day chart and the axis ran 01, 02, 03, 05: a missing bar reads as "no bar drawn here",
+/// but a missing LABEL reads as "that day did not happen". A rhythm chart with days silently
+/// removed is not a rhythm chart.
+func rollupByDaysBack(_ records: [UsageRecord], days: Int, now: Date = Date(),
+                      calendar: Calendar = .current) -> [UsageRollup] {
+    let today = calendar.startOfDay(for: now)
+    var byKey: [String: UsageRollup] = [:]
+    guard let first = calendar.date(byAdding: .day, value: -(days - 1), to: today) else { return [] }
+    for r in records where r.date >= first {
+        let k = dayKey(r.date, calendar: calendar)
+        var b = byKey[k] ?? UsageRollup(key: k)
+        b.add(r)
+        byKey[k] = b
+    }
+    return (0..<days).reversed().compactMap { back in
+        guard let d = calendar.date(byAdding: .day, value: -back, to: today) else { return nil }
+        let k = dayKey(d, calendar: calendar)
+        return byKey[k] ?? UsageRollup(key: k)      // a quiet day is a zero, not an absence
+    }
 }
 
 /// One rollup covering every record (the grand total), keyed "all".

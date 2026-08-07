@@ -1,5 +1,81 @@
 # What's new in Burndown
 
+## 0.9.4
+
+- **Insights opens in a fraction of a second instead of several.** The scan behind it read every
+  session log in full, every time you opened the window, even though yesterday's logs cannot
+  change. It now remembers what each file contributed and only re-reads the ones that actually
+  moved. Measured on a 1.2GB history: 8.4 seconds the first time, 0.07 seconds every time after.
+- **Insights is a window you can read.** It opens twice as wide, remembers whatever size you leave
+  it at, and has an A- / A+ control in the corner for text size. Numbers no longer wrap onto two
+  lines, every money figure is written the same way, and the 14-day chart no longer skips days
+  with no usage, which was making its dates jump.
+- **Hovering the 14-day bars is instant.** Every table in the window was recomputing your whole
+  history on each hover; at a large history that was over a second of work per frame, which is why
+  All time crawled and Today felt fine.
+- **"By project" says something useful.** If you run Claude from your home folder, everything used
+  to collapse into one "Home folder" row. That row now opens into the conversations inside it, and
+  when it is the only row the section lists your chats directly instead.
+- **The card stops growing off the bottom of the screen.** Add enough charts and it used to run
+  past the edge of the display with no way to reach what fell off. It now stops just short of the
+  bottom and scrolls.
+- **Chats have names.** The card showed raw session ids like `ca73b9d7-2539-...` because only
+  Insights ever read the real titles. Both now share one index, so a conversation is named
+  everywhere it appears.
+- **Export writes a real report.** It was a bare per-day table. The Markdown export is now a full
+  report: totals, per model, per project with the home folder broken out, biggest conversations,
+  day by day, and a note explaining what the dollar figures mean. Each button says what it gives
+  you, and the period is in the filename.
+- **The menu bar number matches your clock.** It takes the system colour by default now, so it
+  stays readable over any wallpaper. The dot and glow keep their colour. Switchable in Appearance.
+- **Every section in Insights explains itself**, with the same info marks the card uses.
+- **The card reads properly at every width.** Chat names in Top chats now get a whole line to
+  themselves with their bar underneath, so full titles fit instead of being cut to
+  "Weebly m...redesign". Several rows had indents left over from chart layouts that no longer
+  exist, which is why a lone model row sat pushed to the right and a chart's total hung in space
+  away from the numbers it added up. The plan name in the header stays whole rather than shrinking
+  while the word beside it stayed large.
+- **One conversation, one row.** Claude Code starts a new log file when a chat is resumed or
+  compacted, so a long piece of work appeared four or five times over with four different numbers.
+  Those rows are added together now, with a count of how many logs it took. Chats with no title
+  are never merged into each other, since their label is generated rather than their name.
+- Big numbers read properly: a heavy week showed as "6972.0M" where it now says "7.0B".
+- The card no longer contradicts itself: the token rate under the session number and the burn
+  chart's headline read the same figure, and each model limit says "% left" in words rather than
+  leaving a bar and a number to disagree.
+- **The card no longer slows down while you use it.** Sixteen of the charts worked out their
+  numbers from scratch every time the card redrew, which happens on the live tick and again on
+  every mouse movement over a chart. On a long history that was most of a second of work,
+  dozens of times a second, which is the sluggishness you could feel with the tokens-per-day
+  chart on screen. Each chart now works out its numbers once and reuses them, and the daily
+  roll-up itself is around 200 times faster.
+- **Every model shows on the Session + week chart.** It used to draw a line only for models that
+  have a weekly cap of their own, which on most accounts is one model, so Opus and Haiku simply
+  had no line. Each line is now that model's share of your weekly allowance, so everything you
+  use appears and the model lines add up to the week line. Click a name in the legend to hide
+  its line, and it stays hidden until you bring it back.
+- **The pace chart is readable.** The half-circle dial has been replaced by one strip each for
+  the session and the week, so a comfortable week can no longer hide behind a busy session,
+  with a line under each saying whether your current pace lasts to the reset or runs out before
+  it. The stray white line across the old dial is gone with it.
+- **Faded text is readable everywhere.** Every text colour in all 21 themes, light and dark, was
+  measured against the accessibility contrast standard. 180 of those combinations fell short,
+  the faintest greys worst of all. All of them now pass, and six themes also had a usage bar too
+  close in colour to the groove behind it.
+- **Chat names and renaming.** Hover a chat in "chats burning now" to read its full name, and
+  click the pencil to rename it. Renaming had only ever been on the right-click menu, with
+  nothing to tell you so, and the full name on hover never worked at all.
+- **Chart explanations are complete.** In the chart gallery they were cut off after two lines,
+  mid-sentence. They now show in full.
+- **"Explain each section" is where you can find it**, at the top of the Popover pane instead of
+  inside a collapsed drawer at the bottom.
+- Sessions run from your home folder now say "Home folder" rather than "Home".
+- **The small "?" marks in the card explain themselves again.** Clicking one now opens the
+  explanation, the same way the ⓘ marks in Settings already did. Previously nothing happened at
+  all, on click or on hover: the card's marks had never been given the tap behaviour the
+  Settings ones got, and the hover tooltip they did have does not work inside the card.
+  The card also stays open while you read, instead of closing under you.
+
 ## 0.9.3
 
 - **Settings has been rebuilt around what you actually use.** The window used

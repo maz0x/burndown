@@ -7,7 +7,7 @@ cd "$(dirname "$0")"
 OUT="$(mktemp -d)/burndown-recap-tests"
 
 echo "→ Building recap test binary (Recap)"
-swiftc -O -o "$OUT" Sources/Recap.swift Sources/Aggregation.swift Sources/Pricing.swift Tests/recap/main.swift
+swiftc -O -o "$OUT" Sources/Recap.swift Sources/Aggregation.swift Sources/SessionTitles.swift Sources/Pricing.swift Tests/recap/main.swift
 
 echo "→ Running"
 "$OUT"

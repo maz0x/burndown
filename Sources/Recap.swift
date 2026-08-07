@@ -88,7 +88,12 @@ func recapText(_ r: RecapSummary) -> String {
 
     // Trailing detail clauses, only when there is something to say.
     var details: [String] = []
-    if r.topProject != "(none)" { details.append("top project \(r.topProject)") }
+    // "top project Home folder" says nothing: that bucket is everything not run inside a project
+    // folder, which for many people is most of their work. The sentence skips it rather than
+    // dressing it up as a finding.
+    if r.topProject != "(none)", r.topProject != kHomeProject, r.topProject != "(unknown)" {
+        details.append("top project \(r.topProject)")
+    }
     if r.topModelFamily != "(none)" { details.append("mostly \(r.topModelFamily)") }
     if !r.busiestDay.isEmpty { details.append("busiest \(prettyDayKey(r.busiestDay))") }
 

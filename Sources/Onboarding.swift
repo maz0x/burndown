@@ -140,7 +140,7 @@ struct WelcomeView: View {
             tourRow(p, icon: "flame.fill", tint: p.session,
                     text: "The menu bar flame burns with your session. Click it for the full picture.")
             tourRow(p, icon: "questionmark.circle", tint: p.sub,
-                    text: "Everything explains itself on hover: any label, number, chart title, or the small question dots. Plain English, no manual.")
+                    text: "Everything explains itself: hover any label, number or chart title, or click one of the small info marks. Plain English, no manual.")
             tourRow(p, icon: "chart.bar", tint: p.sub,
                     text: "Pick your charts in Settings, Charts. All 24 are drawn there so you can see before you choose.")
             tourRow(p, icon: "bell", tint: p.sub,

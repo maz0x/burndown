@@ -112,5 +112,22 @@ check(weekLeftString(t0.addingTimeInterval(5 * 86400), now: t0) == "5d 0h", "exa
 check(weekLeftString(t0, now: t0) == "0m", "exactly at reset -> 0m")
 check(weekLeftString(t0.addingTimeInterval(-100), now: t0) == "0m", "past reset -> 0m")
 
+// --- one money format for tables ---
+// The bug this replaces: $1954 sitting next to $4.93 in the same column, so the reader has to
+// work out the magnitude from the digit count.
+check(moneyTable(4.93) == "$4.93", "under ten keeps its cents")
+check(moneyTable(0) == "$0.00", "zero reads as money, not as nothing")
+check(moneyTable(12.34) == "$12.34", "cents are always shown")
+check(moneyTable(99.99) == "$99.99", "at every size, so a column never changes precision partway down")
+check(moneyTable(1954.4) == "$1,954.40", "thousands are grouped and still show cents")
+check(moneyTable(1234567) == "$1,234,567.00", "and stay grouped when large")
+check(moneyTable(-4.5) == "$-4.50", "a negative still formats rather than breaking")
+
+// Billions: a heavy week runs past a thousand million, and "6972.0M" is six digits before the
+// decimal point, which is what a compact format exists to prevent.
+check(fmtTok(6_972_000_000) == "7.0B", "billions get their own step")
+check(fmtTok(1_000_000_000) == "1.0B", "exactly a billion crosses over")
+check(fmtTok(999_999_999) == "1000.0M", "and just under it stays in millions")
+
 print(failures == 0 ? "\nALL PASS" : "\n\(failures) FAILURE(S)")
 exit(failures == 0 ? 0 : 1)

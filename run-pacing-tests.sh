@@ -7,7 +7,7 @@ cd "$(dirname "$0")"
 OUT="$(mktemp -d)/burndown-pacing-tests"
 
 echo "→ Building pacing test binary (Pacing)"
-swiftc -O -o "$OUT" Sources/Pacing.swift Tests/pacing/main.swift
+swiftc -O -o "$OUT" Sources/Pacing.swift Sources/Format.swift Tests/pacing/main.swift
 
 echo "→ Running"
 "$OUT"

@@ -302,6 +302,52 @@ final class UsageEngine: ObservableObject {
         }
     }
 
+    /// The conversation title for a session log, read once and remembered.
+    ///
+    /// Bounded work: only for a session id the index has never seen, only that one file, and only
+    /// its title-bearing lines. Everything after the title is found is skipped, so a huge log costs
+    /// a few lines rather than a full parse. This is the live path, so it must never be expensive.
+    static func resolvedTitle(sid: String, url: URL) -> String {
+        if let known = SessionTitles.shared.title(for: sid) { return known }
+        var customTitle: String?, aiTitle: String?, firstUser: String?
+        // Only the head of the file. A title and the opening user message are both written at the
+        // start of a conversation, and these logs run to hundreds of megabytes: reading one whole
+        // just to learn its name would put exactly the kind of stall on the live path that this
+        // release is removing.
+        var head: String? = nil
+        if let h = try? FileHandle(forReadingFrom: url) {
+            let data = (try? h.read(upToCount: 256 * 1024)) ?? Data()
+            try? h.close()
+            // Cut back to the last complete line so a title is never half-decoded.
+            if let nl = data.lastIndex(of: 0x0A) {
+                head = String(data: data[..<nl], encoding: .utf8)
+            } else {
+                head = String(data: data, encoding: .utf8)
+            }
+        }
+        if let text = head {
+            var scanned = 0
+            text.enumerateLines { line, stop in
+                scanned += 1
+                // A proper title, if there is one, is written near the top. Past a few hundred
+                // lines it is not coming, and the first user message is already in hand.
+                if scanned > 400 || (customTitle != nil) { stop = true; return }
+                if line.contains("\"customTitle\""), let o = jsonLine(line),
+                   let t = o["customTitle"] as? String, !t.isEmpty { customTitle = t; stop = true; return }
+                if aiTitle == nil, line.contains("\"aiTitle\""), let o = jsonLine(line),
+                   let t = o["aiTitle"] as? String, !t.isEmpty { aiTitle = t }
+                if firstUser == nil, line.contains("\"type\":\"user\""), let o = jsonLine(line) {
+                    firstUser = firstUserText(o)
+                }
+            }
+        }
+        let mod = (try? url.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate
+        let title = cleanChatTitle(customTitle) ?? cleanChatTitle(aiTitle)
+            ?? cleanChatTitle(firstUser) ?? untitledChatLabel(mod)
+        SessionTitles.shared.set(title, for: sid)
+        return title
+    }
+
     private static func jsonLine(_ line: String) -> [String: Any]? {
         guard let d = line.data(using: .utf8) else { return nil }
         return (try? JSONSerialization.jsonObject(with: d)) as? [String: Any]
@@ -315,69 +361,131 @@ final class UsageEngine: ObservableObject {
         return nil
     }
 
-    /// Full-history scan over every ~/.claude session log. Per file it sums usage into UsageRecords
-    /// AND captures the conversation title (customTitle / aiTitle / first user message) + real cwd,
-    /// emitting one SessionUsage. Read-only; runs off the live path (only when Insights opens).
+    /// Full-history scan over every ~/.claude session log, backed by an on-disk cache.
+    ///
+    /// The first version read every file in full and JSON-decoded every interesting line, on every
+    /// Insights open. On a working machine that is over a gigabyte across a thousand-plus files, so
+    /// the window sat on a spinner for seconds each time, recomputing an answer that had not
+    /// changed. Yesterday's logs cannot change, so now only files whose modification date or size
+    /// moved are touched, and a file that merely grew is read from where the last scan stopped.
+    /// Read-only, off the live path, still exact.
     func scanFilesSync() -> ([UsageRecord], [SessionUsage]) {
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let fm = FileManager.default
         guard let walker = fm.enumerator(at: projectsDir, includingPropertiesForKeys: nil,
                                          options: [.skipsHiddenFiles]) else { return ([], []) }
-        var records: [UsageRecord] = []
-        var sessions: [SessionUsage] = []
         let iso = ISO8601DateFormatter(); iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let isoNoFrac = ISO8601DateFormatter(); isoNoFrac.formatOptions = [.withInternetDateTime]
+
+        let t0 = Date()
+        let cache = ScanCache.load()
+        var next: [String: CachedFile] = [:]
+        var reused = 0, parsed = 0
+        var foundTitles: [String: String] = [:]
+
         for case let url as URL in walker {
             guard url.pathExtension == "jsonl" else { continue }
-            guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
-            let proj = Self.projectName(url)
+            let vals = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+            guard let modDate = vals?.contentModificationDate else { continue }
+            let mod = modDate.timeIntervalSince1970
+            let size = UInt64(vals?.fileSize ?? 0)
+            let path = url.path
             let sid = url.deletingPathExtension().lastPathComponent
-            var fileRecs: [UsageRecord] = []
-            var customTitle: String?; var aiTitle: String?; var firstUser: String?; var cwd: String?
-            var maxTs = Date(timeIntervalSince1970: 0)
-            var seen = Set<String>()
-            text.enumerateLines { line, _ in
-                if cwd == nil, line.contains("\"cwd\""), let o = Self.jsonLine(line) { cwd = o["cwd"] as? String }
-                if line.contains("\"customTitle\""), let o = Self.jsonLine(line),
-                   let t = (o["customTitle"] as? String), !t.isEmpty { customTitle = t }
-                else if line.contains("\"aiTitle\""), let o = Self.jsonLine(line),
-                        let t = (o["aiTitle"] as? String), !t.isEmpty { aiTitle = t }
-                if firstUser == nil, line.contains("\"type\":\"user\""), let o = Self.jsonLine(line) { firstUser = Self.firstUserText(o) }
-                guard line.contains("\"usage\"") else { return }
-                guard let o = Self.jsonLine(line),
-                      let tsStr = o["timestamp"] as? String,
-                      let message = o["message"] as? [String: Any],
-                      let usage = message["usage"] as? [String: Any] else { return }
-                guard let ts = fastISO8601Date(tsStr) ?? iso.date(from: tsStr) ?? isoNoFrac.date(from: tsStr) else { return }
-                if let id = message["id"] as? String {
-                    let key = id + ":" + ((o["requestId"] as? String) ?? "")
-                    if seen.contains(key) { return }; seen.insert(key)
-                }
-                let cc = usage["cache_creation"] as? [String: Any]
-                let totalCreate = (usage["cache_creation_input_tokens"] as? Int) ?? 0
-                let c5 = (cc?["ephemeral_5m_input_tokens"] as? Int)
-                let c1 = (cc?["ephemeral_1h_input_tokens"] as? Int) ?? 0
-                fileRecs.append(UsageRecord(
-                    date: ts, model: (message["model"] as? String) ?? "unknown", project: proj, session: sid,
-                    input: (usage["input_tokens"] as? Int) ?? 0, output: (usage["output_tokens"] as? Int) ?? 0,
-                    cache5m: c5 ?? (cc == nil ? totalCreate : 0), cache1h: c1,
-                    cacheRead: (usage["cache_read_input_tokens"] as? Int) ?? 0))
-                if ts > maxTs { maxTs = ts }
+
+            if let c = cache[path], c.mod == mod, c.size == size {
+                next[path] = c; reused += 1
+                foundTitles[sid] = c.title
+                continue
             }
-            records.append(contentsOf: fileRecs)
-            guard !fileRecs.isEmpty else { continue }
-            let agg = totals(fileRecs)
-            var title = (customTitle ?? aiTitle ?? firstUser ?? "(untitled chat)")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            while title.hasPrefix(">") { title.removeFirst() }
-            title = title.trimmingCharacters(in: .whitespacesAndNewlines)
-            if title.isEmpty { title = "(untitled chat)" }
-            if title.count > 80 { title = String(title.prefix(80)) + "\u{2026}" }
-            sessions.append(SessionUsage(id: sid, title: title,
-                                         project: cleanProjectName(cwd: cwd ?? "", home: home),
-                                         date: maxTs, tokens: agg.tokens, cost: agg.cost))
+
+            // Grown since last time: keep what was parsed and read only the new bytes. Anything
+            // else (new file, shrank, rewritten) is read from the start.
+            let prior = cache[path]
+            let canAppend = prior != nil && size >= prior!.size && size >= prior!.offset
+            let base = canAppend ? prior!.offset : 0
+            guard let h = try? FileHandle(forReadingFrom: url) else { continue }
+            try? h.seek(toOffset: base)
+            let data = h.readDataToEndOfFile()
+            try? h.close()
+
+            // The project and the title come from the head of the file, so they are only worth
+            // reading when this file has never been parsed before.
+            let project = prior?.project ?? Self.resolvedProject(url: url, home: home)
+            let title = (canAppend ? prior?.title : nil) ?? Self.resolvedTitle(sid: sid, url: url)
+            foundTitles[sid] = title
+
+            let (items, consumed) = Self.parseUsageBytes(data, project: project, session: title,
+                                                         iso, isoNoFrac)
+            var recs = canAppend ? (prior?.records ?? []) : []
+            recs.append(contentsOf: items.map {
+                CachedRecord(ts: $0.0.ts.timeIntervalSince1970, model: $0.0.model,
+                             input: $0.0.input, output: $0.0.output, cache5m: $0.0.cache5m,
+                             cache1h: $0.0.cache1h, cacheRead: $0.0.cacheRead)
+            })
+            next[path] = CachedFile(mod: mod, size: size, offset: base + consumed,
+                                    project: project, title: title, records: recs)
+            parsed += 1
+        }
+
+        ScanCache.save(next)
+        SessionTitles.shared.merge(foundTitles)
+        if ProcessInfo.processInfo.environment["CUB_SCAN_TIME"] != nil {
+            let ms = Int(Date().timeIntervalSince(t0) * 1000)
+            print("CUB_SCAN: \(ms)ms  reused=\(reused) reparsed=\(parsed) "
+                  + "records=\(next.values.reduce(0) { $0 + $1.records.count })")
+            fflush(stdout)
+        }
+
+        // Flatten. De-duplication happens across the whole set, not per file, because the same
+        // message can appear in more than one log after a resume.
+        var records: [UsageRecord] = []
+        var sessions: [SessionUsage] = []
+        records.reserveCapacity(next.values.reduce(0) { $0 + $1.records.count })
+        for (path, f) in next {
+            guard !f.records.isEmpty else { continue }
+            var tokens = 0
+            var cost = 0.0
+            var maxTs = Date(timeIntervalSince1970: 0)
+            for r in f.records {
+                let date = Date(timeIntervalSince1970: r.ts)
+                let rec = UsageRecord(date: date, model: r.model, project: f.project, session: f.title,
+                                      input: r.input, output: r.output, cache5m: r.cache5m,
+                                      cache1h: r.cache1h, cacheRead: r.cacheRead)
+                records.append(rec)
+                tokens += rec.totalTokens
+                cost += tokenCost(model: r.model, input: r.input, output: r.output,
+                                  cache5m: r.cache5m, cache1h: r.cache1h, cacheRead: r.cacheRead)
+                if date > maxTs { maxTs = date }
+            }
+            sessions.append(SessionUsage(id: path, title: f.title, project: f.project,
+                                         date: maxTs, tokens: tokens, cost: cost))
         }
         return (records, sessions)
+    }
+
+    /// The project name for a log, read from the cwd recorded inside it.
+    ///
+    /// The encoded folder name would be cheaper but it contains the account name for anything run
+    /// from the home directory, which must never reach the screen. Only the head of the file is
+    /// read: cwd is written at the start of a session.
+    static func resolvedProject(url: URL, home: String) -> String {
+        var cwd: String?
+        if let h = try? FileHandle(forReadingFrom: url) {
+            let data = (try? h.read(upToCount: 256 * 1024)) ?? Data()
+            try? h.close()
+            let head = data.lastIndex(of: 0x0A).map { data[..<$0] } ?? data[...]
+            if let text = String(data: head, encoding: .utf8) {
+                var scanned = 0
+                text.enumerateLines { line, stop in
+                    scanned += 1
+                    if scanned > 400 { stop = true; return }
+                    if line.contains("\"cwd\""), let o = jsonLine(line), let c = o["cwd"] as? String {
+                        cwd = c; stop = true
+                    }
+                }
+            }
+        }
+        return cleanProjectName(cwd: cwd ?? "", home: home)
     }
 
     // MARK: - Live API fetch (authoritative %)
@@ -1070,10 +1178,22 @@ final class UsageEngine: ObservableObject {
     }
 
     /// The ~/.claude/projects/<dir> folder a log file belongs to (the project key for attribution).
-    private static func projectName(_ url: URL) -> String {
+    /// Display name from Claude Code's ENCODED project folder, e.g. "-Users-someone-dev-app".
+    /// The encoding just swaps "/" for "-", so the home directory encodes to a string containing
+    /// the ACCOUNT NAME. That must never reach the screen: it is unreadable as a project name and
+    /// it puts the user's identity into every screenshot. The full-parse path above resolves the
+    /// real cwd instead; this one runs on the hot incremental read, which deliberately never
+    /// re-reads the file head, so it decodes what it has and refuses to show the home prefix.
+    private static func projectDisplayName(_ url: URL, home: String) -> String {
         let parts = url.pathComponents
-        if let i = parts.firstIndex(of: "projects"), i + 1 < parts.count { return parts[i + 1] }
-        return ""
+        guard let i = parts.firstIndex(of: "projects"), i + 1 < parts.count else { return kUnknownProject }
+        let encoded = parts[i + 1]
+        let encodedHome = home.replacingOccurrences(of: "/", with: "-")
+        if encoded == encodedHome { return kHomeProject }
+        var rest = encoded
+        if encoded.hasPrefix(encodedHome + "-") { rest = String(encoded.dropFirst(encodedHome.count + 1)) }
+        let leaf = rest.split(separator: "-").last.map(String.init) ?? rest
+        return leaf.isEmpty ? kHomeProject : leaf
     }
 
     // Per-file parsed-entry cache. loadEntries used to re-read and re-parse EVERY file modified in the
@@ -1170,8 +1290,12 @@ final class UsageEngine: ObservableObject {
             let cached = entryCache[path]
             if let c = cached, c.mod == mod, c.size == size { continue }   // unchanged → reuse cache
             if mod < since, cached == nil { continue }                     // old + never parsed → skip
-            let project = Self.projectName(url)
-            let session = url.deletingPathExtension().lastPathComponent
+            let project = Self.projectDisplayName(url, home: FileManager.default.homeDirectoryForCurrentUser.path)
+            let sid = url.deletingPathExtension().lastPathComponent
+            // The file is named after a UUID and the conversation's title lives inside it. Naming
+            // records by the filename is what put raw session ids in front of the reader wherever
+            // this path feeds a chart. Look the title up once per session and remember it.
+            let session = Self.resolvedTitle(sid: sid, url: url)
             // Read only the appended bytes when the file only grew; otherwise (new / shrank / rotated)
             // read the whole thing.
             let base = (cached != nil && size >= cached!.offset) ? cached!.offset : 0

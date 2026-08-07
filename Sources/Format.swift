@@ -4,8 +4,13 @@ import Foundation
 // harness (run-format-tests.sh) can compile the real implementations with no SwiftUI / Charts.
 // The app keeps using them unchanged (build.sh globs Sources/*.swift).
 
-/// Compact token count: "942", "14k", "1.4M".
+/// Compact token count: "942", "14k", "1.4M", "7.0B".
+///
+/// The billions step is not decoration. A heavy week runs past a thousand million, and this used
+/// to print that as "6972.0M": six digits before the decimal point, which is the exact thing a
+/// compact format exists to prevent, and it wrecks the column it sits in.
 func fmtTok(_ n: Int) -> String {
+    if n >= 1_000_000_000 { return String(format: "%.1fB", Double(n) / 1_000_000_000) }
     if n >= 1_000_000 { return String(format: "%.1fM", Double(n) / 1_000_000) }
     if n >= 1_000     { return String(format: "%.0fk", Double(n) / 1_000) }
     return "\(n)"
@@ -81,4 +86,31 @@ func ringText(_ resetAt: Date?, now: Date = Date()) -> (Double, String, String) 
     let h = Int(s) / 3600, m = (Int(s) % 3600) / 60
     let frac = min(1.0, s / (5 * 3600))   // time remaining
     return h > 0 ? (frac, "\(h)h", "\(m)m left") : (frac, "\(m)m", "left")
+}
+
+/// Compact human duration: "<1m", "45m", "2h 10m", "3d 4h".
+func compactETA(_ s: TimeInterval) -> String {
+    let m = Int(s / 60)
+    if m < 1 { return "<1m" }
+    if m < 60 { return "\(m)m" }
+    let h = m / 60, remM = m % 60
+    if h < 24 { return remM == 0 ? "\(h)h" : "\(h)h \(remM)m" }
+    let d = h / 24, remH = h % 24
+    return remH == 0 ? "\(d)d" : "\(d)d \(remH)h"
+}
+
+/// One money format for tables.
+///
+/// Two decimals always, and thousands grouped. The column this replaces mixed $1954 with $4.93 and
+/// asked the reader to judge magnitude from the digit count; a version that switched precision by
+/// size only moved the problem, printing $96.00 directly above $114. Money is written with cents,
+/// so it is written with cents here, every row, whatever the size.
+func moneyTable(_ v: Double) -> String {
+    let f = NumberFormatter()
+    f.numberStyle = .decimal
+    f.minimumFractionDigits = 2
+    f.maximumFractionDigits = 2
+    f.groupingSeparator = ","
+    f.usesGroupingSeparator = true
+    return "$" + (f.string(from: NSNumber(value: v)) ?? String(format: "%.2f", v))
 }

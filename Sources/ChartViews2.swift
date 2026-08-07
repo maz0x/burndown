@@ -63,24 +63,10 @@ struct BurnHistogramChart: View {
                 .accessibilityValue("\(Int(total)) samples, heaviest band \(busiest?.name ?? "none")")
             }
             statLine(sel.map { "\(Int($0.v)) samples" } ?? "\(Int(total)) samples",
-                     sel.map { "· at \($0.name)/min" } ?? "· top band \(busiest?.name ?? "-")/min", p)
+                     // "top band 20-60k/min" ran off the end of a gallery preview. The word
+                     // "band" is doing no work next to the range itself.
+                     sel.map { "· at \($0.name)/min" } ?? "· top \(busiest?.name ?? "-")/min", p)
         }
-    }
-}
-
-/// The top half of a circle, swept left to right, filled to `frac` of the way round. Anchored to the
-/// bottom of its rect so the flat edge sits on the baseline.
-struct SemiArc: Shape {
-    var frac: Double
-    func path(in r: CGRect) -> Path {
-        var path = Path()
-        let radius = max(1, min(r.width / 2, r.height) - 3)
-        let center = CGPoint(x: r.midX, y: r.maxY - 1)
-        path.addArc(center: center, radius: radius,
-                    startAngle: .degrees(180),
-                    endAngle: .degrees(180 + 180 * max(0.001, min(1, frac))),
-                    clockwise: false)
-        return path
     }
 }
 
@@ -90,71 +76,73 @@ struct PaceGaugeChart: View {
     let ctx: ChartCtx
     var body: some View {
         let p = ctx.p
-        let now = Date()
-        // Compare the session and the week on the same footing: elapsed share of the window against
-        // spent share of the budget. Ratio > 1 means you are spending faster than the window refills.
-        func ratio(pct: Double, reset: Date?, window: TimeInterval) -> Double? {
-            guard let reset else { return nil }
-            let elapsed = window - max(0, reset.timeIntervalSince(now))
-            guard elapsed > 60 else { return nil }
-            let timeShare = min(1, elapsed / window)
-            guard timeShare > 0.01 else { return nil }
-            return pct / timeShare
-        }
-        let rS = ratio(pct: ctx.sessionPct, reset: ctx.sessionResetAt, window: 5 * 3600)
-        let rW = ratio(pct: ctx.weeklyPct, reset: ctx.weeklyResetAt, window: 7 * 86400)
-        let worst = max(rS ?? 0, rW ?? 0)
-        let hue: Color = worst >= 1.6 ? p.overLimit : (worst >= 1.0 ? p.warning : p.live)
+        let now = ctx.tick
+        // Was a semicircular dial showing only the WORSE of the two windows, with 1.0x marked by
+        // stroking a short dash in the background colour over the arc: an erase mark, which on a
+        // light theme reads as a stray white line across the gauge. Two strips instead. Both
+        // windows are visible at once (a comfortable week no longer hides behind a hot session),
+        // 1.0x is a real tick rather than a hole, and each says in words what its pace means.
+        let rS = ctx.sessionResetAt.map { paceReading(pct: ctx.sessionPct, secondsToReset: $0.timeIntervalSince(now),
+                                                      window: 5 * 3600, atLimitLabel: "session limit") } ?? nil
+        let rW = ctx.weeklyResetAt.map { paceReading(pct: ctx.weeklyPct, secondsToReset: $0.timeIntervalSince(now),
+                                                     window: 7 * 86400, atLimitLabel: "weekly limit") } ?? nil
+        let worst = max(rS?.ratio ?? 0, rW?.ratio ?? 0)
         return VStack(alignment: .leading, spacing: 5) {
             if rS == nil && rW == nil {
                 chartPlaceholder("Waiting for a full window", p)
             } else {
-                HStack(spacing: 14) {
-                    // The dial: an explicit top semicircle, 0 to 2x, with 1.0x marked at its apex.
-                    // (Trimming a Circle starts at 12 o'clock and needed rotation gymnastics that flipped
-                    // the readout upside down; an arc shape states the geometry outright.)
-                    ZStack(alignment: .bottom) {
-                        SemiArc(frac: 1).stroke(p.track, style: StrokeStyle(lineWidth: 6, lineCap: .round))
-                        SemiArc(frac: min(1, worst / 2)).stroke(hue, style: StrokeStyle(lineWidth: 6, lineCap: .round))
-                        SemiArc(frac: 0.5).stroke(p.bg, style: StrokeStyle(lineWidth: 7, dash: [1.5, 999]))
-                        HStack(alignment: .firstTextBaseline, spacing: 1) {
-                            Text(String(format: "%.1f", worst)).font(.system(size: 15, weight: .semibold, design: .serif))
-                                .foregroundStyle(hue).monospacedDigit()
-                            Text("×").font(.system(size: 8.5)).foregroundStyle(p.faint)
-                        }
-                    }
-                    .frame(width: 62, height: 38)
-                    VStack(alignment: .leading, spacing: 7) {
-                        paceRow("Session", rS, p)
-                        paceRow("Week", rW, p)
-                    }
-                    Spacer(minLength: 0)
+                VStack(alignment: .leading, spacing: 7) {
+                    paceStrip("Session", rS, p)
+                    paceStrip("Week", rW, p)
                 }
-                .frame(height: ctx.plotH)
-                .help("Spent share of the budget divided by elapsed share of the window. 1.0x is exactly on pace.")
+                .frame(height: ctx.plotH, alignment: .top)
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Pace gauge")
-                .accessibilityValue(String(format: "%.1f times the even pace", worst))
+                .accessibilityLabel("Pace")
+                .accessibilityValue([rS.map { "session \(String(format: "%.1f", $0.ratio)) times the even pace, \($0.caption)" },
+                                     rW.map { "week \(String(format: "%.1f", $0.ratio)) times the even pace, \($0.caption)" }]
+                                        .compactMap { $0 }.joined(separator: ". "))
             }
-            statLine(worst >= 1.0 ? "Over pace" : "Comfortable",
-                     worst >= 1.0 ? "· faster than the window refills" : "· on an even pace",
-                     p, tint: worst >= 1.0 ? hue : nil)
+            statLine(worst >= 1.0 ? "Over pace" : "Comfortable", "\u{00B7} 1.0× is on pace", p,
+                     tint: worst >= 1.0 ? hue(worst, p) : nil, gutter: false)
         }
     }
-    private func paceRow(_ name: String, _ r: Double?, _ p: Palette) -> some View {
-        HStack(spacing: 6) {
-            Text(name).font(.system(size: 10)).foregroundStyle(p.sub).frame(width: 46, alignment: .leading)
-            if let r {
+
+    private func hue(_ r: Double, _ p: Palette) -> Color {
+        r >= 1.6 ? p.overLimit : (r >= 1.0 ? p.warning : p.live)
+    }
+
+    /// Name, bar, multiple, and one line of plain English underneath.
+    @ViewBuilder private func paceStrip(_ name: String, _ r: PaceReading?, _ p: Palette) -> some View {
+        let barW: CGFloat = 104
+        VStack(alignment: .leading, spacing: 1) {
+            HStack(spacing: 7) {
+                Text(name).font(.system(size: 10)).foregroundStyle(p.sub)
+                    .frame(width: 44, alignment: .leading)
                 ZStack(alignment: .leading) {
-                    Capsule().fill(p.track).frame(width: 54, height: 4)
-                    Capsule().fill(r >= 1.0 ? p.warning : p.live).frame(width: max(3, 54 * min(1, r / 2)), height: 4)
-                    Rectangle().fill(p.ink.opacity(0.35)).frame(width: 1, height: 7).offset(x: 27)
+                    Capsule().fill(p.track).frame(width: barW, height: 5)
+                    if let r {
+                        // The scale runs 0 to 2x, so the halfway point IS 1.0x.
+                        Capsule().fill(hue(r.ratio, p))
+                            .frame(width: max(3, barW * min(1, r.ratio / 2)), height: 5)
+                    }
+                    // The 1.0x mark: a tick standing proud of the bar, in ink. Drawn ON TOP of the
+                    // fill so it stays readable when the fill has run past it, which is exactly
+                    // when it matters.
+                    Rectangle().fill(p.ink.opacity(0.45))
+                        .frame(width: 1, height: 9).offset(x: barW / 2)
                 }
-                Text(String(format: "%.1f×", r)).font(.system(size: 10, design: .monospaced))
-                    .foregroundStyle(p.ink).monospacedDigit()
-            } else {
-                Text("--").font(.system(size: 10)).foregroundStyle(p.faint)
+                .frame(width: barW, height: 9)
+                if let r {
+                    Text(String(format: "%.1f×", r.ratio)).font(.system(size: 10.5, design: .monospaced))
+                        .foregroundStyle(p.ink).monospacedDigit().fixedSize()
+                } else {
+                    Text("--").font(.system(size: 10)).foregroundStyle(p.faint)
+                }
             }
+            Text(r?.caption ?? "not enough of this window has run yet")
+                .font(.system(size: 9)).foregroundStyle(p.faint)
+                .lineLimit(1).truncationMode(.tail)
+                .padding(.leading, 51)
         }
     }
 }
@@ -178,7 +166,10 @@ struct ModelCapsChart: View {
                             .frame(width: 62, alignment: .leading).lineLimit(1)
                         HBar(pct: r.pct, color: r.active ? p.session : kSlate, track: p.track, height: 5,
                              a11yLabel: "\(r.name) weekly limit")
-                        Text("\(Int(((1 - r.pct) * 100).rounded()))%")
+                        // "54%" beside a bar filled to 46% is a contradiction unless the reader
+                        // already knows which one is which, and the only thing saying so was a
+                        // 9.5pt caption at the bottom of the chart. The row says it itself now.
+                        Text("\(Int(((1 - r.pct) * 100).rounded()))% left")
                             .font(.system(size: 11, weight: .medium, design: .monospaced))
                             .foregroundStyle(p.ink).monospacedDigit().fixedSize()
                     }
@@ -191,8 +182,11 @@ struct ModelCapsChart: View {
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Weekly limits")
             .accessibilityValue(rows.map { "\($0.name) \(Int((1 - $0.pct) * 100)) percent left" }.joined(separator: ", "))
+            // Measured against the 264pt card, not guessed: both of the old captions ran past the
+            // end of the line and were cut off mid-sentence.
             statLine("\(rows.count) weekly limit\(rows.count == 1 ? "" : "s")",
-                     ctx.modelLimits.contains(where: { $0.active }) ? "· dot marks the one binding first" : "· percentages are what is LEFT", p)
+                     ctx.modelLimits.contains(where: { $0.active }) ? "\u{00B7} dot = binding cap" : "", p,
+                     gutter: false)
         }
     }
 }
@@ -202,52 +196,71 @@ struct ModelCapsChart: View {
 struct TopChatsChart: View {
     let ctx: ChartCtx
     @State private var sel: CatValue?
+    @State private var memo = ChartMemo()
     var body: some View {
         let p = ctx.p
-        let now = Date()
+        let now = ctx.tick
         let lower = ctx.lower(ctx.records.first?.date, now: now)
-        let rows = topChats(ctx.records, from: lower)
+        let rows = memo.value(ctx.dataKey) { topChats(ctx.records, from: lower) }
         let total = rows.reduce(0) { $0 + $1.v }
+        let peak = max(1, rows.map(\.v).max() ?? 1)
+        // Drawn as plain rows, not a Swift Charts bar chart with a categorical axis.
+        //
+        // The chart version worked only while these labels were short. Once chats carried their
+        // REAL titles the axis labels were long, and a categorical axis reserves no room for them:
+        // names ran over the bars, the bars ran over the numbers, and the whole section turned into
+        // a pile of overlapping text. A row is a name, a bar and a number in fixed columns, which
+        // cannot collide however long the name is.
         return VStack(alignment: .leading, spacing: 5) {
             if rows.isEmpty {
                 chartPlaceholder("No chat activity in this window", p)
             } else {
-                Chart {
-                    ForEach(rows) { r in
-                        BarMark(x: .value("tokens", r.v), y: .value("chat", r.name), height: .ratio(0.6))
-                            .foregroundStyle(ctx.accent.opacity(sel == nil || sel?.id == r.id ? 0.8 : 0.3))
-                            .cornerRadius(2)
-                            .annotation(position: .trailing, spacing: 3) {
-                                Text(fmtTok(Int(r.v))).font(.system(size: 8.5, design: .monospaced))
+                // The name owns a line to itself, edge to edge.
+                //
+                // Sharing it with the token count still cost the name a fifth of the card, and
+                // conversation titles are long: "Weebly mandamus page re..." with white space to
+                // its right is the worst of both. The count moved down to sit at the END of the
+                // bar, on the second line, where it reads as that bar's value and costs the name
+                // nothing at all.
+                VStack(alignment: .leading, spacing: 7) {
+                    ForEach(rows.prefix(4)) { r in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(r.name)
+                                .font(.system(size: 10.5)).foregroundStyle(p.ink)
+                                .lineLimit(1).truncationMode(.tail)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            HStack(spacing: 6) {
+                                GeometryReader { g in
+                                    ZStack(alignment: .leading) {
+                                        Capsule().fill(p.track)
+                                        Capsule().fill(ctx.accent.opacity(sel?.id == r.id ? 1.0 : 0.75))
+                                            .frame(width: max(2, g.size.width * CGFloat(r.v / peak)))
+                                    }
+                                }
+                                .frame(height: 4)
+                                Text(fmtTok(Int(r.v)))
+                                    .font(.system(size: 9.5, design: .monospaced))
                                     .foregroundStyle(p.sub).monospacedDigit()
-                            }
-                    }
-                }
-                .chartXAxis(.hidden)
-                .chartYAxis {
-                    AxisMarks(position: .leading) { v in
-                        AxisValueLabel {
-                            if let s = v.as(String.self) {
-                                Text(s).font(.system(size: 9)).foregroundStyle(p.sub)
-                                    .lineLimit(1).truncationMode(.middle)
+                                    .frame(width: 44, alignment: .trailing)
                             }
                         }
+                        .contentShape(Rectangle())
+                        .onHover { inside in sel = inside ? r : nil }
                     }
                 }
-                .chartPlotStyle { $0.background(Color.clear) }
-                .transaction { $0.animation = nil }
-                .frame(height: ctx.plotH)
-                .hoverCatcher { pt, proxy, geo in
-                    guard ctx.hover else { return }
-                    guard let pt, let name: String = proxy.value(atY: pt.y - geo[proxy.plotAreaFrame].minY) else { sel = nil; return }
-                    sel = rows.first { $0.name == name }
-                }
+                // minHeight, not height: four two-line rows are taller than the base plot, and a
+                // fixed frame would clip the fourth.
+                .frame(minHeight: ctx.plotH, alignment: .top)
+                .padding(.leading, 2).padding(.trailing, 8)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("Top chats")
                 .accessibilityValue(rows.map { "\($0.name) \(fmtTok(Int($0.v)))" }.joined(separator: ", "))
             }
+            // Right-aligned, under the column it totals, so it reads as the sum of the numbers
+            // above rather than a figure parked at random in the middle of the row.
             statLine(sel.map { fmtTok(Int($0.v)) } ?? fmtTok(Int(total)),
-                     sel.map { "· \($0.name)" } ?? "· top \(rows.count) chats", p)
+                     sel.map { "\u{00B7} \($0.name)" } ?? "top \(min(4, rows.count)) chats \u{00B7}", p,
+                     gutter: false, trailing: true)
         }
     }
 }
@@ -258,12 +271,15 @@ struct ShareSplitChart: View {
     let ctx: ChartCtx
     var byModel: Bool
     @State private var sel: CatValue?
+    @State private var memo = ChartMemo()
     var body: some View {
         let p = ctx.p
-        let now = Date()
+        let now = ctx.tick
         let lower = ctx.lower(ctx.records.first?.date, now: now)
-        let rows = byModel ? shareSplit(ctx.records, from: lower) { modelFamily($0.model) }
-                           : shareSplit(ctx.records, from: lower) { $0.project.isEmpty ? "(unknown)" : $0.project }
+        let rows = memo.value(ctx.dataKey + "|m\(byModel)") {
+            byModel ? shareSplit(ctx.records, from: lower) { modelFamily($0.model) }
+                    : shareSplit(ctx.records, from: lower) { $0.project.isEmpty ? kUnknownProject : $0.project }
+        }
         let shown = Array(rows.prefix(6))
         func hue(_ i: Int, _ name: String) -> Color {
             byModel ? modelHue(name, p) : categoryHue(i, ctx.accent, p)
@@ -338,9 +354,10 @@ func categoryHue(_ i: Int, _ accent: Color, _ p: Palette) -> Color {
 struct WeekdayProfileChart: View {
     let ctx: ChartCtx
     @State private var sel: CatValue?
+    @State private var memo = ChartMemo()
     var body: some View {
         let p = ctx.p
-        let rows = weekdayProfile(ctx.records, days: ctx.days)
+        let rows = memo.value(ctx.dataKey) { weekdayProfile(ctx.records, days: ctx.days) }
         let peak = rows.map(\.v).max() ?? 0
         let today = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"][(Calendar.current.component(.weekday, from: Date()) + 5) % 7]
         let busiest = rows.max { $0.v < $1.v }
@@ -388,9 +405,10 @@ struct WeekdayProfileChart: View {
 struct DailyTokensChart: View {
     let ctx: ChartCtx
     @State private var sel: CatValue?
+    @State private var memo = ChartMemo()
     var body: some View {
         let p = ctx.p
-        let rows = dailyTokens(ctx.records, days: ctx.days)
+        let rows = memo.value(ctx.dataKey) { dailyTokens(ctx.records, days: ctx.days) }
         let peak = rows.map(\.v).max() ?? 0
         let active = rows.filter { $0.v > 0 }
         let avg = active.isEmpty ? 0 : active.reduce(0) { $0 + $1.v } / Double(active.count)
@@ -414,15 +432,7 @@ struct DailyTokensChart: View {
                     }
                 }
                 .chartYAxis { tokenYAxis(peak, p, style: ctx.style) }
-                .chartXAxis {
-                    AxisMarks { v in
-                        AxisValueLabel {
-                            if let s = v.as(String.self) {
-                                Text(s).font(.system(size: 8, design: .monospaced)).foregroundStyle(p.faint)
-                            }
-                        }
-                    }
-                }
+                .chartXAxis { thinnedCatXAxis(rows.map(\.name), p, size: 8, maxLabels: 7) }
                 .chartPlotStyle { $0.background(Color.clear) }
                 .transaction { $0.animation = nil }
                 .frame(height: ctx.plotH)
@@ -446,9 +456,10 @@ struct DailyTokensChart: View {
 struct SessionBlocksChart: View {
     let ctx: ChartCtx
     @State private var sel: SessionBlock?
+    @State private var memo = ChartMemo()
     var body: some View {
         let p = ctx.p
-        let blocks = sessionBlocks(ctx.records, days: ctx.days)
+        let blocks = memo.value(ctx.dataKey) { sessionBlocks(ctx.records, days: ctx.days) }
         let shown = Array(blocks.suffix(18))
         let peak = shown.map(\.tokens).max() ?? 0
         let avg = shown.isEmpty ? 0 : shown.reduce(0) { $0 + $1.tokens } / Double(shown.count)
@@ -502,13 +513,16 @@ struct CompositionChart: View {
     let ctx: ChartCtx
     var cacheOnly: Bool
     @State private var sel: Date?
+    @State private var memo = ChartMemo()
     var body: some View {
         let p = ctx.p
-        let now = Date()
+        let now = ctx.tick
         let lower = ctx.lower(ctx.records.first?.date, now: now)
         let n = 14
-        let rects = cacheOnly ? cacheMixRects(ctx.records, from: lower, to: now, buckets: n)
-                              : inputOutputRects(ctx.records, from: lower, to: now, buckets: n)
+        let rects = memo.value(ctx.dataKey + "|c\(cacheOnly)") {
+            cacheOnly ? cacheMixRects(ctx.records, from: lower, to: now, buckets: n)
+                      : inputOutputRects(ctx.records, from: lower, to: now, buckets: n)
+        }
         // Short legend labels: the full names ("Cache write") made the legend row wider than the card,
         // which pushed the whole chart out past the popover's edge.
         let keys = cacheOnly ? ["Fresh", "Cache read"] : ["Input", "Output", "Cache write", "Cache read"]
@@ -588,9 +602,10 @@ struct CompositionChart: View {
 struct MonthCostChart: View {
     let ctx: ChartCtx
     @State private var sel: CatValue?
+    @State private var memo = ChartMemo()
     var body: some View {
         let p = ctx.p
-        let (pts, projected) = cumulativeCost(ctx.records, days: ctx.days)
+        let (pts, projected) = memo.value(ctx.dataKey) { cumulativeCost(ctx.records, days: ctx.days) }
         let total = pts.last?.v ?? 0
         let top = max(projected, total) * 1.1
         return VStack(alignment: .leading, spacing: 5) {

@@ -8,7 +8,7 @@ cd "$(dirname "$0")"
 OUT="$(mktemp -d)/burndown-export-tests"
 
 echo "→ Building export test binary (Export)"
-swiftc -O -o "$OUT" Sources/Export.swift Sources/Aggregation.swift Sources/Pricing.swift Tests/export/main.swift
+swiftc -O -o "$OUT" Sources/Export.swift Sources/Aggregation.swift Sources/SessionTitles.swift Sources/Pricing.swift Sources/Format.swift Tests/export/main.swift
 
 echo "→ Running"
 "$OUT"

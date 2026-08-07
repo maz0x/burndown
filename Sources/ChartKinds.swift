@@ -35,7 +35,7 @@ enum ChartKind: String, CaseIterable, Identifiable {
         case .sessionBurndown: return "Session burndown"
         case .weekBurndown:    return "Week burndown"
         case .usageLines:      return "Session + week %"
-        case .paceGauge:       return "Pace gauge"
+        case .paceGauge:       return "Pace"
         case .modelCaps:       return "Model limits"
         case .byModel:         return "By model"
         case .byProject:       return "By project"
@@ -93,8 +93,8 @@ enum ChartKind: String, CaseIterable, Identifiable {
         case .burnHistogram:   return "How often you burn at each rate. A long tail means rare, huge bursts."
         case .sessionBurndown: return "How much of the 5-hour session limit is left, against the pace that lasts exactly to the reset."
         case .weekBurndown:    return "How much of the weekly limit is left, against the pace that lasts exactly to the reset."
-        case .usageLines:      return "Session and weekly percentage used, over time, on one 0-100% scale."
-        case .paceGauge:       return "Your current pace against the pace that would last exactly to the reset. Past 1.0x you are overspending."
+        case .usageLines:      return "Session and week on one 0-100% scale, plus each model's share. Click a legend name to hide its line."
+        case .paceGauge:       return "Session and week, each against the pace that lasts exactly to the reset. Past 1.0x you are overspending."
         case .modelCaps:       return "Every weekly limit side by side: all models, plus any model with its own cap."
         case .byModel:         return "Tokens stacked by model family, so you can see which model is eating the window."
         case .byProject:       return "The projects that used the most tokens in the window."
@@ -269,7 +269,7 @@ func modelStackRects(_ records: [UsageRecord], from: Date, to: Date, buckets n: 
 func topProjects(_ records: [UsageRecord], from: Date, limit: Int = 5) -> [CatValue] {
     var sums: [String: Double] = [:]
     for r in records where r.date >= from {
-        sums[r.project.isEmpty ? "(unknown)" : r.project, default: 0] += Double(r.totalTokens)
+        sums[r.project.isEmpty ? kUnknownProject : r.project, default: 0] += Double(r.totalTokens)
     }
     return sums.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
         .prefix(limit).enumerated().map { CatValue(id: $0.offset, name: $0.element.key, v: $0.element.value) }
@@ -346,19 +346,53 @@ func hourLabel(_ h: Int) -> String {
 func dailyTokens(_ records: [UsageRecord], days: Int, now: Date = Date()) -> [CatValue] {
     let cal = Calendar.current
     let today = cal.startOfDay(for: now)
-    var sums: [Date: Double] = [:]
-    for r in records {
-        let d = cal.startOfDay(for: r.date)
-        if let back = cal.dateComponents([.day], from: d, to: today).day, back >= 0, back < days {
-            sums[d, default: 0] += Double(r.totalTokens)
+    // The day boundaries are worked out once. The first version of this asked Calendar for a start
+    // of day AND a day difference for every record in the whole retained history, on a chart the
+    // card re-renders constantly, which is what made the popover feel slow. Real calendar
+    // boundaries plus a binary search give the same answer, DST nights included, for far less work.
+    var starts: [Date] = []                         // oldest first
+    for back in (0..<days).reversed() {
+        if let d = cal.date(byAdding: .day, value: -back, to: today) { starts.append(d) }
+    }
+    guard let first = starts.first else { return [] }
+    let end = cal.date(byAdding: .day, value: 1, to: today) ?? now
+    var sums = [Double](repeating: 0, count: starts.count)
+    for r in records where r.date >= first && r.date < end {
+        var lo = 0, hi = starts.count - 1            // last boundary at or before this record
+        while lo < hi {
+            let mid = (lo + hi + 1) / 2
+            if starts[mid] <= r.date { lo = mid } else { hi = mid - 1 }
         }
+        sums[lo] += Double(r.totalTokens)
     }
     // Labels are the categorical x values, so they MUST be unique: past 31 days a bare
     // day-of-month repeats and Swift Charts would merge unrelated days into one bar.
     let f = DateFormatter(); f.dateFormat = days > 31 ? "M/d" : (days > 9 ? "d" : "EEE")
-    return (0..<days).reversed().compactMap { back in
-        guard let d = cal.date(byAdding: .day, value: -back, to: today) else { return nil }
-        return CatValue(id: days - back, name: f.string(from: d), v: sums[d] ?? 0)
+    return starts.indices.map { CatValue(id: $0 + 1, name: f.string(from: starts[$0]), v: sums[$0]) }
+}
+
+/// Daily totals rolled up into weeks, for windows too long to draw a bar per day.
+///
+/// Ninety bars inside a 264pt card is about a pixel and a half each: not a chart, a texture. Past
+/// five weeks the popover asks for weeks instead, which is the same information at a size the eye
+/// can actually use. The wide Insights window keeps the daily view.
+func weeklyTokens(_ records: [UsageRecord], days: Int, now: Date = Date()) -> [CatValue] {
+    let cal = Calendar.current
+    let daily = dailyTokens(records, days: days, now: now)
+    guard !daily.isEmpty else { return [] }
+    let weeks = Int((Double(days) / 7).rounded(.up))
+    var sums = [Double](repeating: 0, count: weeks)
+    // daily is oldest first, so bucketing by position keeps the order without touching Calendar.
+    for (i, d) in daily.enumerated() {
+        let w = min(weeks - 1, i / 7)
+        sums[w] += d.v
+    }
+    let f = DateFormatter(); f.dateFormat = "M/d"
+    let today = cal.startOfDay(for: now)
+    return (0..<weeks).map { w in
+        let back = days - 1 - w * 7
+        let start = cal.date(byAdding: .day, value: -max(0, back), to: today) ?? today
+        return CatValue(id: w + 1, name: f.string(from: start), v: sums[w])
     }
 }
 

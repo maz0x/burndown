@@ -63,14 +63,3 @@ func forecastMinutes(_ samples: [TimedSample], current: Double, resetAt: Date?, 
     if let r = resetAt, now.addingTimeInterval(secs) > r { return nil }
     return secs / 60
 }
-
-/// Compact human duration: "<1m", "45m", "2h 10m", "3d 4h".
-func compactETA(_ s: TimeInterval) -> String {
-    let m = Int(s / 60)
-    if m < 1 { return "<1m" }
-    if m < 60 { return "\(m)m" }
-    let h = m / 60, remM = m % 60
-    if h < 24 { return remM == 0 ? "\(h)h" : "\(h)h \(remM)m" }
-    let d = h / 24, remH = h % 24
-    return remH == 0 ? "\(d)d" : "\(d)d \(remH)h"
-}

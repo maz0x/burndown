@@ -262,6 +262,11 @@ extension Notification.Name {
     static let burndownDidSignIn = Notification.Name("com.maz.burndown.didSignIn")
     static let burndownDidSignOut = Notification.Name("com.maz.burndown.didSignOut")
     static let showWelcomeTour = Notification.Name("com.maz.burndown.showWelcomeTour")
+    /// An explanation bubble in the card opened (object: true) or closed (object: false).
+    /// The card lives in a TRANSIENT NSPopover, which AppKit closes "when the user interacts with
+    /// a user interface element outside the popover" - and a bubble is its own window, so opening
+    /// one would take the card down with it. The delegate pins the card open while a bubble is up.
+    static let explainBubble = Notification.Name("com.maz.burndown.explainBubble")
 }
 
 // Lightweight notification-path tracing → ~/.config/burndown/notif-debug.log
@@ -305,7 +310,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         if let p = popover, !p.isShown { togglePopover() }
     }
     let engine = UsageEngine()
-    let settings = AppSettings()
+    // CUB_SANDBOX boots the app against a throwaway defaults suite instead of the user's own.
+    // Verifying anything about the REAL popover (its height ceiling, its scroller) means opening
+    // the real thing, and doing that with the owner's settings would mean either mutating them or
+    // photographing his data. Neither is acceptable, so QA gets its own domain.
+    let settings: AppSettings = {
+        guard ProcessInfo.processInfo.environment["CUB_SANDBOX"] != nil else { return AppSettings() }
+        let suite = "com.maz.burndown.sandbox"
+        UserDefaults.standard.removePersistentDomain(forName: suite)
+        let s = AppSettings(defaults: UserDefaults(suiteName: suite) ?? .standard)
+        if let m = ProcessInfo.processInfo.environment["CUB_CHARTMODE"] {
+            let kinds = m.split(separator: ",").compactMap { ChartKind(rawValue: String($0)) }
+            if !kinds.isEmpty { s.chartKinds = kinds }
+        }
+        return s
+    }()
     let liveActivity = LiveActivity()
 
     private var statusItem: NSStatusItem!
@@ -381,6 +400,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         if ProcessInfo.processInfo.environment["CUB_OPEN_POPOVER"] != nil {
             popover.behavior = .applicationDefined
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.togglePopover() }
+            // Prove the height ceiling holds, in the ONLY place it can be proved: the real popover
+            // with real settings on a real screen. Prints the card's content height beside the
+            // ceiling it must respect, so a regression is a failed comparison and not a squint at
+            // a screenshot.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 3.5) { [weak self] in
+                guard let self else { return }
+                let vis = Double(self.statusItem.button?.window?.screen?.visibleFrame.height
+                                 ?? NSScreen.main?.visibleFrame.height ?? 0)
+                let ceiling = CardResize.heightCeiling(visible: vis, scale: self.settings.textScale)
+                let h = Double(self.popover.contentSize.height)
+                print("CUB_POP_HEIGHT=\(Int(h)) CEILING=\(Int(ceiling)) VISIBLE=\(Int(vis)) "
+                      + "CHARTS=\(self.settings.chartKinds.count) VERDICT=\(h <= ceiling + 1 ? "within" : "OVER")")
+                fflush(stdout)
+            }
             // QA (CUB_QA_POPRESIZE=<width>x<boost>): prove the live reflow path end to end with no
             // mouse. Prints the popover's contentSize before and after a runtime width + chart-boost
             // change (the exact settings a grip drag drives) plus the window id, so
@@ -499,10 +532,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 switch o {
                 case "account":  self.showAccount()
                 case "insights": self.showInsights()
+                case "popover":  self.togglePopover()
                 default:         self.openSettings()
                 }
                 let w = (o == "account") ? self.accountWindow
-                      : (o == "insights") ? self.insightsWindow : self.settingsWindow
+                      : (o == "insights") ? self.insightsWindow
+                      : (o == "popover") ? self.popover.contentViewController?.view.window
+                      : self.settingsWindow
                 // CUB_TALL=<points> grows the window for documentation captures, so a long
                 // settings pane can be photographed whole instead of scrolled.
                 if let t = ProcessInfo.processInfo.environment["CUB_TALL"], let h = Double(t) {
@@ -954,7 +990,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             onResizing: { [weak self] active in
                 guard let self, let panel = self.floatingPanel else { return }
                 self.floatResizePin = active ? NSPoint(x: panel.frame.minX, y: panel.frame.maxY) : nil
-            }))
+            },
+            hostScreen: floatingPanel?.screen ?? NSScreen.main))
         host.sizingOptions = [.preferredContentSize]   // panel hugs the card
         let panel = NSPanel(contentViewController: host)
         if settings.floatingChrome {
@@ -1082,6 +1119,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         }
 
         popover = NSPopover()
+        observeExplainBubble()
         popover.behavior = .transient
         popover.appearance = nil   // follow system light/dark
         popover.delegate = self
@@ -1098,7 +1136,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             onOpenLogs: { [weak self] in self?.openLogs() },
             // Grip drag: kill the popover's size animation so the card tracks the cursor 1:1,
             // restore it on mouse-up. (.preferredContentSize sizing does the actual resizing.)
-            onResizing: { [weak self] active in self?.popover.animates = !active }
+            onResizing: { [weak self] active in self?.popover.animates = !active },
+            // The screen the status item lives on, so the height ceiling is measured against the
+            // display the card actually appears on rather than whichever one macOS calls main.
+            hostScreen: statusItem.button?.window?.screen
         ).noFocusRing())
         h.sizingOptions = [.preferredContentSize]   // popover grows/shrinks to fit the card
         return h
@@ -1106,6 +1147,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
     func popoverDidClose(_ notification: Notification) {
         popover.contentViewController = nil   // stop the hidden card from rendering
+        // Never leave the card pinned open because a bubble was up when it closed.
+        popover.behavior = .transient
+    }
+
+    /// Pin the card open while an explanation bubble is showing, then hand it back to AppKit.
+    /// Without this, opening a bubble counts as interacting outside the transient popover and the
+    /// card disappears the moment you click a "?" - which is the whole point of clicking it.
+    /// CUB_OPEN_POPOVER pins the popover deliberately for profiling; leave that alone.
+    private func observeExplainBubble() {
+        guard ProcessInfo.processInfo.environment["CUB_OPEN_POPOVER"] == nil else { return }
+        NotificationCenter.default.addObserver(forName: .explainBubble, object: nil, queue: .main) { [weak self] note in
+            guard let self, let up = note.object as? Bool, self.popover != nil else { return }
+            self.popover.behavior = up ? .applicationDefined : .transient
+        }
     }
 
     // MARK: - Settings window (separate window - keeps the popover display-only)
@@ -1342,8 +1397,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             w.title = "Insights"
             w.isReleasedWhenClosed = false
             w.appearance = themeAppearance()
-            w.setContentSize(NSSize(width: 420, height: 640))
+            // Was 420 wide, which is a column, not a window: numbers wrapped onto two lines and
+            // long chat titles were all ellipsis. Twice the width, and it remembers whatever size
+            // the user settles on.
+            w.setContentSize(NSSize(width: 1160, height: 780))
+            w.minSize = NSSize(width: 900, height: 600)
             w.center()
+            w.setFrameAutosaveName("BurndownInsights")
             insightsWindow = w
         }
         NSApp.activate(ignoringOtherApps: true)
@@ -1557,6 +1617,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                                  over: settings.menuBarShow == .weekly ? s.weeklyOver : s.over,
                                  accent: accent)
             : accent
+        // The digits take the system's label colour unless the user asked for the themed one.
+        //
+        // Resolved against the STATUS BUTTON's appearance, not left as the dynamic .labelColor.
+        // The glyph is drawn into an offscreen image, and a dynamic colour resolves there against
+        // the app's appearance rather than the menu bar's, so on a dark menu bar the number came
+        // out the same near-black as everything else and did not match the clock beside it.
+        // Not applied in template mode, where AppKit tints the whole glyph anyway.
+        if settings.menuBarSystemNumber && !template {
+            let appearance = statusItem.button?.effectiveAppearance ?? NSApp.effectiveAppearance
+            var resolved = NSColor.labelColor
+            appearance.performAsCurrentDrawingAppearance {
+                resolved = NSColor.labelColor.usingColorSpace(.sRGB) ?? .labelColor
+            }
+            g.numberColor = resolved
+        } else {
+            g.numberColor = nil
+        }
         g.beacon = beaconEnv
         g.beaconMark = settings.beaconMark
         g.beaconGlow = settings.beaconGlow
@@ -1638,12 +1715,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         if SMAppService.mainApp.status == .enabled { return true }
         return FileManager.default.fileExists(atPath: loginPlist.path)
     }
+    /// The copy of the app a login item should start.
+    ///
+    /// `Bundle.main` is the RUNNING copy, which during development is the build inside the project
+    /// folder. Registering that meant every login started a build from a Google Drive folder: the
+    /// wrong copy, often a stale one, silently broken whenever Drive had not mounted yet, and
+    /// impossible to tell apart from the real app once both were sitting in the menu bar. If there
+    /// is an installed copy, that is the one that should start at login.
+    private var loginTargetExecutable: String {
+        let running = Bundle.main.executablePath ?? ""
+        let installed = "/Applications/\(kAppName).app/Contents/MacOS/\(kAppName)"
+        if running.hasPrefix("/Applications/") { return running }
+        if FileManager.default.isExecutableFile(atPath: installed) { return installed }
+        return running
+    }
+
     private func setLogin(_ on: Bool) {
         if on {
             do { try SMAppService.mainApp.register() }
             catch {
                 // Fall back to the legacy LaunchAgent so the toggle still works for dev builds.
-                let bin = Bundle.main.executablePath ?? ""
+                let bin = loginTargetExecutable
                 let xml = """
                 <?xml version="1.0" encoding="UTF-8"?>
                 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -1665,7 +1757,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                let plist = try? PropertyListSerialization.propertyList(from: d, options: [], format: nil) as? [String: Any],
                let args = plist["ProgramArguments"] as? [String],
                let first = args.first,
-               first == (Bundle.main.executablePath ?? "") {
+               // Either the copy we would register today, or the running one: an entry written by
+               // an earlier build pointing at a development path still has to be removable.
+               first == loginTargetExecutable || first == (Bundle.main.executablePath ?? "") {
                 try? FileManager.default.removeItem(at: loginPlist)
             }
         }
@@ -2052,6 +2146,10 @@ if ProcessInfo.processInfo.environment["CUB_TIDE_DIAG"] != nil {
         print("   left   = \(Int(f.minX)),\(Int(f.minY)) \(Int(t))x\(Int(f.height))  (spans full height)")
         print("   right  = \(Int(f.maxX - t)),\(Int(f.minY)) \(Int(t))x\(Int(f.height))")
     }
+    exit(0)
+}
+if let csv = ProcessInfo.processInfo.environment["CUB_CONTRAST"] {
+    ContrastAudit.run(to: csv, raw: ProcessInfo.processInfo.environment["CUB_CONTRAST_RAW"] != nil)
     exit(0)
 }
 if let snapPath = ProcessInfo.processInfo.environment["CUB_SNAP"] {

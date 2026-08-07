@@ -273,7 +273,7 @@ enum LiveColor: String, CaseIterable, Identifiable {
     }
 }
 let kAppName = "Burndown"           // app name (floating window title + About). Tagline: "usage monitor for Claude"
-let kAppVersion = "0.9.3"           // bump on release builds; 1.0 is reserved for Developer ID signing + multi-provider
+let kAppVersion = "0.9.4"           // bump on release builds; 1.0 is reserved for Developer ID signing + multi-provider
 let kMinWindowAlpha = 0.45          // most see-through the windows go at 100% transparency (keeps text legible)
 
 // A curated set: every style earns its place, all keep a small footprint (most are
@@ -566,6 +566,13 @@ final class AppSettings: ObservableObject {
     @Published var showCost: Bool { didSet { d.set(showCost, forKey: "showCost") } }
     @Published var showTokens: Bool { didSet { d.set(showTokens, forKey: "showTokens") } }
     @Published var colorMode: ColorMode { didSet { d.set(colorMode.rawValue, forKey: "colorMode") } }
+    /// Draw the menu bar's NUMBER in the system's own label colour rather than the usage colour.
+    ///
+    /// On by default. The menu bar is a row of system-tinted glyphs that flip black or white to
+    /// suit whatever is behind them; a themed number is the one item that can end up fighting its
+    /// background. The dot, arc and glow keep the colour, because that is what makes them readable
+    /// as a gauge at a glance.
+    @Published var menuBarSystemNumber: Bool { didSet { d.set(menuBarSystemNumber, forKey: "menuBarSystemNumber") } }
     @Published var accentHex: String { didSet { d.set(accentHex, forKey: "accentHex") } }
     @Published var theme: AppTheme { didSet { d.set(theme.rawValue, forKey: "theme") } }
     @Published var chartStyle: ChartStyle { didSet { d.set(chartStyle.rawValue, forKey: "chartStyle") } }
@@ -622,6 +629,9 @@ final class AppSettings: ObservableObject {
     @Published var palette: PalettePreset { didSet { d.set(palette.rawValue, forKey: "palette"); Palette.current = palette } }
     // Scales the popover / floating window text and overall size (0.9 to 1.3).
     @Published var textScale: Double { didSet { d.set(textScale, forKey: "textScale") } }
+    /// Type size in the Insights window, separate from the popover's zoom: one is a card glanced
+    /// at from across the desk, the other a window read up close, and they want different sizes.
+    @Published var insightsTextScale: Double { didSet { d.set(insightsTextScale, forKey: "insightsTextScale") } }
     // Corner-grip RESIZE (reflow, not zoom): card width in design points (wider = longer bars and
     // chat names, same font size), and extra plot height added to every popover chart by a
     // vertical drag. Both set by the grip; CardResize holds the limits.
@@ -703,6 +713,10 @@ final class AppSettings: ObservableObject {
     @Published var chatsExpanded: Bool { didSet { d.set(chatsExpanded, forKey: "chatsExpandedByDefault") } }
     @Published var modelsExpanded: Bool { didSet { d.set(modelsExpanded, forKey: "modelsExpanded") } }
     @Published var chatTruncation: ChatTruncation { didSet { d.set(chatTruncation.rawValue, forKey: "chatTruncation") } }
+    /// Series hidden on the "Session + week %" chart, by name ("Session", "Week", or a model).
+    /// Persisted for the same reason chatsExpanded is: the popover tears its content down on
+    /// close, so a @State toggle would forget the choice every single time the card is opened.
+    @Published var hiddenUsageSeries: [String] { didSet { d.set(hiddenUsageSeries, forKey: "hiddenUsageSeries") } }
     // Popover chrome switches (the CHROME card in Settings).
     @Published var popoverDividers: Bool { didSet { d.set(popoverDividers, forKey: "popoverDividers") } }
     @Published var popoverEyebrows: Bool { didSet { d.set(popoverEyebrows, forKey: "popoverEyebrows") } }
@@ -834,6 +848,7 @@ final class AppSettings: ObservableObject {
         showTokens = (d.object(forKey: "showTokens") as? Bool) ?? true
         let oldMono = (d.object(forKey: "monochrome") as? Bool) ?? false
         colorMode = ColorMode(rawValue: d.string(forKey: "colorMode") ?? "") ?? (oldMono ? .flat : .level)
+        menuBarSystemNumber = (d.object(forKey: "menuBarSystemNumber") as? Bool) ?? true
         accentHex = d.string(forKey: "accentHex") ?? kDefaultAccent   // Claude orange
         // Default to the design's clean soft-area. Legacy "bars"/"zones" values (removed as
         // selectable no-ops) fail rawValue parsing and land on Area automatically.
@@ -880,6 +895,7 @@ final class AppSettings: ObservableObject {
         widgetScale = (d.object(forKey: "widgetScale") as? Double) ?? 1.0
         palette = PalettePreset(rawValue: d.string(forKey: "palette") ?? "") ?? .stoneClay
         textScale = (d.object(forKey: "textScale") as? Double) ?? 1.0
+        insightsTextScale = (d.object(forKey: "insightsTextScale") as? Double) ?? 1.0
         cardWidth = (d.object(forKey: "cardWidth") as? Double) ?? 264
         cardChartBoost = (d.object(forKey: "cardChartBoost") as? Double) ?? 0
         floatingChrome = (d.object(forKey: "floatingChrome") as? Bool) ?? false   // clean borderless card by default
@@ -923,6 +939,7 @@ final class AppSettings: ObservableObject {
         chatsExpanded = d.object(forKey: "chatsExpandedByDefault") as? Bool ?? false
         modelsExpanded = d.object(forKey: "modelsExpanded") as? Bool ?? false
         chatTruncation = ChatTruncation(rawValue: d.string(forKey: "chatTruncation") ?? "") ?? .middle
+        hiddenUsageSeries = (d.array(forKey: "hiddenUsageSeries") as? [String]) ?? []
         popoverDividers = d.object(forKey: "popoverDividers") as? Bool ?? true
         popoverEyebrows = d.object(forKey: "popoverEyebrows") as? Bool ?? true
         popoverCompact = d.object(forKey: "popoverCompact") as? Bool ?? false
