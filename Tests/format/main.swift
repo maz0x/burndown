@@ -129,5 +129,34 @@ check(fmtTok(6_972_000_000) == "7.0B", "billions get their own step")
 check(fmtTok(1_000_000_000) == "1.0B", "exactly a billion crosses over")
 check(fmtTok(999_999_999) == "1000.0M", "and just under it stays in millions")
 
+// Rounding "used" and "left" separately lets them disagree: at 61.5 percent the two independent
+// roundings give 62 used and 39 left, which is 101 between them.
+print("used and left always add up:")
+do {
+    var worst = 0
+    for i in 0...1000 {
+        let f = Double(i) / 1000.0
+        let (used, left) = usedAndLeftPercent(f)
+        worst = max(worst, abs(used + left - 100))
+    }
+    check(worst == 0, "every fraction from 0 to 1 splits into two whole percents that sum to 100")
+    check(usedAndLeftPercent(0.615).used == 62, "61.5 percent used rounds to 62")
+    check(usedAndLeftPercent(0.615).left == 38, "and the remainder follows from it, not from its own rounding")
+    check(usedAndLeftPercent(0).left == 100, "nothing used is everything left")
+    check(usedAndLeftPercent(1).left == 0, "and all used is nothing left")
+    check(usedAndLeftPercent(1.4).left == 0, "an over-limit fraction clamps rather than going negative")
+    check(usedAndLeftPercent(-0.2).used == 0, "and so does a negative one")
+}
+
+// A sub-dollar day used to print "$0" at the TOP of its own axis, which reads as an axis for a day
+// that cost nothing at all.
+print("money axis labels:")
+check(moneyAxisLabel(0) == "$0", "zero is the only thing that prints $0")
+check(moneyAxisLabel(0.4) != "$0", "forty cents does not")
+check(moneyAxisLabel(0.4).contains("0.4"), "it shows the cents instead")
+check(moneyAxisLabel(7.8) == "$8", "whole dollars round rather than truncate")
+check(moneyAxisLabel(7.2) == "$7", "in both directions")
+check(moneyAxisLabel(120) == "$120", "and a large value is plain")
+
 print(failures == 0 ? "\nALL PASS" : "\n\(failures) FAILURE(S)")
 exit(failures == 0 ? 0 : 1)

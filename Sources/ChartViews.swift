@@ -31,12 +31,33 @@ struct ChartCtx {
     var currentRate: Double = 0
     /// Series the user has switched off in the "Session + week %" legend, and the callback that
     /// toggles one. Supplied by the card (persisted); the Settings gallery leaves them inert.
+    /// The conversations producing tokens right now, so a chart can mark one as live.
+    var activeStreams: [(name: String, project: String, tok: Int)] = []
+    /// The reader's chat-name truncation choice, so row charts shorten names the way the card does.
+    var truncation: ChatTruncation = .middle
     var hiddenSeries: Set<String> = []
     var onToggleSeries: (String) -> Void = { _ in }
     /// Window start, clamped to the earliest sample for the "all time" sentinel.
+    ///
+    /// Never later than half an hour ago, whatever the data says. Every chart builds its x-domain
+    /// as `lower ... now`, and a domain whose start is after its end is not a rendering quirk, it
+    /// is a crash. The earliest record can sit in the future for reasons entirely outside this
+    /// app: a machine whose clock was wrong when the log was written, or a timestamp read in the
+    /// wrong zone. The charts should look odd in that case, not take the app down.
     func lower(_ earliest: Date?, now: Date) -> Date {
-        window >= 3.0e9 ? (earliest ?? now.addingTimeInterval(-1800)) : now.addingTimeInterval(-window)
+        // A fixed window is already in the past by construction; only the data-driven one can
+        // wander forward. Clamping both would silently widen every short window to thirty minutes.
+        guard window >= 3.0e9 else { return now.addingTimeInterval(-max(60, window)) }
+        let newest = now.addingTimeInterval(-1800)
+        return min(earliest ?? newest, newest)
     }
+
+    /// The line width every time-series chart draws with.
+    ///
+    /// "Hairline" is offered to the user as a chart STYLE, and it thinned exactly one chart:
+    /// BurnRate consulted ctx.style while Cumulative, both usage lines and MonthCost hardcoded
+    /// 1.6. A style that changes one chart out of five is not a style, it is a bug with a label.
+    var lineW: CGFloat { style == .hairline ? 1 : 1.6 }
 
     /// A clock that only moves every 15 seconds.
     ///
@@ -100,6 +121,12 @@ extension Double {
     }
 }
 
+/// How much of its slot a categorical bar fills.
+///
+/// Eight sibling charts used five different fractions between 0.62 and 0.76, which reads as bars of
+/// slightly different weights sitting in a row of charts that are meant to be one family.
+let kBarFill: Double = 0.7
+
 let kChartH: CGFloat = 74
 
 /// One chart body by kind. The single dispatch point shared by the popover (MonitorChart) and the
@@ -152,47 +179,57 @@ extension EnvironmentValues {
     }
 }
 
-/// The one-line summary under every chart. Bold headline, faint continuation.
+/// The one-line summary under every chart: bold number, faint caption, at the content edge.
 ///
-/// `gutter` is the 26pt indent that lines the summary up with a plotted chart's y-axis labels.
-/// Charts drawn as plain ROWS have no axis and no gutter, and indenting their summary by 26pt just
-/// left it hanging in space away from the rows it summarises.
-func statLine(_ big: String, _ small: String, _ p: Palette, tint: Color? = nil,
-              gutter: Bool = true, trailing: Bool = false) -> some View {
-    StatLine(big: big, small: small, p: p, tint: tint, gutter: gutter, trailingAligned: trailing)
+/// It used to carry a 26pt indent so it lined up with a plotted chart's y-axis labels, plus an
+/// opt-out for the charts that have no axis, plus a right-aligned variant for one chart that
+/// totalled a column. Three positions for one idea. Every section heading in the card sits at the
+/// content edge, so every summary sits at the content edge too, and a reader's eye finds all of
+/// them in the same place.
+func statLine(_ big: String, _ small: String, _ p: Palette, tint: Color? = nil) -> some View {
+    StatLine(big: big, small: small, p: p, tint: tint)
 }
 
 struct StatLine: View {
     let big: String, small: String, p: Palette
     var tint: Color? = nil
-    var gutter: Bool = true
-    /// Push the summary to the RIGHT, under a column of numbers it is the total of.
-    var trailingAligned: Bool = false
     @Environment(\.chartHasCadence) private var cadence
     var body: some View {
         HStack(spacing: 4) {
-            if trailingAligned { Spacer(minLength: 4) }
-            if !small.isEmpty, trailingAligned {
-                Text(small).font(.system(size: 9.5)).foregroundStyle(p.faint).lineLimit(1)
-            }
             Text(big).font(.system(size: 11, weight: .semibold)).foregroundStyle(tint ?? p.ink)
                 .monospacedDigit().lineLimit(1).fixedSize()
-            if !small.isEmpty, !trailingAligned {
+            if !small.isEmpty {
                 Text(small).font(.system(size: 9.5)).foregroundStyle(p.faint).lineLimit(1)
             }
-            if !trailingAligned { Spacer(minLength: 4) }
+            Spacer(minLength: 4)
         }
-        .padding(.leading, gutter ? 26 : 2)
+        // The trailing reserve is the live cadence indicator's slot, which the card draws on top
+        // of this row. The gallery has no indicator, so it keeps the space.
+        // No leading gutter: the in-box left edge is the box's content edge and nothing else,
+        // so the stat line starts exactly where the rows and the chart above it start.
         .padding(.trailing, cadence ? 52 : 8)
     }
 }
+
+/// The trailing value column shared by every row-style chart, so a number in one chart ends on the
+/// same edge as a number in the next.
+let kRowValueWidth: CGFloat = 64
+/// The bar height shared by every row-style chart.
+let kRowBarHeight: CGFloat = 5
 
 /// The mark in a chart legend: a short length of the line it stands for, dashed when the line is.
 struct LegendSwatch: View {
     let colour: Color
     let dashed: Bool
+    /// Whether the series this swatch names is currently drawn.
+    ///
+    /// A switched-off series was marked by opacity alone, at 0.32, which is a difference the eye
+    /// reads as "unimportant" rather than as "off": the reader cannot tell a faint line from a
+    /// hidden one. Off is drawn hollow, which is a state rather than a shade.
+    var on: Bool = true
     var body: some View {
-        Capsule().fill(colour)
+        Capsule().fill(on ? AnyShapeStyle(colour) : AnyShapeStyle(Color.clear))
+            .overlay { if !on { Capsule().strokeBorder(colour, lineWidth: 1) } }
             .frame(width: 9, height: 2.5)
             .mask(alignment: .leading) {
                 if dashed {
@@ -214,7 +251,11 @@ struct LegendSwatch: View {
 /// labels crammed into 264pt, which stops being text and becomes the grey smear under the bars.
 /// Thinning counts back from the newest, so the most recent day always keeps its label, and hover
 /// still names every single bar exactly, so nothing is actually lost.
-func thinnedCatXAxis(_ names: [String], _ p: Palette, size: CGFloat = 8,
+/// Categorical x-axis ticks, thinned so labels never collide.
+///
+/// 8.5 is the card's tick tier. It defaulted to 8 and call sites passed 8.5 or nothing, so one role
+/// was drawn at three sizes across sibling charts.
+func thinnedCatXAxis(_ names: [String], _ p: Palette, size: CGFloat = 8.5,
                      maxLabels: Int = 7) -> some AxisContent {
     let step = max(1, Int((Double(names.count) / Double(maxLabels)).rounded(.up)))
     let last = names.count - 1
@@ -242,8 +283,28 @@ struct BurnRateChart: View {
         let win = memo.value(ctx.dataKey + "|burn\(ctx.burnSamples.count)") {
             ctx.burnSamples.filter { $0.t >= lower }
         }
-        let mean = win.isEmpty ? 0 : win.map(\.v).reduce(0, +) / Double(win.count)
+        // Time-weighted, not a plain mean over samples. The sampler runs about thirty times faster
+        // while tokens are flowing than while idle, so a busy minute contributes thirty times as
+        // many samples as a quiet one and a straight average is pulled toward whatever was
+        // happening most often rather than for the longest. Each sample carries the span until the
+        // next one; the last carries the median span so a trailing sample cannot dominate.
+        let mean: Double = {
+            guard win.count > 1 else { return win.first?.v ?? 0 }
+            var gaps: [Double] = []
+            for i in 1..<win.count { gaps.append(max(0, win[i].t.timeIntervalSince(win[i - 1].t))) }
+            let typical = gaps.sorted()[gaps.count / 2]
+            var num = 0.0, den = 0.0
+            for (i, s) in win.enumerated() {
+                let w = i < gaps.count ? gaps[i] : typical
+                num += s.v * w; den += w
+            }
+            return den > 0 ? num / den : win.map(\.v).reduce(0, +) / Double(win.count)
+        }()
+        // The domain gets the card-wide 1.1 headroom six other charts already use. The CEILING is
+        // unchanged and still honest; this is only so the newest sample's dot, when it clamps to
+        // that ceiling, is not drawn half outside the plot.
         let yMax = burnCeiling(percentile(win.map(\.v), 0.97))
+        let yDomainMax = yMax * 1.1
         // Steps stay raw (inventing slopes between bursts is exactly what the stepped view avoids);
         // the line view smooths, because a hairline through raw spiky data is unreadable.
         let base = bucketed(win, lower: lower, upper: now, buckets: 140, pickMax: true)
@@ -254,12 +315,13 @@ struct BurnRateChart: View {
             } else {
                 Chart {
                     if mean > 1500 {
+                        // The dashed rule, with no label on it. The label sat at the trailing edge
+                        // of the plot, which is exactly where the newest point lands, so on a busy
+                        // chart it printed itself over the live data. The stat line under the chart
+                        // already reads "avg NNN", so nothing is lost by taking it off the plot.
                         RuleMark(y: .value("avg", min(mean, yMax)))
                             .foregroundStyle(p.sub.opacity(0.5))
                             .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                            .annotation(position: .top, alignment: .trailing, spacing: 1) {
-                                Text("avg \(fmtTok(Int(mean)))").font(.system(size: 9, weight: .medium)).foregroundStyle(p.sub)
-                            }
                     }
                     ForEach(disp, id: \.t) { s in
                         if ctx.style == .area || ctx.style == .gradient {
@@ -286,11 +348,11 @@ struct BurnRateChart: View {
                             .foregroundStyle(ctx.accent).symbolSize(44)
                             .annotation(position: .top, alignment: s.t > lower.addingTimeInterval(now.timeIntervalSince(lower) / 2) ? .trailing : .leading, spacing: 2) {
                                 let dom = dominantProject(ctx.records, around: s.t, halfWidth: max(150, now.timeIntervalSince(lower) / 60))
-                                chartCallout("\(fmtTok(Int(s.v))) / min", relTimeLabel(s.t, now: now), p, detail: dom.map { "→ \($0.name)" })
+                                chartCallout("\(fmtTok(Int(s.v)))/min", relTimeLabel(s.t, now: now), p, detail: dom.map { "→ \($0.name)" })
                             }
                     }
                 }
-                .chartYScale(domain: 0...yMax)
+                .chartYScale(domain: 0...yDomainMax)
                 .chartXScale(domain: lower...now)
                 .chartYAxis { tokenYAxis(yMax, p, style: ctx.style) }
                 .chartXAxis { timeXAxis(lower, now, p, style: ctx.style) }
@@ -307,7 +369,7 @@ struct BurnRateChart: View {
                 .accessibilityLabel("Burn rate")
                 .accessibilityValue("Average \(fmtTok(Int(mean))) tokens per minute, peak \(fmtTok(Int(disp.map(\.v).max() ?? 0)))")
             }
-            statLine(sel.map { "\(fmtTok(Int($0.v))) / min" } ?? "\(fmtTok(Int(max(0, ctx.currentRate)))) / min",
+            statLine(sel.map { "\(fmtTok(Int($0.v)))/min" } ?? "\(fmtTok(Int(max(0, ctx.currentRate))))/min",
                      sel != nil ? relTimeLabel(sel!.t, now: now) : "· avg \(fmtTok(Int(mean)))", p)
         }
     }
@@ -396,7 +458,7 @@ struct CumulativeChart: View {
                                                             startPoint: .top, endPoint: .bottom))
                             .interpolationMethod(.monotone)
                         LineMark(x: .value("t", b.t), y: .value("total", b.v))
-                            .foregroundStyle(ctx.accent).lineStyle(StrokeStyle(lineWidth: 1.6))
+                            .foregroundStyle(ctx.accent).lineStyle(StrokeStyle(lineWidth: ctx.lineW))
                             .interpolationMethod(.monotone)
                     }
                     if let s = sel {
@@ -489,7 +551,12 @@ struct BurndownChart: View {
             let t = now.addingTimeInterval(secs)
             return t < reset ? t : nil
         }()
-        let curve = runOut != nil ? p.warning : tint
+        // The curve keeps its METRIC's colour, always. Swapping the entire line, area and dots to
+        // warning whenever a run-out exists is why the week reads in a different colour here than
+        // in every other place it appears, which looks like a different measurement rather than the
+        // same one in trouble. The warning is already carried three times over: by the dashed
+        // forecast segment, the run-out point, and the "Empty ~" caption.
+        let curve = tint
         let idx = Array(pts.indices)
         return AnyView(VStack(alignment: .leading, spacing: 5) {
             Chart {
@@ -497,14 +564,15 @@ struct BurndownChart: View {
                               yStart: .value("y", 0.0), yEnd: .value("y", 1.0))
                     .foregroundStyle(p.ink.opacity(0.03))
                 LineMark(x: .value("t", start), y: .value("pace", 1.0), series: .value("s", "pace"))
-                    .foregroundStyle(p.sub.opacity(0.45)).lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                    .foregroundStyle(p.sub.opacity(0.5)).lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
                 LineMark(x: .value("t", reset), y: .value("pace", 0.0), series: .value("s", "pace"))
-                    .foregroundStyle(p.sub.opacity(0.45)).lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                PointMark(x: .value("t", start.addingTimeInterval(window / 2)), y: .value("pace", 0.5))
-                    .symbolSize(0)
-                    .annotation(position: .top, spacing: 1) {
-                        Text("even pace").font(.system(size: 8)).foregroundStyle(p.faint)
-                    }
+                    .foregroundStyle(p.sub.opacity(0.5)).lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                // The "even pace" caption is gone. It rode an invisible PointMark at the middle of
+                // the plot, which is exactly where the diagonal it labels crosses the data line, so
+                // the words sat on top of the curve. The dashed diagonal is self-explanatory next
+                // to the curve it is compared against, and the stat line and the spoken value both
+                // say the same thing in words already. (BurnRateChart lost its in-plot label for
+                // the same reason.)
                 RuleMark(x: .value("t", now)).foregroundStyle(p.ink.opacity(0.18)).lineStyle(StrokeStyle(lineWidth: 1))
                 if ctx.style == .area || ctx.style == .gradient {
                     ForEach(idx, id: \.self) { i in
@@ -516,7 +584,7 @@ struct BurndownChart: View {
                 }
                 ForEach(idx, id: \.self) { i in
                     LineMark(x: .value("t", pts[i].t), y: .value("left", pts[i].r), series: .value("s", "left"))
-                        .foregroundStyle(curve).lineStyle(StrokeStyle(lineWidth: 1.8, lineJoin: .round))
+                        .foregroundStyle(curve).lineStyle(StrokeStyle(lineWidth: ctx.lineW, lineJoin: .round))
                         .interpolationMethod(.monotone)
                 }
                 if let ro = runOut {
@@ -573,7 +641,7 @@ struct BurndownChart: View {
             if let ro = runOut {
                 statLine("Empty ~\(shortClock(ro))", "", p, tint: p.warning)
             } else {
-                statLine("On pace", "· \(weekLeftString(reset)) of runway", p)
+                statLine("On pace", "· \(weekLeftString(reset)) left", p)   // one vocabulary for time remaining
             }
         })
     }
@@ -585,16 +653,25 @@ struct UsageLinesChart: View {
     let ctx: ChartCtx
     @State private var selT: Date?
     @State private var memo = ChartMemo()
+    @State private var memo2 = ChartMemo()   // the two headline series, keyed the same way
     var body: some View {
         let p = ctx.p
         let now = ctx.tick
         let lower = ctx.lower(ctx.usageSamples.first?.t, now: now)
-        let s = bucketed(ctx.usageSamples.filter { $0.t >= lower }, lower: lower, upper: now, buckets: 120, pickMax: false)
-        let w = bucketed(ctx.weeklySamples.filter { $0.t >= lower }, lower: lower, upper: now, buckets: 120, pickMax: false)
+        // Memoised with everything else in this body. These two filter and bucket the whole
+        // retained series, and the body re-runs on every mouse move while the chart is hovered, so
+        // they were the one part of this chart still paying full price per frame.
+        let (s, w) = memo2.value(ctx.dataKey) {
+            (bucketed(ctx.usageSamples.filter { $0.t >= lower }, lower: lower, upper: now, buckets: 120, pickMax: false),
+             bucketed(ctx.weeklySamples.filter { $0.t >= lower }, lower: lower, upper: now, buckets: 120, pickMax: false))
+        }
         // One line per model, each showing the share of the weekly allowance that model accounted
         // for, so the model lines add up to the Week line. See modelWeekShareSeries in ChartData.swift.
         // Memoised: it walks a week of records, and this body re-runs on every mouse move.
-        let models = memo.value(ctx.dataKey + "|wk\(ctx.weeklyPct)") {
+        // Only on day-scale windows and wider. A week's worth of share drawn across four hours is
+        // a set of flat dashes, and a model with a single sample in that window is one floating
+        // speck. The legend still lists them in its hidden style, so the capability stays visible.
+        let models = ctx.window < 86_400 ? [] : memo.value(ctx.dataKey + "|wk\(ctx.weeklyPct)") {
             modelWeekShareSeries(records: ctx.records, weeklyPct: ctx.weeklyPct,
                                  weeklyResetAt: ctx.weeklyResetAt, now: now)
                 .map { (label: $0.label,
@@ -619,13 +696,13 @@ struct UsageLinesChart: View {
                     if shown("Session") {
                         ForEach(s, id: \.t) { pt in
                             LineMark(x: .value("t", pt.t), y: .value("v", pt.v), series: .value("k", "Session"))
-                                .foregroundStyle(ctx.accent).lineStyle(StrokeStyle(lineWidth: 1.6)).interpolationMethod(.monotone)
+                                .foregroundStyle(ctx.accent).lineStyle(StrokeStyle(lineWidth: ctx.lineW)).interpolationMethod(.monotone)
                         }
                     }
                     if shown("Week") {
                         ForEach(w, id: \.t) { pt in
                             LineMark(x: .value("t", pt.t), y: .value("v", pt.v), series: .value("k", "Week"))
-                                .foregroundStyle(ctx.secondary).lineStyle(StrokeStyle(lineWidth: 1.6)).interpolationMethod(.monotone)
+                                .foregroundStyle(ctx.secondary).lineStyle(StrokeStyle(lineWidth: ctx.lineW)).interpolationMethod(.monotone)
                         }
                     }
                     ForEach(models, id: \.label) { m in
@@ -656,7 +733,12 @@ struct UsageLinesChart: View {
                                     (shown("Session") ? "S \(Int(((selS?.v ?? 0) * 100).rounded()))%" : "")
                                     + (shown("Session") && shown("Week") ? "  \u{00B7}  " : "")
                                     + (shown("Week") ? "W \(Int(((selW?.v ?? 0) * 100).rounded()))%" : ""),
-                                    relTimeLabel(t, now: now), p,
+                                    // The SAMPLE's own time, not the pointer's. These readings
+                                    // come from nearestSample, which can be minutes away in a
+                                    // sparse stretch, and labelling them with wherever the mouse
+                                    // happened to be told the reader a value belonged to a moment
+                                    // it did not.
+                                    relTimeLabel(selS?.t ?? selW?.t ?? t, now: now), p,
                                     detail: each.isEmpty ? nil : each.joined(separator: "  \u{00B7}  "))
                             }
                     }
@@ -690,10 +772,18 @@ struct UsageLinesChart: View {
                                     // colour is clay, and clay is also the default accent), as can
                                     // Week and Opus. Solid versus dashed tells them apart even
                                     // when the colours do not.
-                                    LegendSwatch(colour: item.colour, dashed: item.derived)
+                                    LegendSwatch(colour: item.colour, dashed: item.derived,
+                                                 on: shown(item.key))
                                     Text(item.key).font(.system(size: 9.5)).foregroundStyle(p.sub).fixedSize()
                                 }
-                                .opacity(shown(item.key) ? 1 : 0.32)
+                                // The fade stays, but it is no longer the only signal: a hollow
+                                // swatch says "off" where a shade only says "quiet".
+                                .opacity(shown(item.key) ? 1 : 0.45)
+                                // Item 64: these rows hit-test about 12pt tall in a stack 3pt
+                                // apart, so the pointer lands between two toggles as often as on
+                                // one. A contiguous 18pt band per row fixes that without moving
+                                // anything: the padding is inside the button's own label.
+                                .padding(.vertical, 3)
                                 .contentShape(Rectangle())
                             }
                             .buttonStyle(.plain).focusable(false)
@@ -721,6 +811,14 @@ struct ByModelChart: View {
         let n = 14
         let rects = memo.value(ctx.dataKey) { modelStackRects(ctx.records, from: lower, to: now, buckets: n) }
         let families = Array(Set(rects.map(\.key))).sorted()
+        // The legend shows the four BIGGEST families. Ranking by name and taking the first four
+        // meant that with five models in play the omitted one was chosen alphabetically, so the
+        // legend could leave out a heavier model than one it listed.
+        let legendFamilies: [String] = {
+            var tokens: [String: Double] = [:]
+            for r in rects { tokens[r.key, default: 0] += (r.y1 - r.y0) }
+            return families.sorted { (tokens[$0] ?? 0, $1) > (tokens[$1] ?? 0, $0) }.prefix(4).map { $0 }
+        }()
         let colTop = rects.map(\.y1).max() ?? 0
         let total = rects.reduce(0) { $0 + ($1.y1 - $1.y0) }
         let selRects = sel.flatMap { d in rects.filter { $0.t0 <= d && $0.t1 >= d } } ?? []
@@ -762,7 +860,10 @@ struct ByModelChart: View {
                 .accessibilityValue("\(fmtTok(Int(total))) tokens across \(families.count) models")
             }
             HStack(spacing: 8) {
-                ForEach(families.prefix(4), id: \.self) { f in
+                // Ranked by usage, not by name. `families` is a sorted SET, so taking the first
+                // four dropped whichever family happened to sort last, which with five models
+                // present meant the legend could omit a heavier one than it showed.
+                ForEach(legendFamilies, id: \.self) { f in
                     HStack(spacing: 4) {
                         Circle().fill(modelHue(f, p)).frame(width: 5, height: 5)
                         Text(f).font(.system(size: 10)).foregroundStyle(p.sub).fixedSize()
@@ -792,7 +893,7 @@ struct ByProjectChart: View {
             } else {
                 Chart {
                     ForEach(rows) { r in
-                        BarMark(x: .value("tokens", r.v), y: .value("project", r.name), height: .ratio(0.62))
+                        BarMark(x: .value("tokens", r.v), y: .value("project", r.name), height: .ratio(kBarFill))
                             .foregroundStyle(ctx.accent.opacity(sel == nil || sel?.id == r.id ? 0.8 : 0.35))
                             .cornerRadius(2)
                             .annotation(position: .trailing, spacing: 3) {
@@ -846,23 +947,25 @@ struct CostPerDayChart: View {
             } else {
                 Chart {
                     ForEach(rows) { r in
-                        BarMark(x: .value("day", r.name), y: .value("cost", r.v), width: .ratio(0.7))
+                        BarMark(x: .value("day", r.name), y: .value("cost", r.v), width: .ratio(kBarFill))
                             .foregroundStyle(ctx.accent.opacity(sel == nil || sel?.id == r.id ? 0.85 : 0.35))
                             .cornerRadius(1.5)
                     }
                 }
                 .chartYAxis {
-                    AxisMarks(position: .leading, values: [0, peak]) { v in
+                    // Three labels, like the percent axes. Two give a reader the floor and the ceiling and
+        // nothing to judge a value in between against.
+        AxisMarks(position: .leading, values: [0, peak / 2, peak]) { v in
                         AxisGridLine().foregroundStyle(p.ink.opacity(v.as(Double.self) == 0 ? 0.14 : 0.07))
                         AxisValueLabel {
                             if let d = v.as(Double.self) {
-                                Text(d >= 1 ? "$\(Int(d))" : "$0").font(.system(size: 9, weight: .medium, design: .monospaced))
+                                Text(moneyAxisLabel(d)).font(.system(size: 9, weight: .medium, design: .monospaced))
                                     .foregroundStyle(p.sub).shadow(color: p.bg, radius: 1.5)
                             }
                         }
                     }
                 }
-                .chartXAxis { thinnedCatXAxis(rows.map(\.name), p, size: 8.5, maxLabels: 7) }
+                .chartXAxis { thinnedCatXAxis(rows.map(\.name), p, maxLabels: 7) }
                 .chartPlotStyle { $0.background(Color.clear) }
                 .transaction { $0.animation = nil }
                 .frame(height: ctx.plotH)
@@ -1026,7 +1129,9 @@ struct DayHeatmapChart: View {
             AxisGridLine().foregroundStyle(p.ink.opacity(v.as(Double.self) == 0 ? 0.14 : 0.07))
             AxisValueLabel {
                 if let d = v.as(Double.self) {
-                    Text("\(Int(d * 100))%").font(.system(size: 9, weight: .medium, design: .monospaced))
+                    // Rounded, like every other percent in the app. Truncating an axis label puts
+                    // "49%" on a gridline drawn at 49.6, which is a tick that lies about where it is.
+                    Text("\(Int((d * 100).rounded()))%").font(.system(size: 9, weight: .medium, design: .monospaced))
                         .foregroundStyle(p.sub).shadow(color: p.bg, radius: 1.5)
                 }
             }

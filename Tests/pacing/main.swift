@@ -87,5 +87,17 @@ let done = paceReading(pct: 1.0, secondsToReset: 2 * H, window: W5, atLimitLabel
 check(done.caption.hasPrefix("limit reached"), "at the cap it reports the cap, not a forecast")
 check(done.secondsToEmpty == nil || done.secondsToEmpty == 0, "with nothing left to project")
 
+// Both caps carry floor defaults until real sessions have been seen. Dividing one placeholder by
+// another produced a confident "about 2 sessions left" that was arithmetic on two guesses.
+print("no session count before the caps are learned:")
+do {
+    let learned = weeklyPacing(fractionUsed: 0.3, ratePerHour: 0.001, hoursUntilReset: 100, sessionFraction: 0.1)
+    check(learned.summary.contains("sessions left"), "with a known session size it still counts them")
+    let unknown = weeklyPacing(fractionUsed: 0.3, ratePerHour: 0.001, hoursUntilReset: 100, sessionFraction: 0)
+    check(!unknown.summary.contains("session"), "with nothing learned it says nothing about sessions")
+    check(unknown.summary.contains("headroom"), "but the verdict itself still stands")
+    check(unknown.sessionsRemaining == 0, "and the number reports as zero rather than infinity")
+}
+
 print(failures == 0 ? "\nALL PACING TESTS PASSED" : "\n\(failures) FAILURE(S)")
 exit(failures == 0 ? 0 : 1)

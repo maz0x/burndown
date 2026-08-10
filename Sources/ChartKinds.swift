@@ -207,9 +207,15 @@ func bucketRecords(_ records: [UsageRecord], from: Date, to: Date, buckets n: In
     let span = to.timeIntervalSince(from)
     let step = span / Double(n)
     var sums = [Double](repeating: 0, count: n)
+    // burnTokens, not totalTokens. This is the volume chart that sits beside the burn-rate chart,
+    // and the live rate has always excluded cache reads. Counting them here meant the two charts in
+    // one family measured different things: the bars could tower while the rate beside them barely
+    // moved, because a long conversation re-reads an enormous amount of cache to do very little.
+    // cumulativeRecords is built on this, so it follows. The cache chart still counts reads, since
+    // that is what it is about.
     for r in records where r.date >= from && r.date <= to {
         let i = min(n - 1, max(0, Int(r.date.timeIntervalSince(from) / step)))
-        sums[i] += Double(r.totalTokens)
+        sums[i] += Double(r.burnTokens)
     }
     return (0..<n).map { TokBucket(id: $0, t: from.addingTimeInterval(step * (Double($0) + 0.5)), v: sums[$0]) }
 }
@@ -286,9 +292,11 @@ func costPerDay(_ records: [UsageRecord], days: Int, now: Date = Date()) -> [Cat
             sums[d, default: 0] += r.cost
         }
     }
-    // Labels are the categorical x values, so they MUST be unique: past 31 days a bare
-    // day-of-month repeats and Swift Charts would merge unrelated days into one bar.
-    let f = DateFormatter(); f.dateFormat = days > 31 ? "M/d" : (days > 9 ? "d" : "EEE")
+    // Labels are the categorical x values, so they MUST be unique, and a bare day-of-month is only
+    // unique while the window is shorter than the shortest month it can span. Thirty-one days from
+    // the first of April ends on the first of May, and Swift Charts merges those two bars into one
+    // without a word. The threshold is 27, not 31, because February exists.
+    let f = DateFormatter(); f.dateFormat = days > 27 ? "M/d" : (days > 9 ? "d" : "EEE")
     return (0..<days).reversed().compactMap { back in
         guard let d = cal.date(byAdding: .day, value: -back, to: today) else { return nil }
         return CatValue(id: days - back, name: f.string(from: d), v: sums[d] ?? 0)
@@ -299,7 +307,12 @@ func costPerDay(_ records: [UsageRecord], days: Int, now: Date = Date()) -> [Cat
 /// fresh install is not diluted by empty history).
 func hourOfDayProfile(_ records: [UsageRecord], days: Int, now: Date = Date()) -> [TokBucket] {
     let cal = Calendar.current
-    let cutoff = cal.date(byAdding: .day, value: -days, to: now) ?? now
+    // Cut at a day boundary, not at this instant. Both of these divide by the number of days that
+    // saw any activity, so a cutoff of "this time N days ago" lets a partial day contribute a
+    // fraction of its tokens while still counting as a whole day in the divisor, pulling every
+    // average down. Whole days in, whole days out.
+    let cutoff = cal.date(byAdding: .day, value: -(days - 1), to: cal.startOfDay(for: now))
+        ?? cal.startOfDay(for: now)
     var sums = [Double](repeating: 0, count: 24)
     var activeDays: Set<Date> = []
     for r in records where r.date >= cutoff {
@@ -365,9 +378,11 @@ func dailyTokens(_ records: [UsageRecord], days: Int, now: Date = Date()) -> [Ca
         }
         sums[lo] += Double(r.totalTokens)
     }
-    // Labels are the categorical x values, so they MUST be unique: past 31 days a bare
-    // day-of-month repeats and Swift Charts would merge unrelated days into one bar.
-    let f = DateFormatter(); f.dateFormat = days > 31 ? "M/d" : (days > 9 ? "d" : "EEE")
+    // Labels are the categorical x values, so they MUST be unique, and a bare day-of-month is only
+    // unique while the window is shorter than the shortest month it can span. Thirty-one days from
+    // the first of April ends on the first of May, and Swift Charts merges those two bars into one
+    // without a word. The threshold is 27, not 31, because February exists.
+    let f = DateFormatter(); f.dateFormat = days > 27 ? "M/d" : (days > 9 ? "d" : "EEE")
     return starts.indices.map { CatValue(id: $0 + 1, name: f.string(from: starts[$0]), v: sums[$0]) }
 }
 
@@ -375,31 +390,15 @@ func dailyTokens(_ records: [UsageRecord], days: Int, now: Date = Date()) -> [Ca
 ///
 /// Ninety bars inside a 264pt card is about a pixel and a half each: not a chart, a texture. Past
 /// five weeks the popover asks for weeks instead, which is the same information at a size the eye
-/// can actually use. The wide Insights window keeps the daily view.
-func weeklyTokens(_ records: [UsageRecord], days: Int, now: Date = Date()) -> [CatValue] {
-    let cal = Calendar.current
-    let daily = dailyTokens(records, days: days, now: now)
-    guard !daily.isEmpty else { return [] }
-    let weeks = Int((Double(days) / 7).rounded(.up))
-    var sums = [Double](repeating: 0, count: weeks)
-    // daily is oldest first, so bucketing by position keeps the order without touching Calendar.
-    for (i, d) in daily.enumerated() {
-        let w = min(weeks - 1, i / 7)
-        sums[w] += d.v
-    }
-    let f = DateFormatter(); f.dateFormat = "M/d"
-    let today = cal.startOfDay(for: now)
-    return (0..<weeks).map { w in
-        let back = days - 1 - w * 7
-        let start = cal.date(byAdding: .day, value: -max(0, back), to: today) ?? today
-        return CatValue(id: w + 1, name: f.string(from: start), v: sums[w])
-    }
-}
+
 
 /// Average tokens by weekday (Mon…Sun), across the days covered.
 func weekdayProfile(_ records: [UsageRecord], days: Int, now: Date = Date()) -> [CatValue] {
     let cal = Calendar.current
-    let cutoff = cal.date(byAdding: .day, value: -days, to: now) ?? now
+    // Day-aligned, for the same reason as hourOfDayProfile: a partial boundary day would add a
+    // slice of tokens to one weekday while counting as a full day against its average.
+    let cutoff = cal.date(byAdding: .day, value: -(days - 1), to: cal.startOfDay(for: now))
+        ?? cal.startOfDay(for: now)
     var sums = [Double](repeating: 0, count: 7)      // index 0 = Monday
     var seen: [Set<Date>] = Array(repeating: [], count: 7)
     for r in records where r.date >= cutoff {
@@ -418,8 +417,11 @@ func topChats(_ records: [UsageRecord], from: Date, limit: Int = 4) -> [CatValue
         sums[r.session, default: 0] += Double(r.totalTokens)
     }
     return sums.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }
+        // RAW titles. Baking the display name in here froze it into the memoised rows, whose key
+        // carries no alias state, so renaming a chat did nothing visible until the data happened to
+        // change. The chart applies the alias at render time, where ChatNames is observed.
         .prefix(limit).enumerated().map {
-            CatValue(id: $0.offset, name: ChatNames.shared.display($0.element.key), v: $0.element.value)
+            CatValue(id: $0.offset, name: $0.element.key, v: $0.element.value)
         }
 }
 
@@ -439,16 +441,25 @@ func shareSplit(_ records: [UsageRecord], from: Date, by key: (UsageRecord) -> S
 struct SessionBlock: Identifiable, Equatable { let id: Int; let start: Date; let tokens: Double }
 
 func sessionBlocks(_ records: [UsageRecord], days: Int, now: Date = Date()) -> [SessionBlock] {
-    let cutoff = Calendar.current.date(byAdding: .day, value: -days, to: now) ?? now
+    // Day-aligned, like every other windowed chart here.
+    let sod = Calendar.current.startOfDay(for: now)
+    let cutoff = Calendar.current.date(byAdding: .day, value: -(days - 1), to: sod) ?? sod
     let sorted = records.filter { $0.date >= cutoff }.sorted { $0.date < $1.date }
     guard !sorted.isEmpty else { return [] }
     let five: TimeInterval = 5 * 3600
+    // A session block starts at the top of the hour containing its first message, exactly as the
+    // engine's own buildBlocks does. Without that anchor this chart cut its blocks at a different
+    // instant from the five-hour window the rest of the app counts against, so the bars could show
+    // a boundary the session card disagreed with, by up to an hour.
+    func floorHour(_ d: Date) -> Date {
+        Date(timeIntervalSinceReferenceDate: (d.timeIntervalSinceReferenceDate / 3600).rounded(.down) * 3600)
+    }
     var out: [SessionBlock] = []
-    var start = sorted[0].date, last = sorted[0].date, sum = 0.0, id = 0
+    var start = floorHour(sorted[0].date), last = sorted[0].date, sum = 0.0, id = 0
     for r in sorted {
         if r.date.timeIntervalSince(start) >= five || r.date.timeIntervalSince(last) >= five {
             out.append(SessionBlock(id: id, start: start, tokens: sum)); id += 1
-            start = r.date; sum = 0
+            start = floorHour(r.date); sum = 0
         }
         sum += Double(r.totalTokens); last = r.date
     }
@@ -521,6 +532,11 @@ func cumulativeCost(_ records: [UsageRecord], days: Int, now: Date = Date()) -> 
     let per = costPerDay(records, days: days, now: now)
     var run = 0.0
     let pts = per.map { d -> CatValue in run += d.v; return CatValue(id: d.id, name: d.name, v: run) }
+    // Every day in this window has already happened, so there is no future here to forecast. What
+    // the second number can honestly say is what a full window would come to if every day looked
+    // like the days actually worked: spend divided by the days that saw any, times the window. The
+    // caption says "at this pace" rather than "heading for" for exactly that reason. It reads high
+    // for anyone who works in bursts, which is the truth about a per-working-day rate, not a bug.
     let elapsed = max(1, per.filter { $0.v > 0 }.count)
     let projected = run / Double(elapsed) * Double(days)
     return (pts, projected)

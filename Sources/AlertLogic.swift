@@ -12,7 +12,12 @@ func isNewCycle(_ stored: Date??, _ reset: Date?) -> Bool {
     switch (prev, reset) {
     case (nil, nil): return false
     case (nil, _), (_, nil): return true
-    case let (a?, b?): return b.timeIntervalSince(a) > 120
+    // A window is new when its reset time MOVED, in either direction. Only a forward jump used to
+    // count, so a reset that came back earlier (the service correcting itself, a plan change, or
+    // simply the clock being adjusted) left the fired-levels set intact and every threshold alert
+    // silently disarmed for that whole window. The guard band stays at two minutes either way, so
+    // ordinary jitter in the reported time still does not re-arm anything.
+    case let (a?, b?): return abs(b.timeIntervalSince(a)) > 120
     }
 }
 

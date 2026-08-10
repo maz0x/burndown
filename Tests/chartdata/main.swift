@@ -91,5 +91,67 @@ do {
           "and the sum still lands on the weekly reading")
 }
 
+
+// With no weekly reset known the app falls back to a rolling seven days everywhere else, so the
+// model lines have to calibrate against the SAME seven days. Anchoring at the earliest record
+// instead spread a seven-day percentage over however much history was retained, so every line came
+// out a fraction of its true height exactly when the service was unreachable.
+print("no reset time known:")
+do {
+    let now = Date()
+    var recs: [UsageRecord] = []
+    // 30 days of history, but only the last 7 belong to this week.
+    for d in 0..<30 {
+        recs.append(UsageRecord(date: now.addingTimeInterval(-Double(d) * 86_400 - 3600),
+                                model: "claude-opus-5", project: "p", session: "s",
+                                input: 1000, output: 0, cache5m: 0, cache1h: 0, cacheRead: 0))
+    }
+    let series = modelWeekShareSeries(records: recs, weeklyPct: 70, weeklyResetAt: nil, now: now)
+    let top = series.first?.samples.last?.v ?? 0
+    check(abs(top - 70) < 0.01, "the one model in use ends at the full weekly reading, not a fraction of it")
+    let firstT = series.first?.samples.first?.t ?? now
+    check(abs(firstT.timeIntervalSince(now) + 7 * 86_400) < 2, "and the window opens exactly seven days back")
+    // A reset time that has already passed is stale, and must not be trusted over the fallback.
+    let stale = modelWeekShareSeries(records: recs, weeklyPct: 70,
+                                     weeklyResetAt: now.addingTimeInterval(-3 * 86_400), now: now)
+    check(abs((stale.first?.samples.last?.v ?? 0) - 70) < 0.01,
+          "a reset time that already passed falls back too, rather than anchoring ten days ago")
+}
+
+// A model first used on Friday should read zero all week, then rise. Interpolating from the week's
+// opening straight to that first point draws a ramp across days it was never used.
+print("no phantom ramp before a model's first use:")
+do {
+    let now = Date()
+    let reset = now.addingTimeInterval(2 * 86_400)          // week opened 5 days ago
+    let recs = [UsageRecord(date: now.addingTimeInterval(-3600), model: "claude-opus-5",
+                            project: "p", session: "s",
+                            input: 1000, output: 0, cache5m: 0, cache1h: 0, cacheRead: 0)]
+    let s = modelWeekShareSeries(records: recs, weeklyPct: 40, weeklyResetAt: reset, now: now).first?.samples ?? []
+    check(s.count >= 3, "the line carries an opening anchor, a held zero, then the real point")
+    check(s[0].v == 0 && s[1].v == 0, "it is still at zero immediately before the first record")
+    check(s[1].t > s[0].t && s[1].t < now.addingTimeInterval(-3599),
+          "and that held zero sits just before the record, not at the window's opening")
+}
+
+// Cache READS are a tenth the price and many times the volume, so counting them measures re-reading
+// rather than work. The live rate has always excluded them; the week share now agrees.
+print("one token basis:")
+do {
+    let now = Date()
+    let reset = now.addingTimeInterval(86_400)
+    let recs = [
+        UsageRecord(date: now.addingTimeInterval(-7200), model: "claude-opus-5", project: "p", session: "s",
+                    input: 100, output: 100, cache5m: 0, cache1h: 0, cacheRead: 0),
+        UsageRecord(date: now.addingTimeInterval(-3600), model: "claude-sonnet-5", project: "p", session: "s",
+                    input: 100, output: 100, cache5m: 0, cache1h: 0, cacheRead: 1_000_000),
+    ]
+    let s = modelWeekShareSeries(records: recs, weeklyPct: 50, weeklyResetAt: reset, now: now)
+    let opus = s.first { $0.label == "Opus" }?.samples.last?.v ?? 0
+    let sonnet = s.first { $0.label == "Sonnet" }?.samples.last?.v ?? 0
+    check(abs(opus - sonnet) < 0.01, "a million cache reads do not make one model swamp the other")
+    check(abs(opus + sonnet - 50) < 0.01, "and the lines still sum to the weekly reading")
+}
+
 print(failures == 0 ? "\nALL PASS" : "\n\(failures) FAILURE(S)")
 exit(failures == 0 ? 0 : 1)

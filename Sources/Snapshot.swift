@@ -11,7 +11,7 @@ enum StyleSheet {
         let slate = NSColor(hex: "7E8EA6") ?? .gray
         var g = GlyphData(pct: 0.46, pctText: "46%", primary: clay,
                           secFrac: 0.9, secText: "4h31m", secondary: slate, pLabel: "S", sLabel: "W")
-        g.costText = "$112"; g.tokText = "≈3.0M"; g.needle = 0.62; g.active = true; g.rollPhase = 1
+        g.tokText = "≈3.0M"; g.needle = 0.62; g.active = true; g.rollPhase = 1
         g.hasSecondary = true   // exercise the "Both" weekly bar (e.g. pulse)
         g.weekLeftText = "3d 4h"
         g.spark = [0.05, 0.12, 0.08, 0.22, 0.18, 0.4, 0.32, 0.55, 0.6, 0.5, 0.78, 0.7, 0.62, 0.84]
@@ -241,13 +241,13 @@ enum StyleSheet {
         if runLit > 0 { durations.append(runLit) }
         func stats(_ a: [Double]) -> String {
             guard !a.isEmpty else { return "none" }
-            return String(format: "n=%d  min %.2fs  max %.2fs  mean %.2fs", a.count, a.min()!, a.max()!, a.reduce(0, +) / Double(a.count))
+            return String(format: "n=%ld  min %.2fs  max %.2fs  mean %.2fs", a.count, a.min()!, a.max()!, a.reduce(0, +) / Double(a.count))
         }
         print(String(format: "BEACON wink clock - %ds at %dfps  (every %.2fs ±%.0f%%, length %.2fs, %@)",
                      Int(span), Int(fps), every, jitter * 100, len, curve.label))
         print("  gap between winks : \(stats(gaps))")
         print("  wink duration     : \(stats(durations))")
-        print(String(format: "  lit frames        : %d / %d  (%.1f%% of the time coloured)", litFrames, frames, Double(litFrames) / Double(frames) * 100))
+        print(String(format: "  lit frames        : %ld / %ld  (%.1f%% of the time coloured)", litFrames, frames, Double(litFrames) / Double(frames) * 100))
         let distinct = Set(gaps.map { Int($0 * 100) }).count
         print("  distinct gaps     : \(distinct) of \(gaps.count)  (a fixed interval would collapse to 1)")
         let lo = every * (1 - jitter) - 0.02, hi = every * (1 + jitter) + 0.02
@@ -465,8 +465,13 @@ enum StyleSheet {
     // user's real UserDefaults domain. CUB_CHARTMODE / CUB_PCT mutate only this suite.
     static func qaSettings() -> AppSettings {
         let suite = "com.maz.burndown.qa"
-        UserDefaults.standard.removePersistentDomain(forName: suite)
-        let s = AppSettings(defaults: UserDefaults(suiteName: suite) ?? .standard)
+        // No "?? .standard" fallback: if the QA suite cannot be opened, the run stops rather than
+        // quietly writing the harness's settings into the owner's real domain.
+        guard let qa = UserDefaults(suiteName: suite) else {
+            fatalError("The QA defaults suite could not be opened. Refusing to run against the real settings.")
+        }
+        qa.removePersistentDomain(forName: suite)
+        let s = AppSettings(defaults: qa)
         let env = ProcessInfo.processInfo.environment
         if env["CUB_ALERTS"] != nil { s.alertsEnabled = true }
         s.modelsExpanded = env["CUB_MODELS"] == "1"   // QA: render the BY MODEL split open/closed
@@ -905,8 +910,13 @@ enum StyleSheet {
         let view = AccountView(engine: engine, settings: qaSettings(),
                                onStartSignIn: {}, onFinishSignIn: { _, d in d(true) }, onOpenLogs: {},
                                previewSignedIn: ProcessInfo.processInfo.environment["CUB_SIGNEDOUT"] == nil)
+            .frame(width: kAccountWindowWidth)
             .environment(\.colorScheme, dark ? .dark : .light)
         let renderer = ImageRenderer(content: view)
+        // Same width as the real window. Left unset it took the view's ideal width, so widening the
+        // window quietly left every screenshot of it at the old size: the identical trap that
+        // shipped a clipped picture of Insights one release earlier.
+        renderer.proposedSize = ProposedViewSize(width: kAccountWindowWidth, height: kAccountPreviewHeight)
         renderer.scale = 2
         guard let img = renderer.nsImage, let tiff = img.tiffRepresentation,
               let rep = NSBitmapImageRep(data: tiff),

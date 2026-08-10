@@ -105,5 +105,23 @@ print("empty samples -> nil:")
 check(forecastToLimit([], current: 0.5, resetAt: nil, now: t0) == nil, "I: empty -> toLimit nil")
 check(forecastMinutes([], current: 0.5, resetAt: nil, now: t0) == nil, "I: empty -> minutes nil")
 
+// With too few points in the last ninety minutes the fallback used to take the slope across EVERY
+// retained sample, up to thirty-five days of them, and present that as the current pace. Two points
+// a month apart is not a pace, and the countdown it produced looked exactly as confident as a real
+// one.
+print("the fallback cannot reach back a month:")
+do {
+    let now = Date()
+    let ancient = [TimedSample(t: now.addingTimeInterval(-30 * 86_400), v: 0.01),
+                   TimedSample(t: now.addingTimeInterval(-60), v: 0.50)]
+    check(forecastToLimit(ancient, current: 0.50, resetAt: nil, now: now) == nil,
+          "a slope drawn from a month ago says nothing at all")
+    // Inside the session window the fallback still works, so the calm case is not over-suppressed.
+    let recent = [TimedSample(t: now.addingTimeInterval(-3600), v: 0.20),
+                  TimedSample(t: now.addingTimeInterval(-60), v: 0.60)]
+    check(forecastToLimit(recent, current: 0.60, resetAt: nil, now: now) != nil,
+          "but two points an hour apart still forecast")
+}
+
 print(failures == 0 ? "\nALL PASS" : "\n\(failures) FAILURE(S)")
 exit(failures == 0 ? 0 : 1)

@@ -34,7 +34,13 @@ func forecastToLimit(_ samples: [TimedSample], current: Double, resetAt: Date?, 
     // Recent slice (last 90 min, or everything if that is too thin) reflects the current pace.
     let cutoff = now.addingTimeInterval(-90 * 60)
     let recent = samples.filter { $0.t >= cutoff }
-    let pts = recent.count >= 3 ? recent : samples
+    // Falling back to EVERY sample meant that with fewer than three points in the last ninety
+    // minutes, the "current pace" became a straight line drawn across up to thirty-five days of
+    // history. That is not a pace, and it produced confident-looking countdowns out of nothing.
+    // The fallback widens to the session window and no further; too thin even for that says
+    // nothing, which is the honest answer.
+    let sessionCutoff = now.addingTimeInterval(-5 * 3600)
+    let pts = recent.count >= 3 ? recent : samples.filter { $0.t >= sessionCutoff }
     guard let first = pts.first, let last = pts.last else { return nil }
     let dt = last.t.timeIntervalSince(first.t)
     guard dt > 120 else { return nil }                 // need a real time span to trust a slope
@@ -52,7 +58,13 @@ func forecastMinutes(_ samples: [TimedSample], current: Double, resetAt: Date?, 
     guard current < 0.999, current > 0 else { return nil }
     let cutoff = now.addingTimeInterval(-90 * 60)
     let recent = samples.filter { $0.t >= cutoff }
-    let pts = recent.count >= 3 ? recent : samples
+    // Falling back to EVERY sample meant that with fewer than three points in the last ninety
+    // minutes, the "current pace" became a straight line drawn across up to thirty-five days of
+    // history. That is not a pace, and it produced confident-looking countdowns out of nothing.
+    // The fallback widens to the session window and no further; too thin even for that says
+    // nothing, which is the honest answer.
+    let sessionCutoff = now.addingTimeInterval(-5 * 3600)
+    let pts = recent.count >= 3 ? recent : samples.filter { $0.t >= sessionCutoff }
     guard let first = pts.first, let last = pts.last else { return nil }
     let dt = last.t.timeIntervalSince(first.t)
     guard dt > 120 else { return nil }

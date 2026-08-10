@@ -88,14 +88,32 @@ final class LiveActivity: ObservableObject {
             for (olderThan, spacing) in tiers where age >= olderThan { g = spacing }
             return g
         }
+        // Each retention window keeps its LARGEST sample, not its first.
+        //
+        // These are burn rates, and the charts that draw them bucket with pickMax precisely so a
+        // spike survives being squeezed into a few hundred pixels. Thinning that kept whichever
+        // sample happened to come first threw those spikes away before the chart ever saw them, so
+        // yesterday's worst minute quietly flattened into whatever was happening around it. The
+        // newest sample is still always kept, and recent samples (gap 0) are all kept.
         var out: [TimedSample] = []; out.reserveCapacity(arr.count)
         let lastT = arr.last?.t
-        var lastKept: Date?
+        var pending: TimedSample?          // the biggest sample seen in the window being filled
+        var windowStart: Date?
         for s in arr {
             let gap = minGap(now.timeIntervalSince(s.t))
-            if gap > 0, let lk = lastKept, s.t != lastT, s.t.timeIntervalSince(lk) < gap { continue }
-            out.append(s); lastKept = s.t
+            if gap <= 0 || s.t == lastT {
+                if let p = pending { out.append(p); pending = nil; windowStart = nil }
+                out.append(s)
+                continue
+            }
+            if let ws = windowStart, s.t.timeIntervalSince(ws) < gap {
+                if s.v > (pending?.v ?? -.infinity) { pending = s }
+            } else {
+                if let p = pending { out.append(p) }
+                pending = s; windowStart = s.t
+            }
         }
+        if let p = pending { out.append(p) }
         return out
     }
 
@@ -142,8 +160,7 @@ final class LiveActivity: ObservableObject {
                                       "weekly": w.map { [$0.t.timeIntervalSince1970, $0.v] }]
             try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
             if let d = try? JSONSerialization.data(withJSONObject: obj) {
-                try? d.write(to: url)
-                try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+                writePrivate(d, to: url)
             }
         }
     }
@@ -168,6 +185,20 @@ final class LiveActivity: ObservableObject {
     private var offsets: [String: UInt64] = [:]   // path → bytes already consumed
     private var events: [(ts: Date, tok: Int, path: String)] = []
     private var cwdByPath: [String: String] = [:]    // session file → its real cwd (for stream names)
+
+    /// Forget files that no longer exist.
+    ///
+    /// Both maps above are keyed by path and were only ever added to, so every log the tail ever
+    /// touched kept an entry for the life of the process, including ones deleted weeks ago. Small
+    /// per entry and unbounded in aggregate, which is the shape of a leak rather than of a cache.
+    private func pruneVanishedFiles(_ live: Set<String>) {
+        guard offsets.count > live.count || cwdByPath.count > live.count
+              || titleByPath.count > live.count || titleScanned.count > live.count else { return }
+        offsets = offsets.filter { live.contains($0.key) }
+        cwdByPath = cwdByPath.filter { live.contains($0.key) }
+        titleByPath = titleByPath.filter { live.contains($0.key) }
+        titleScanned = titleScanned.filter { live.contains($0) }
+    }
     private var titleByPath: [String: String] = [:]  // session file → chat title (customTitle/aiTitle)
     private var customTitled: Set<String> = []       // paths with a user-set customTitle (authoritative)
     private var titleScanned: Set<String> = []       // paths whose head was already scanned for a title
@@ -290,8 +321,10 @@ final class LiveActivity: ObservableObject {
         guard let walker = fm.enumerator(at: projectsDir,
                                          includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey],
                                          options: [.skipsHiddenFiles]) else { return }
+        var seenPaths = Set<String>()
         for case let url as URL in walker {
             guard url.pathExtension == "jsonl" else { continue }
+            seenPaths.insert(url.path)
             let vals = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
             let known = offsets[url.path] != nil
             if let mod = vals?.contentModificationDate, mod < cutoff, known { continue }
@@ -338,6 +371,7 @@ final class LiveActivity: ObservableObject {
                 if tok > 0 { self.events.append((ts, tok, url.path)); newTokens += tok }
             }
         }
+        pruneVanishedFiles(seenPaths)
         events.removeAll { $0.ts < now.addingTimeInterval(-120) }
         let recent60 = now.addingTimeInterval(-60)
         let sum60 = events.reduce(0) { $0 + ($1.ts >= recent60 ? $1.tok : 0) }

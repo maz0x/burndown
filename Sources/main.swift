@@ -262,6 +262,8 @@ extension Notification.Name {
     static let burndownDidSignIn = Notification.Name("com.maz.burndown.didSignIn")
     static let burndownDidSignOut = Notification.Name("com.maz.burndown.didSignOut")
     static let showWelcomeTour = Notification.Name("com.maz.burndown.showWelcomeTour")
+    /// The Insights window closed, so it can hand back the full history it was holding.
+    static let insightsClosed = Notification.Name("com.maz.burndown.insightsClosed")
     /// An explanation bubble in the card opened (object: true) or closed (object: false).
     /// The card lives in a TRANSIENT NSPopover, which AppKit closes "when the user interacts with
     /// a user interface element outside the popover" - and a bubble is its own window, so opening
@@ -280,9 +282,14 @@ func notifLog(_ s: String) {
        size > 1_000_000, let all = try? Data(contentsOf: url) {
         try? all.suffix(all.count / 4).write(to: url)
     }
-    if let h = try? FileHandle(forWritingTo: url) { h.seekToEndOfFile(); h.write(d); try? h.close() }
-    else { try? d.write(to: url) }
-    try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    if !FileManager.default.fileExists(atPath: url.path) { writePrivate(Data(), to: url) }
+    // Throwing API: the legacy seekToEndOfFile/write pair raises an Objective-C exception on a
+    // write failure, which Swift cannot catch and which terminates the process. Same reason as the
+    // engine's diagnostic log.
+    if let h = try? FileHandle(forWritingTo: url) {
+        defer { try? h.close() }
+        do { try h.seekToEnd(); try h.write(contentsOf: d) } catch { }
+    } else { writePrivate(d, to: url) }
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPopoverDelegate, UNUserNotificationCenterDelegate {
@@ -317,8 +324,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     let settings: AppSettings = {
         guard ProcessInfo.processInfo.environment["CUB_SANDBOX"] != nil else { return AppSettings() }
         let suite = "com.maz.burndown.sandbox"
-        UserDefaults.standard.removePersistentDomain(forName: suite)
-        let s = AppSettings(defaults: UserDefaults(suiteName: suite) ?? .standard)
+        // appDefaults resolves the same suite and refuses to fall back to the real domain, so the
+        // "?? .standard" that used to be here, the one path by which a QA run could have written
+        // into the owner's settings, is gone.
+        appDefaults.removePersistentDomain(forName: suite)
+        let s = AppSettings(defaults: appDefaults)
         if let m = ProcessInfo.processInfo.environment["CUB_CHARTMODE"] {
             let kinds = m.split(separator: ",").compactMap { ChartKind(rawValue: String($0)) }
             if !kinds.isEmpty { s.chartKinds = kinds }
@@ -348,6 +358,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private var lastEdgeOrigin = NSPoint.zero  // last origin WE set (to tell our moves from the user's)
     private var axObserver: AXObserver?       // event-driven window tracking (zero lag) when Accessibility is granted
     private var axPID: pid_t = 0
+    /// The window element the move/resize notifications are currently attached to.
+    private var axWindowEl: AXUIElement?
     private var axPrompted = false
     private let claudeBundleID = "com.anthropic.claudefordesktop"
     private var cancellables = Set<AnyCancellable>()
@@ -447,6 +459,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         // This crashed with a re-entrant setFrameOrigin before the windowDidResize defer fix
         // (three identical SIGABRTs on 2026-08-01); it must print survived after.
         if ProcessInfo.processInfo.environment["CUB_QA_FLOATPIN"] != nil {
+            // This hook drives a simulated resize by WRITING settings, so it must never run against
+            // the owner's real defaults: it would leave the card at whatever width the simulation
+            // stopped at. CUB_SANDBOX is what routes settings to a throwaway suite, so require it.
+            guard ProcessInfo.processInfo.environment["CUB_SANDBOX"] != nil else {
+                fatalError("CUB_QA_FLOATPIN writes settings and must be run with CUB_SANDBOX set.")
+            }
             // Marker file so a headless runner can tell "survived" from "died" without parsing
             // stdout. Defaults under the app's own config dir; CUB_QA_FLOATPIN_OUT overrides it.
             let markPath = ProcessInfo.processInfo.environment["CUB_QA_FLOATPIN_OUT"]
@@ -598,7 +616,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private func syncEdgeDock() {
         guard settings.dockEdge != .off else {
             edgeTimer?.invalidate(); edgeTimer = nil; edgeTimerInterval = 0
+            // Released, not merely hidden. Ordering the panel out left the whole widget alive with
+            // its SwiftUI content still subscribed to the engine, so a companion the user had
+            // switched OFF went on re-rendering for the rest of the session, invisibly.
             edgePanel?.orderOut(nil)
+            edgePanel?.contentView = nil
+            edgePanel = nil
             teardownAX()
             return
         }
@@ -613,7 +636,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     /// of working AX events re-derived the same frame sixty times a second for nothing.
     private func retuneEdgeTimer() {
         guard settings.dockEdge != .off else { return }
-        let want: TimeInterval = axObserver != nil ? 2.0 : 1.0 / 60.0
+        // 60fps is the fallback for tracking a window that is MOVING. With no Claude running there
+        // is no window to track, and the observer is absent for that reason rather than because
+        // permission was refused, so the app would spin a core sixty times a second to re-derive
+        // "still not there". A slow reconcile finds it again the moment it launches.
+        let claudeRunning = NSRunningApplication
+            .runningApplications(withBundleIdentifier: claudeBundleID).contains { !$0.isTerminated }
+        let want: TimeInterval = axObserver != nil ? 2.0 : (claudeRunning ? 1.0 / 60.0 : 1.0)
         guard edgeTimerInterval != want || edgeTimer == nil else { return }
         edgeTimer?.invalidate()
         let t = Timer(timeInterval: want, repeats: true) { [weak self] _ in self?.updateEdgeDock() }
@@ -638,9 +667,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             return   // fall back to the 60fps timer until granted
         }
         // Synchronous callback on the main run loop (no dispatch hop = no added latency).
-        let cb: AXObserverCallback = { _, _, _, refcon in
+        let cb: AXObserverCallback = { _, _, notification, refcon in
             guard let refcon else { return }
-            Unmanaged<AppDelegate>.fromOpaque(refcon).takeUnretainedValue().updateEdgeDock()
+            let me = Unmanaged<AppDelegate>.fromOpaque(refcon).takeUnretainedValue()
+            // Focus moved to a different window, so the move and resize notifications have to
+            // follow it. They were attached to whichever window happened to be focused when
+            // tracking started and never moved again, so opening a second Claude window silently
+            // dropped back to the 2 second reconcile: the widget lagged behind that window for the
+            // rest of the session, and it looked like the Accessibility permission had failed.
+            let name = notification as String
+            if name == kAXFocusedWindowChangedNotification || name == kAXMainWindowChangedNotification
+                || name == kAXApplicationActivatedNotification {
+                me.subscribeFocusedWindow()
+            }
+            me.updateEdgeDock()
         }
         var obs: AXObserver?
         guard AXObserverCreate(pid, cb, &obs) == .success, let observer = obs else { return }
@@ -650,22 +690,41 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         for n in [kAXFocusedWindowChangedNotification, kAXMainWindowChangedNotification, kAXApplicationActivatedNotification] {
             AXObserverAddNotification(observer, appEl, n as CFString, refcon)
         }
-        // Window-level: move/resize fire on the focused window element itself.
-        var winRef: CFTypeRef?
-        if AXUIElementCopyAttributeValue(appEl, kAXFocusedWindowAttribute as CFString, &winRef) == .success,
-           let we = winRef, CFGetTypeID(we) == AXUIElementGetTypeID() {
-            let winEl = we as! AXUIElement   // safe: typeID checked above
-            AXObserverAddNotification(observer, winEl, kAXWindowMovedNotification as CFString, refcon)
-            AXObserverAddNotification(observer, winEl, kAXWindowResizedNotification as CFString, refcon)
-        }
         // THE fix: add to .commonModes. With .defaultMode, AX notifications are queued (not
         // delivered) during a live window drag (event-tracking run-loop mode) → that was the lag.
         CFRunLoopAddSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(observer), .commonModes)
         axObserver = observer; axPID = pid
+        subscribeFocusedWindow()   // window-level move/resize, re-bound whenever focus moves
+    }
+
+    /// Point the window-level move and resize notifications at whichever Claude window has focus
+    /// now, dropping the previous one. Called at setup and again on every focus change.
+    private func subscribeFocusedWindow() {
+        guard let observer = axObserver, axPID != 0 else { return }
+        let refcon = Unmanaged.passUnretained(self).toOpaque()
+        if let old = axWindowEl {
+            AXObserverRemoveNotification(observer, old, kAXWindowMovedNotification as CFString)
+            AXObserverRemoveNotification(observer, old, kAXWindowResizedNotification as CFString)
+            axWindowEl = nil
+        }
+        let appEl = AXUIElementCreateApplication(axPID)
+        var winRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appEl, kAXFocusedWindowAttribute as CFString, &winRef) == .success,
+              let we = winRef, CFGetTypeID(we) == AXUIElementGetTypeID() else { return }
+        let winEl = we as! AXUIElement   // safe: typeID checked above
+        AXObserverAddNotification(observer, winEl, kAXWindowMovedNotification as CFString, refcon)
+        AXObserverAddNotification(observer, winEl, kAXWindowResizedNotification as CFString, refcon)
+        axWindowEl = winEl
     }
     private func teardownAX() {
-        if let o = axObserver { CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(o), .commonModes) }   // must match the add mode
-        axObserver = nil; axPID = 0
+        if let o = axObserver {
+            if let w = axWindowEl {
+                AXObserverRemoveNotification(o, w, kAXWindowMovedNotification as CFString)
+                AXObserverRemoveNotification(o, w, kAXWindowResizedNotification as CFString)
+            }
+            CFRunLoopRemoveSource(CFRunLoopGetMain(), AXObserverGetRunLoopSource(o), .commonModes)   // must match the add mode
+        }
+        axObserver = nil; axPID = 0; axWindowEl = nil
     }
 
     // MARK: - Tide line: a luminous filament hugging a chosen screen edge, on EVERY
@@ -786,6 +845,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
     private func tidePeekTick() {
         let edge = settings.tideEdge
+        guard edge != .off else { tidePeekPanel?.orderOut(nil); return }
         let mouse = NSEvent.mouseLocation                    // global, bottom-left origin
         guard let screen = NSScreen.screens.first(where: { NSPointInRect(mouse, $0.frame) }), tideShows(screen) else {
             tidePeekPanel?.orderOut(nil); return
@@ -817,10 +877,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
             tidePeekPanel = panel
         }
-        let label = TidePeekView(text: text)
-        let host = NSHostingView(rootView: label)
-        host.frame = NSRect(x: 0, y: 0, width: 168, height: 24)
-        panel.contentView = host
+        // The hosting view is built ONCE and its text updated after that. This ran on a global
+        // mouse-moved monitor, so every pointer movement anywhere on the machine tore down a whole
+        // SwiftUI hosting hierarchy and stood up another one, purely to change two numbers inside
+        // it. Reusing the view is what makes this cheap enough to hang off a global monitor at all.
+        let host: NSHostingView<TidePeekView>
+        if let existing = panel.contentView as? NSHostingView<TidePeekView> {
+            host = existing
+            if host.rootView.text != text { host.rootView = TidePeekView(text: text) }
+        } else {
+            host = NSHostingView(rootView: TidePeekView(text: text))
+            host.frame = NSRect(x: 0, y: 0, width: 168, height: 24)
+            panel.contentView = host
+        }
         let w: CGFloat = 168, h: CGFloat = 24, pad: CGFloat = 8
         var x = mouse.x - w / 2, y = mouse.y
         switch edge {
@@ -878,7 +947,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             if running {
                 edgeState.lost = true
                 let panel = ensureEdgePanel()
-                if lastEdgeOrigin != .zero { panel.setFrameOrigin(lastEdgeOrigin) }
+                // The remembered origin can belong to a display that has since been unplugged, and
+                // an unreachable plaque saying "click to re-scan" is worse than no plaque: the one
+                // affordance for fixing the situation sits where the pointer cannot go.
+                let remembered = NSRect(origin: lastEdgeOrigin, size: panel.frame.size)
+                let onAScreen = lastEdgeOrigin != .zero
+                    && NSScreen.screens.contains { $0.visibleFrame.intersects(remembered) }
+                if onAScreen { panel.setFrameOrigin(lastEdgeOrigin) }
                 else if let sc = NSScreen.main { panel.setFrameOrigin(NSPoint(x: sc.frame.midX - 80, y: sc.frame.midY)) }
                 if !panel.isVisible { panel.orderFront(nil) }
             } else {
@@ -1058,6 +1133,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             NSApp.setActivationPolicy(settings.showDockIcon ? .regular : .accessory)   // menu-bar-only unless the Dock icon is on
         } else if w === welcomeWindow {
             settings.onboarded = true   // closing the tour counts as done; reopen from About any time
+            // Rebuilt on the next open. The window was cached with its view state intact, so the
+            // tour reopened still saying "Connected" from a previous visit, or still sitting on
+            // whichever page it was left on.
+            w?.contentViewController = nil
+            welcomeWindow = nil
+        } else if w === aboutWindow || w === accountWindow {
+            // These two are cached so reopening is instant, and their SwiftUI content stayed
+            // attached and subscribed to the engine the whole time, redrawing behind a closed
+            // window on every live tick. They are rebuilt on demand instead; both are cheap.
+            w?.contentViewController = nil
+            if w === aboutWindow { aboutWindow = nil } else { accountWindow = nil }
+        } else if w === insightsWindow {
+            // Hand back the full history. The window is kept alive so reopening it is instant, and
+            // the price of that was holding every record ever parsed, tens of megabytes of them,
+            // for the rest of the session after a single visit. The scan cache makes rebuilding it
+            // fast, which is the whole reason that cache exists.
+            NotificationCenter.default.post(name: .insightsClosed, object: nil)
         }
     }
 
@@ -1519,7 +1611,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             w.styleMask = [.titled, .closable]
             w.title = "Welcome to \(kAppName)"
             w.isReleasedWhenClosed = false
-            w.setContentSize(NSSize(width: 340, height: 430))
+            // 340 was the root of every complaint about this window: a wrapped, truncated
+            // organization name, a lock stranded between two lines of a sentence that should be
+            // one, and diagnostics values crushed against their labels. Nothing here needs to be
+            // narrow.
+            w.setContentSize(NSSize(width: kAccountWindowWidth, height: 470))
             w.appearance = themeAppearance()
             w.center()
             w.delegate = self
@@ -1558,7 +1654,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         let mode = settings.colorMode
         // Beacon is exempt from template mode: a template image is tinted wholesale by AppKit, which
         // would erase the wink. It draws the system ink itself (barInk), so "None" still looks native.
-        let template = (mode == .system) && settings.menuBarStyle != .beacon
+        // "System" ink means a template image, EXCEPT where the style's meaning is its colour: a
+        // flame rendered as a silhouette is not a restrained flame, it is a smudge.
+        let template = (mode == .system) && !settings.menuBarStyle.carriesOwnColor
         let accent = NSColor(hex: settings.accentHex) ?? NSColor(srgbRed: 0.85, green: 0.47, blue: 0.34, alpha: 1)
         // In system/template mode draw in black so macOS tints it like a native icon.
         func usageCol(_ pct: Double, _ over: Bool) -> NSColor {
@@ -1599,7 +1697,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         }
         if let r = s.weeklyResetAt { g.weekLeftText = weekLeftString(r) }   // for the weeklyClock style
         // Live fields for the animated styles (pulse / pace / burn / roll).
-        g.costText = money(s.sessionCost)
         g.tokText = "≈" + fmtTok(s.sessionFresh)
         g.needle = displayNeedle
         g.active = liveActivity.active
@@ -1732,7 +1829,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
     private func setLogin(_ on: Bool) {
         if on {
-            do { try SMAppService.mainApp.register() }
+            do {
+                try SMAppService.mainApp.register()
+                // A LaunchAgent left by an earlier build would ALSO fire at login, so the machine
+                // would start two copies: the exact situation the single-instance guard now catches
+                // at launch, but better not created in the first place. Only ours is removed, by
+                // the same ownership test the off branch uses.
+                removeOwnLoginPlist()
+            }
             catch {
                 // Fall back to the legacy LaunchAgent so the toggle still works for dev builds.
                 let bin = loginTargetExecutable
@@ -1750,18 +1854,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             }
         } else {
             try? SMAppService.mainApp.unregister()
-            // Only delete a LaunchAgent that is actually OURS: one whose ProgramArguments point at
-            // this bundle. Never remove a hand-managed or third-party agent that happens to share
-            // the label, and never leave the user with no login item they did not ask to lose.
-            if let d = try? Data(contentsOf: loginPlist),
-               let plist = try? PropertyListSerialization.propertyList(from: d, options: [], format: nil) as? [String: Any],
-               let args = plist["ProgramArguments"] as? [String],
-               let first = args.first,
-               // Either the copy we would register today, or the running one: an entry written by
-               // an earlier build pointing at a development path still has to be removable.
-               first == loginTargetExecutable || first == (Bundle.main.executablePath ?? "") {
-                try? FileManager.default.removeItem(at: loginPlist)
-            }
+            removeOwnLoginPlist()
+        }
+    }
+
+    /// Delete the legacy LaunchAgent, but only when it is actually OURS: one whose ProgramArguments
+    /// point at this bundle. Never remove a hand-managed or third-party agent that happens to share
+    /// the label, and never leave the user with no login item they did not ask to lose.
+    private func removeOwnLoginPlist() {
+        if let d = try? Data(contentsOf: loginPlist),
+           let plist = try? PropertyListSerialization.propertyList(from: d, options: [], format: nil) as? [String: Any],
+           let args = plist["ProgramArguments"] as? [String],
+           let first = args.first,
+           // Either the copy we would register today, or the running one: an entry written by
+           // an earlier build pointing at a development path still has to be removable.
+           first == loginTargetExecutable || first == (Bundle.main.executablePath ?? "") {
+            try? FileManager.default.removeItem(at: loginPlist)
         }
     }
 
@@ -1804,7 +1912,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                                       sessionReset: s.sessionResetAt, weeklyReset: s.weeklyResetAt,
                                       burn: self.liveActivity.rate,
                                       forecastMin: forecastMinutes(self.liveActivity.usageSamples, current: s.sessionPct, resetAt: s.sessionResetAt),
-                                      topChat: self.liveActivity.activeStreams.max(by: { $0.tok < $1.tok })?.name,
+                                      // The DISPLAY name, so an alert names the chat the way the reader sees it everywhere
+                                      // else rather than reverting to whatever the log called it.
+                                      topChat: self.liveActivity.activeStreams
+                                          .max(by: { $0.tok < $1.tok })
+                                          .map { ChatNames.shared.display($0.name) },
                                       s: self.settings)
                     self.alerts.checkBudgetRunaway(burn: self.liveActivity.rate,
                                                    records: self.engine.records, s: self.settings)
@@ -1996,7 +2108,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         if settings.tideLine, now - lastTideUptime >= 1.0 / 10.0 {
             lastTideUptime = now
             let tidePhase = animPhase - 0.25 * burnClock.period   // the one sanctioned 0.25 lag
-            for p in tidePanels { (p.contentView as? TideLineView)?.advanceBreath(phase: tidePhase, period: burnClock.period) }
+            // Visible panels only. The breath step drove EVERY panel unconditionally, so a tide
+            // line hidden on a full-screen space or on a display the user had switched it off for
+            // still laid itself out on every frame, forever, to animate something nobody could see.
+            for p in tidePanels where p.isVisible {
+                (p.contentView as? TideLineView)?.advanceBreath(phase: tidePhase, period: burnClock.period)
+            }
         }
 
         // Pick the next interval from what is moving. Fully settled + nothing that breathes → STOP.
@@ -2117,6 +2234,17 @@ if ProcessInfo.processInfo.environment["CUB_SCAN_SELFTEST"] != nil {
     print(UsageEngine.scanSelfTest())
     exit(0)
 }
+// QA: run the full-history scan headlessly and report what it found, so the Insights totals can be
+// checked against the logs without opening a window. Prints how many records were copies of a
+// resumed conversation, which is the number that used to be counted twice.
+if ProcessInfo.processInfo.environment["CUB_SCAN_DUMP"] != nil {
+    let (recs, sessions) = UsageEngine().scanFilesSync()
+    let tokens = recs.reduce(0) { $0 + $1.totalTokens }
+    let cost = recs.reduce(0.0) { $0 + $1.cost }
+    print(String(format: "records=%ld chats=%ld tokens=%ld cost=%.2f",
+                 recs.count, sessions.count, tokens, cost))
+    exit(0)
+}
 if ProcessInfo.processInfo.environment["CUB_MOTION_DIAG"] != nil {
     StyleSheet.motionDiag()
     exit(0)
@@ -2210,6 +2338,13 @@ if let wPath = ProcessInfo.processInfo.environment["CUB_SNAP_WELCOME"] {
         .environment(\.colorScheme, dark ? .dark : .light)
         let renderer = ImageRenderer(content: view)
         renderer.scale = 2
+        // The renderer MUST be told a width. The tour view is sized by its window now (it used to
+        // hard-frame itself to 340, which is why the Account window trap kept reappearing), so with
+        // nothing proposed each of the four pages expands to fill infinity and the contact sheet
+        // came out eight thousand pixels wide. Four pages at the card width, plus the gaps and the
+        // padding around them.
+        let pageW: CGFloat = 340, pageH: CGFloat = 430
+        renderer.proposedSize = ProposedViewSize(width: pageW * 4 + 12 * 3 + 28, height: pageH + 28)
         if let img = renderer.nsImage, let tiff = img.tiffRepresentation,
            let rep = NSBitmapImageRep(data: tiff),
            let png = rep.representation(using: .png, properties: [:]) {
@@ -2260,7 +2395,7 @@ if ProcessInfo.processInfo.environment["CUB_EDGE"] != nil {
     }
     print("windows owned by Claude MAIN pid:", owned, "→ qualifying:", qualified, "| windows named Claude (any pid):", claudeNamed)
     // Is the LIVE app (login-agent instance) actually placing the edge panel right now?
-    if let me = NSRunningApplication.runningApplications(withBundleIdentifier: "com.maz.burndown")
+    if let me = NSRunningApplication.runningApplications(withBundleIdentifier: kBurndownBundleID)
         .first(where: { !$0.isTerminated && Int($0.processIdentifier) != Int(ProcessInfo.processInfo.processIdentifier) }) {
         let mpid = Int(me.processIdentifier)
         let mine = infos.filter { ($0[kCGWindowOwnerPID as String] as? Int) == mpid }
@@ -2350,8 +2485,38 @@ if UserDefaults.standard.object(forKey: "ApplePersistenceIgnoreState") == nil {
 NSSetUncaughtExceptionHandler { e in
     let msg = "\(Date())\n\(e.name.rawValue): \(e.reason ?? "no reason")\n\(e.callStackSymbols.joined(separator: "\n"))\n"
     let url = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/burndown/last-exception.log")
-    try? Data(msg.utf8).write(to: url)
-    try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    writePrivate(Data(msg.utf8), to: url)
+}
+
+/// The app's bundle identifier, named once. It appears in the login-item registration, the
+/// updater's relaunch, and the single-instance guard, and three copies of a string literal is how
+/// those three stop agreeing.
+let kBurndownBundleID = "com.maz.burndown"
+
+// One Burndown, one menu bar icon.
+//
+// Nothing prevented a second copy from running. Two identical icons appear, both poll, both write
+// the same cache and the same live-contract file, and there is no way to tell which is which or
+// which one a click will reach. It happens easily: the login item starts one, then the app is
+// opened from Finder or a fresh build is launched, and now there are two. Every other
+// NSRunningApplication lookup in this file is about finding Claude Desktop; none was ever about us.
+//
+// The newcomer yields rather than the incumbent, because the incumbent owns the menu bar item the
+// user is already looking at, with its history and its live rate already warm. Bringing it forward
+// is all the newcomer can honestly do: telling it to open its card would need a listener that any
+// process on the machine could shout at, which is a poor trade for saving one click.
+//
+// QA runs are exempt: the screenshot and audit passes deliberately run a repo build alongside the
+// installed one, and they always set a CUB_ variable. A real launch never does.
+if !ProcessInfo.processInfo.environment.keys.contains(where: { $0.hasPrefix("CUB_") }) {
+    let mine = ProcessInfo.processInfo.processIdentifier
+    let incumbent = NSRunningApplication
+        .runningApplications(withBundleIdentifier: kBurndownBundleID)
+        .first { !$0.isTerminated && $0.processIdentifier != mine }
+    if let incumbent {
+        incumbent.activate(options: [])
+        exit(0)
+    }
 }
 
 let delegate = AppDelegate()

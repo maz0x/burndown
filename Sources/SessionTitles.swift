@@ -17,7 +17,18 @@ final class SessionTitles: ObservableObject {
     static let shared = SessionTitles()
 
     /// Published so a title arriving after a card is already on screen redraws it.
+    ///
+    /// The published mirror, for SwiftUI. Written ONLY on the main thread and read only by views.
+    ///
+    /// The dictionary the rest of the app asks questions of is `store`, below. Keeping one
+    /// dictionary for both jobs is what made this unsafe: the writers published a new value with a
+    /// hop to main, outside the lock, while title(for:) read the same property under the lock from
+    /// two background queues. A lock only excludes other lock holders, so the reassignment on main
+    /// raced a background read of the same storage, which is undefined behaviour rather than a
+    /// stale answer.
     @Published private(set) var titles: [String: String] = [:]
+    /// The real index. Every read and every write happens under `lock`, on whatever thread.
+    private var store: [String: String] = [:]
     private let lock = NSLock()
     private var dirty = false
 
@@ -31,50 +42,60 @@ final class SessionTitles: ObservableObject {
     /// The title for a session id, or nil when it has not been read yet.
     func title(for sid: String) -> String? {
         lock.lock(); defer { lock.unlock() }
-        return titles[sid]
+        return store[sid]
+    }
+
+    /// Publish the current index to SwiftUI. The snapshot is taken by the caller, under the lock.
+    private func publish(_ snapshot: [String: String]) {
+        if Thread.isMainThread { titles = snapshot }
+        else { DispatchQueue.main.async { self.titles = snapshot } }
     }
 
     /// Record a title. Called from the parse queue, so the publish is hopped to the main thread.
     func set(_ title: String, for sid: String) {
         lock.lock()
-        guard titles[sid] != title, !title.isEmpty else { lock.unlock(); return }
-        var next = titles; next[sid] = title
+        guard store[sid] != title, !title.isEmpty else { lock.unlock(); return }
+        store[sid] = title
         dirty = true
+        let snapshot = store
         lock.unlock()
-        DispatchQueue.main.async { self.titles = next }
+        publish(snapshot)
         save()   // once per newly seen session, not per poll: title(for:) answers every time after
     }
 
     /// Record many at once, so a full scan publishes once rather than once per chat.
     func merge(_ found: [String: String]) {
         lock.lock()
-        var next = titles
         var changed = false
-        for (sid, t) in found where !t.isEmpty && next[sid] != t { next[sid] = t; changed = true }
+        for (sid, t) in found where !t.isEmpty && store[sid] != t { store[sid] = t; changed = true }
         if changed { dirty = true }
+        let snapshot = store
         lock.unlock()
         guard changed else { return }
-        DispatchQueue.main.async { self.titles = next }
+        publish(snapshot)
         save()
     }
 
     private func load() {
         guard let d = try? Data(contentsOf: url),
               let o = try? JSONSerialization.jsonObject(with: d) as? [String: String] else { return }
-        titles = o
+        lock.lock(); store = o; lock.unlock()
+        publish(o)
     }
 
     func save() {
         lock.lock()
         guard dirty else { lock.unlock(); return }
-        let snapshot = titles
+        // Snapshotted from `store`, which already holds the entry that set the dirty flag. It used
+        // to snapshot the PUBLISHED property, whose update is an async hop that has almost never
+        // run by the time this executes, so it wrote the pre-update dictionary to disk and cleared
+        // dirty anyway. The title that triggered the save was the one title the save left out, and
+        // it only reached disk if some later chat happened to trigger another one.
+        let snapshot = store
         dirty = false
         lock.unlock()
-        try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(),
-                                                 withIntermediateDirectories: true)
         guard let d = try? JSONSerialization.data(withJSONObject: snapshot, options: [.sortedKeys]) else { return }
-        try? d.write(to: url)
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        writePrivate(d, to: url)
     }
 }
 
@@ -105,7 +126,13 @@ func cleanChatTitle(_ raw: String?) -> String? {
         t = t.trimmingCharacters(in: .whitespaces)
     }
     // Slash-command invocations arrive wrapped in tags; the command name is the useful part.
-    if let r = t.range(of: "<command-name>"), let e = t.range(of: "</command-name>") {
+    //
+    // The two tags are searched for independently, so nothing guarantees they arrive in that
+    // order: a message that merely TALKS about the tags, closing one first, produces a range whose
+    // end precedes its start, and slicing a string with it is a crash, not an empty result. Any
+    // message can contain any text, so this has to be checked rather than assumed.
+    if let r = t.range(of: "<command-name>"), let e = t.range(of: "</command-name>"),
+       r.upperBound <= e.lowerBound {
         t = String(t[r.upperBound..<e.lowerBound])
     }
     t = t.replacingOccurrences(of: "\n", with: " ")

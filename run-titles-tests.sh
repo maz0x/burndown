@@ -5,6 +5,6 @@ set -euo pipefail
 cd "$(dirname "$0")"
 OUT="$(mktemp -d)/TitlesTests"
 echo "→ Building title test binary (SessionTitles)"
-swiftc -O -o "$OUT" Sources/SessionTitles.swift Tests/titles/main.swift
+swiftc -O -o "$OUT" Sources/PrivateFile.swift Sources/SessionTitles.swift Tests/titles/main.swift
 echo "→ Running"
 "$OUT"

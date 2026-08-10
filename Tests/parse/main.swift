@@ -45,5 +45,26 @@ for c in ["2026-07-06T00:26:11Z", "2026-07-06T00:26:11.123Z", "2024-02-29T12:34:
 }
 check(fastISO8601Date("garbage") == nil, "fastISO8601Date rejects garbage")
 
+// The fast path computes a UTC instant, so a stamp carrying a zone offset must not go through it.
+// It used to read the first nineteen characters and ignore the rest, which turned a local
+// wall-clock time into a UTC one and moved that record by the size of the offset: a whole evening
+// of work could land on the wrong day. Returning nil hands it to the tolerant formatter, which
+// does honour the offset.
+print("zone offsets:")
+check(fastISO8601Date("2026-08-09T10:00:00+05:00") == nil, "a positive offset is refused, not silently read as UTC")
+check(fastISO8601Date("2026-08-09T10:00:00-07:00") == nil, "and a negative one")
+check(fastISO8601Date("2026-08-09T10:00:00.123-07:00") == nil, "including with fractional seconds")
+check(fastISO8601Date("2026-08-09T10:00:00Z") != nil, "a Z stamp still takes the fast path")
+check(fastISO8601Date("2026-08-09T10:00:00.123Z") != nil, "and so does one with fractional seconds")
+check(fastISO8601Date("2026-08-09T10:00:00") != nil, "and a bare stamp with no suffix at all")
+// The tolerant path is what actually reads the offset, so prove the pair works end to end.
+let iso = ISO8601DateFormatter(); iso.formatOptions = [.withInternetDateTime]
+if let viaFormatter = iso.date(from: "2026-08-09T10:00:00+05:00"),
+   let utc = fastISO8601Date("2026-08-09T05:00:00Z") {
+    check(abs(viaFormatter.timeIntervalSince(utc)) < 1, "and the fallback lands on the same instant, five hours earlier")
+} else {
+    check(false, "the tolerant formatter should parse an offset stamp")
+}
+
 print(failures == 0 ? "\nALL PASS" : "\n\(failures) FAILURE(S)")
 exit(failures == 0 ? 0 : 1)

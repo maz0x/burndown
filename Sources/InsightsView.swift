@@ -80,6 +80,7 @@ struct InsightsView: View {
         }
     }
     @Environment(\.colorScheme) private var scheme
+    @Environment(\.accessibilityReduceMotion) private var reduce
     @ObservedObject private var chatNames = ChatNames.shared
 
     // MARK: Time scope: re-indexes the recap, attribution lists, and exports.
@@ -125,26 +126,56 @@ struct InsightsView: View {
     }
     /// The scope's record slice. The full-history scan feeds everything once it lands; before
     /// that (and always for the engine-bounded windows) engine.records is the honest source.
+    /// Where the scope's window opens.
+    ///
+    /// Whole days, counted back from the start of today, so "7 days" means today plus the six full
+    /// days before it. A rolling 168 hours instead lands mid-morning seven days ago, which touches
+    /// EIGHT calendar days almost every time: that is why the summary underneath used to say
+    /// "7 days" and then, correctly, "across 8 days". The days are the unit the reader thinks in,
+    /// so the window is cut in days.
+    private var scopeSince: Date {
+        let sod = Calendar.current.startOfDay(for: now)
+        switch scope {
+        case .today: return sod
+        case .week:  return Calendar.current.date(byAdding: .day, value: -6, to: sod) ?? sod
+        case .month: return Calendar.current.date(byAdding: .day, value: -29, to: sod) ?? sod
+        case .all:   return .distantPast
+        }
+    }
+    /// How many days the current scope covers, for the export's "N of M days" line. All time is
+    /// measured from the earliest record there actually is.
+    private var scopeDayCount: Int {
+        let sod = Calendar.current.startOfDay(for: now)
+        switch scope {
+        case .today: return 1
+        case .week:  return 7
+        case .month: return 30
+        case .all:
+            guard let first = (scanned && !allRecords.isEmpty ? allRecords : records).map(\.date).min()
+            else { return 1 }
+            return max(1, (Calendar.current.dateComponents([.day], from: Calendar.current.startOfDay(for: first),
+                                                           to: sod).day ?? 0) + 1)
+        }
+    }
+    /// Released when the window closes: see the note in windowWillClose.
+    private func releaseHistory() {
+        guard !isPreview else { return }   // the offscreen renderer has no window to close
+        allRecords = []; allSessions = []; scanned = false; memo = Memo()
+    }
     private var scopedRecs: [UsageRecord] {
         memo.value("scoped", dataKey) {
             let source = scanned && !allRecords.isEmpty ? allRecords : records
-            switch scope {
-            case .today: return recordsInWindow(source, since: Calendar.current.startOfDay(for: now), until: now.addingTimeInterval(1))
-            case .week:  return recordsInWindow(source, since: now.addingTimeInterval(-7 * 86_400), until: now.addingTimeInterval(1))
-            case .month: return recordsInWindow(source, since: now.addingTimeInterval(-30 * 86_400), until: now.addingTimeInterval(1))
-            case .all:   return source
-            }
+            if scope == .all { return source }
+            return recordsInWindow(source, since: scopeSince, until: now.addingTimeInterval(1))
         }
     }
-    /// Per-conversation rows inside the scope (sessions carry their last-activity date).
+    /// Per-conversation rows inside the scope, built from the scope's own records.
+    ///
+    /// Filtering the lifetime rows by last-activity date, which is what this did, reported a chat's
+    /// WHOLE life whenever it was touched inside the window. See sessionsInWindow.
     private var scopedSessions: [SessionUsage] {
         memo.value("scopedSessions", dataKey) {
-        switch scope {
-        case .today: return allSessions.filter { $0.date >= Calendar.current.startOfDay(for: now) }
-        case .week:  return allSessions.filter { $0.date >= now.addingTimeInterval(-7 * 86_400) }
-        case .month: return allSessions.filter { $0.date >= now.addingTimeInterval(-30 * 86_400) }
-        case .all:   return allSessions
-        }
+            scope == .all ? allSessions : sessionsInWindow(scopedRecs)
         }
     }
     private var blockRecs: [UsageRecord] {
@@ -176,6 +207,7 @@ struct InsightsView: View {
         .overlay(alignment: .bottom) { if let t = exportToast { toast(t, p) } }
         .onAppear { if scanned { return }
                     engine.scanAllUsage { recs, sess in allRecords = recs; allSessions = sess; scanned = true } }
+        .onReceive(NotificationCenter.default.publisher(for: .insightsClosed)) { _ in releaseHistory() }
     }
 
     /// A- / A+ in the corner. Nothing else in the window competes for that spot, and a reader who
@@ -269,15 +301,27 @@ struct InsightsView: View {
                     p.bg.opacity(0.6).ignoresSafeArea()
                     VStack(spacing: 12) {
                         LivingFlameMark(size: 36)   // the one loading exception where the mark may breathe
-                        // Indeterminate session sweep over track, no spinner.
-                        TimelineView(.animation(minimumInterval: 1.0 / 15.0)) { ctx in   // cap at 15fps
-                            let t = ctx.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.44) / 1.44
+                        // Indeterminate session sweep over track, no spinner. Reduce Motion gets a
+                        // still bar instead: the sweep carries no information a stationary bar does
+                        // not, so honouring the setting costs nothing, and a system-wide request to
+                        // stop moving things is not something to answer with a perpetual animation.
+                        if reduce {
                             Capsule().fill(p.track).frame(width: 120, height: 3)
                                 .overlay(alignment: .leading) {
                                     Capsule().fill(p.session).frame(width: 40, height: 3)
-                                        .offset(x: CGFloat(t) * 120 - 20)
-                                        .mask(Capsule().frame(width: 120, height: 3))
                                 }
+                                .accessibilityHidden(true)
+                        } else {
+                            TimelineView(.animation(minimumInterval: 1.0 / 15.0)) { ctx in   // cap at 15fps
+                                let t = ctx.date.timeIntervalSinceReferenceDate.truncatingRemainder(dividingBy: 1.44) / 1.44
+                                Capsule().fill(p.track).frame(width: 120, height: 3)
+                                    .overlay(alignment: .leading) {
+                                        Capsule().fill(p.session).frame(width: 40, height: 3)
+                                            .offset(x: CGFloat(t) * 120 - 20)
+                                            .mask(Capsule().frame(width: 120, height: 3))
+                                    }
+                            }
+                            .accessibilityHidden(true)
                         }
                         Text("Reading your usage history").font(.system(size: ts(12), weight: .medium)).foregroundStyle(p.ink)
                         Text("Numbers appear when the full scan finishes.").font(.system(size: ts(10.5))).foregroundStyle(p.sub)
@@ -338,7 +382,14 @@ struct InsightsView: View {
         let hoursElapsed = max(0.5, now.timeIntervalSince(weekStart) / 3600)
         let ratePerHour = snap.weeklyPct / hoursElapsed
         let hoursUntilReset = max(0, reset.timeIntervalSince(now) / 3600)
-        let sessionFraction = snap.weeklyCap > 0 ? Double(snap.sessionCap) / Double(snap.weeklyCap) : 0.1
+        // Both caps carry floor DEFAULTS until enough real sessions have been seen to learn them,
+        // and dividing one default by another produces a confident-looking "about N sessions left"
+        // that is arithmetic on two placeholders. When nothing has been learned, the pacing line
+        // keeps its verdict and drops the session count.
+        let capsLearned = snap.sessionCap != UsageSnapshot.defaultSessionCap
+            && snap.weeklyCap != UsageSnapshot.defaultWeeklyCap
+        let sessionFraction = (capsLearned && snap.weeklyCap > 0)
+            ? Double(snap.sessionCap) / Double(snap.weeklyCap) : 0
         return weeklyPacing(fractionUsed: snap.weeklyPct, ratePerHour: ratePerHour,
                             hoursUntilReset: hoursUntilReset, sessionFraction: sessionFraction).summary
     }
@@ -356,10 +407,18 @@ struct InsightsView: View {
     private func budgetStatusNow() -> BudgetStatus {
         let metric: BudgetMetric = settings.budgetMetric == "tokens" ? .tokens : .usd
         let period: BudgetPeriod = settings.budgetPeriod == "day" ? .day : .week
-        let start = period == .day ? Calendar.current.startOfDay(for: now) : now.addingTimeInterval(-7 * 86_400)
+        // A weekly budget follows the week Claude is actually measuring, when that is known. A
+        // rolling seven days never lines up with the window that resets, so the budget could read
+        // "nearly spent" on a week that had just started over.
+        let weekStart = engine.snapshot.weeklyResetAt.map { $0.addingTimeInterval(-7 * 86_400) }
+            ?? now.addingTimeInterval(-7 * 86_400)
+        let start = period == .day ? Calendar.current.startOfDay(for: now) : weekStart
         let agg = totals(recordsInWindow(records, since: start, until: now.addingTimeInterval(1)))
         let spent = metric == .tokens ? Double(agg.tokens) : agg.cost
-        let elapsed = period == .day ? min(1, max(0.0001, now.timeIntervalSince(start) / 86_400)) : 1.0
+        // The week used to pass 1.0, which says the period is over and quietly turns the projection
+        // off. Both periods now report how far through they really are, so a week paces like a day.
+        let periodLength: TimeInterval = period == .day ? 86_400 : 7 * 86_400
+        let elapsed = min(1, max(0.0001, now.timeIntervalSince(start) / periodLength))
         return budgetStatus(spent: spent,
                             config: BudgetConfig(metric: metric, limit: settings.budgetLimit, period: period),
                             elapsedFraction: elapsed)
@@ -726,7 +785,9 @@ struct InsightsView: View {
             HStack(alignment: .top, spacing: 20) {
                 exportButton("Report", "Markdown. Everything on this page: totals, models, projects, biggest chats, day by day.", p) {
                     saveExport(exportReportMarkdown(records: scopedRecs, sessions: scopedSessions,
-                                                    scopeLabel: scope.label, generated: Date()),
+                                                    scopeLabel: scope.label, generated: Date(),
+                                                    windowDays: scopeDayCount,
+                                                    display: { ChatNames.shared.display($0) }),
                                "burndown-report-\(slug)-\(date).md")
                 }
                 exportButton("Spreadsheet", "CSV. One row per usage record, for your own analysis.", p) {

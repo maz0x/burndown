@@ -15,6 +15,8 @@ struct WelcomeView: View {
     @Environment(\.colorScheme) private var scheme
     @State private var page = 0
     @State private var borrowed = false   // "Use my Claude Code sign-in" succeeded this session
+    @State private var borrowing = false  // the attempt is in flight, so the button can say so
+    @State private var borrowError: String? = nil
 
     private let pages = ["Welcome", "Your numbers", "Connect", "Find your way"]
 
@@ -34,7 +36,10 @@ struct WelcomeView: View {
             bottomBar(p)
         }
         .padding(24)
-        .frame(width: 340, height: 430)
+        // Sized by the WINDOW, not by the view. A hard frame here overrides whatever the window was
+        // set to, which is exactly how the Account window ended up truncating its own text: the
+        // window was widened and the view inside it stayed 340 points wide. Same trap, third place.
+        .frame(minWidth: 320, maxWidth: .infinity, minHeight: 400, maxHeight: .infinity, alignment: .top)
         .background(p.bg)
         .onAppear { page = initialPage }
     }
@@ -95,20 +100,30 @@ struct WelcomeView: View {
             }
             if UsageEngine.cliSignInPresent() {
                 bigButton(p, primary: false,
-                          title: borrowed ? "Connected to your Claude Code sign-in" : "Use my Claude Code sign-in",
+                          title: borrowed ? "Connected to your Claude Code sign-in"
+                                 : borrowing ? "Connecting\u{2026}" : "Use my Claude Code sign-in",
                           caption: borrowed ? "Live usage is on. You can disconnect any time from the Account window."
-                                            : "Borrows the sign-in Claude Code already has on this Mac. Nothing new to approve; disconnect any time.") {
+                                 : borrowError ?? (borrowing ? "Asking Claude for your current limits."
+                                            : "Borrows the sign-in Claude Code already has on this Mac. Nothing new to approve; disconnect any time.")) {
                     guard !borrowed else { return }
                     settings.borrowCLI = true
                     if !settings.usageAPI { settings.usageAPI = true }
                     engine.usageEnabled = true
-                    engine.fetchLive(force: true)
                     engine.publishAccount()
-                    borrowed = true
+                    // "Connected" only once the service has actually answered. This used to be set
+                    // the moment the button was pressed, so a machine with no Claude Code sign-in,
+                    // or no network, was told it was connected and then showed local estimates
+                    // while claiming to be live.
+                    borrowing = true
+                    engine.fetchLive(force: true) { ok in
+                        borrowing = false
+                        borrowed = ok
+                        if !ok { borrowError = "Could not read a Claude Code sign-in on this Mac." }
+                    }
                 }
             }
             bigButton(p, primary: false, title: "Not now",
-                      caption: "Burndown estimates from the local logs only and contacts nothing. Change your mind any time in Settings, General.") {
+                      caption: "Burndown reads only the local logs and never sends your usage anywhere. It still checks for its own updates, which you can turn off in Settings, General. Change your mind any time.") {
                 withAnimation(.easeInOut(duration: 0.15)) { page = min(page + 1, pages.count - 1) }
             }
         }
@@ -140,7 +155,7 @@ struct WelcomeView: View {
             tourRow(p, icon: "flame.fill", tint: p.session,
                     text: "The menu bar flame burns with your session. Click it for the full picture.")
             tourRow(p, icon: "questionmark.circle", tint: p.sub,
-                    text: "Everything explains itself: hover any label, number or chart title, or click one of the small info marks. Plain English, no manual.")
+                    text: "Everything explains itself: click any of the small info marks. In the Settings and Account windows you can hover a label as well. Plain English, no manual.")
             tourRow(p, icon: "chart.bar", tint: p.sub,
                     text: "Pick your charts in Settings, Charts. All 24 are drawn there so you can see before you choose.")
             tourRow(p, icon: "bell", tint: p.sub,

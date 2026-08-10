@@ -22,7 +22,6 @@ struct GlyphData {
     var weekLeftText: String = ""    // weekly reset countdown ("3d 4h") - for weeklyClock
 
     // ── live fields (drive the animated styles) ──
-    var costText: String = ""    // "$112"
     var tokText: String = ""     // "≈3.0M" - roll
     var needle: Double = 0       // 0…1 eased token rate - pace
     var active: Bool = false     // tokens flowing right now - accent vs dim
@@ -306,17 +305,27 @@ enum MenuBarRenderer {
     // The % beside a token figure that rolls (odometer) when it changes.
     private static func roll(_ g: GlyphData) -> NSImage {
         let ap = attrs(12.5, .semibold, g.digits)
-        let at = attrs(12.5, .semibold, g.active ? g.digits : g.secondary)
+        // Idle ink is the digit colour faded, not `secondary`: that is the WEEKLY metric's hue, and
+        // borrowing it made an idle session figure look like a weekly one. This is also the only
+        // style that tints its TEXT by activity at all, so it has to be the quietest version of the
+        // same colour rather than a different colour.
+        let at = attrs(12.5, .semibold, g.active ? g.digits : g.digits.withAlphaComponent(0.55))
         let pT = g.pctText as NSString, pS = pT.size(withAttributes: ap)
         let tokNew = g.tokText as NSString, tokOld = (g.rollFrom.isEmpty ? g.tokText : g.rollFrom) as NSString
         let tN = tokNew.size(withAttributes: at), tO = tokOld.size(withAttributes: at)
-        let tokW = max(tN.width, tO.width), gap: CGFloat = 5
+        // Reserve the wider of the two ONLY while a roll is actually in progress. Settled, the old
+        // value is irrelevant, and reserving room for it left the item padded by however much
+        // longer the previous number happened to be, which is what made the menu bar twitch when a
+        // figure shrank.
+        let rolling = g.rollPhase < 1 && !g.rollFrom.isEmpty && g.rollFrom != g.tokText
+        let tokW = rolling ? max(tN.width, tO.width) : tN.width
+        let gap: CGFloat = 5
         let w = ceil(pS.width) + gap + ceil(tokW), h = max(ceil(pS.height), ceil(tN.height))
         let phase = max(0, min(1, g.rollPhase))
         return img(w, h) {
             pT.draw(at: NSPoint(x: 0, y: (h - pS.height) / 2), withAttributes: ap)
             let tx = ceil(pS.width) + gap, baseY = (h - tN.height) / 2
-            if phase >= 1 || g.rollFrom.isEmpty || g.rollFrom == g.tokText {
+            if !rolling {
                 tokNew.draw(at: NSPoint(x: tx, y: baseY), withAttributes: at)
             } else {
                 NSGraphicsContext.saveGraphicsState()

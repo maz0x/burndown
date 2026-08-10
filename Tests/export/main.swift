@@ -133,5 +133,48 @@ let empty = exportReportMarkdown(records: [], sessions: [], scopeLabel: "Today",
 check(empty.contains("# Burndown usage report") && empty.contains("**Period:** Today"),
       "an empty period still produces a real report")
 
+// A spreadsheet runs a cell beginning with =, +, - or @ as a formula when the file is opened. Chat
+// titles are whatever was typed into a conversation, and this app writes them straight into a file
+// the user then opens in Excel. A chat named "=HYPERLINK(...)" is a live formula in that cell.
+print("an exported field cannot become a formula:")
+do {
+    let hostile = [
+        UsageRecord(date: Date(), model: "claude-fable-5", project: "p",
+                    session: "=HYPERLINK(\"http://example.invalid\",\"click\")",
+                    input: 1, output: 1, cache5m: 0, cache1h: 0, cacheRead: 0),
+        UsageRecord(date: Date(), model: "claude-fable-5", project: "+p", session: "-2+3",
+                    input: 1, output: 1, cache5m: 0, cache1h: 0, cacheRead: 0),
+        UsageRecord(date: Date(), model: "claude-fable-5", project: "@SUM(A1)", session: "@cmd",
+                    input: 1, output: 1, cache5m: 0, cache1h: 0, cacheRead: 0),
+    ]
+    let csv = exportCSV(hostile)
+    for line in csv.split(separator: "\n").dropFirst() {
+        for field in line.split(separator: ",", omittingEmptySubsequences: false) {
+            let f = field.trimmingCharacters(in: .whitespaces)
+            check(!(f.first.map { "=+-@".contains($0) } ?? false),
+                  "no field starts with a formula character (\(f.prefix(12)))")
+        }
+    }
+    // The CSV carries no chat-title column, so the title itself never reaches it: the free-text
+    // field that DOES reach it is the project, taken from a directory name. Narrower than it first
+    // looked, and defended the same way.
+    check(csv.contains("'+p"), "the project name is still readable, just neutralised")
+    check(csv.contains("'@SUM(A1)"), "and so is one that looks like a function call")
+    check(!csv.contains("\n=") && !csv.contains(",="), "nothing slipped through at a field boundary")
+}
+
+// A title lands in a Markdown report the user may open in a viewer, where "[x](http://...)" renders
+// as a working link the reader never wrote.
+print("a chat title cannot become a link:")
+do {
+    let recs = [UsageRecord(date: Date(), model: "claude-fable-5", project: "app",
+                            session: "[click me](http://example.invalid)",
+                            input: 10, output: 10, cache5m: 0, cache1h: 0, cacheRead: 0)]
+    let md = exportReportMarkdown(records: recs, sessions: sessionsInWindow(recs),
+                                  scopeLabel: "7 days", generated: Date())
+    check(!md.contains("[click me](http"), "the link syntax is escaped rather than rendered")
+    check(md.contains("click me"), "but the words are still there to read")
+}
+
 print(failures == 0 ? "\nALL EXPORT TESTS PASSED" : "\n\(failures) FAILURE(S)")
 exit(failures == 0 ? 0 : 1)

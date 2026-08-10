@@ -114,3 +114,25 @@ func moneyTable(_ v: Double) -> String {
     f.usesGroupingSeparator = true
     return "$" + (f.string(from: NSNumber(value: v)) ?? String(format: "%.2f", v))
 }
+
+/// The whole-percent pair for a usage fraction: what is used, and what is left.
+///
+/// Both come from ONE rounding, because rounding them separately lets them disagree. At 61.5% used
+/// the two independent roundings give 62 used and 39 left, which is 101 between them, and the
+/// reader who checks is right to trust neither. Deriving the remainder from the rounded used value
+/// makes them add up by construction.
+func usedAndLeftPercent(_ fractionUsed: Double) -> (used: Int, left: Int) {
+    let used = Int((max(0, min(1, fractionUsed)) * 100).rounded())
+    return (used, 100 - used)
+}
+
+/// A money label for a chart axis.
+///
+/// "$0" is reserved for actually zero. A sub-dollar tick used to print "$0" as well, so a day that
+/// cost forty cents put "$0" at the TOP of its own axis, which reads as an axis for a day that cost
+/// nothing. Whole dollars round rather than truncate, so a tick drawn at $7.80 does not claim $7.
+func moneyAxisLabel(_ v: Double) -> String {
+    if v <= 0 { return "$0" }
+    if v < 1 { return moneyCents(v) }
+    return "$\(Int(v.rounded()))"
+}

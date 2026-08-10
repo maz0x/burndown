@@ -8,7 +8,7 @@ cd "$(dirname "$0")"
 OUT="$(mktemp -d)/burndown-aggregation-tests"
 
 echo "→ Building aggregation test binary (Aggregation + Pricing)"
-swiftc -O -o "$OUT" Sources/Aggregation.swift Sources/SessionTitles.swift Sources/Pricing.swift Tests/aggregation/main.swift
+swiftc -O -o "$OUT" Sources/PrivateFile.swift Sources/Aggregation.swift Sources/SessionTitles.swift Sources/Pricing.swift Tests/aggregation/main.swift
 
 echo "→ Running"
 "$OUT"

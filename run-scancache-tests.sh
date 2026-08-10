@@ -6,6 +6,6 @@ set -euo pipefail
 cd "$(dirname "$0")"
 OUT="$(mktemp -d)/ScanCacheTests"
 echo "→ Building scan-cache test binary (ScanCache)"
-swiftc -O -o "$OUT" Sources/ScanCache.swift Tests/scancache/main.swift
+swiftc -O -o "$OUT" Sources/PrivateFile.swift Sources/ScanCache.swift Tests/scancache/main.swift
 echo "→ Running"
 "$OUT"

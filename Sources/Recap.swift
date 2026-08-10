@@ -91,7 +91,11 @@ func recapText(_ r: RecapSummary) -> String {
     // "top project Home folder" says nothing: that bucket is everything not run inside a project
     // folder, which for many people is most of their work. The sentence skips it rather than
     // dressing it up as a finding.
-    if r.topProject != "(none)", r.topProject != kHomeProject, r.topProject != "(unknown)" {
+    // kUnknownProject, not the literal "(unknown)" it used to be called. The rename left this
+    // guard testing a string the app no longer produces, so "top project No folder recorded"
+    // could reach the sentence: the one bucket that means "we could not tell" presented as a
+    // finding about the reader's week.
+    if r.topProject != "(none)", r.topProject != kHomeProject, r.topProject != kUnknownProject {
         details.append("top project \(r.topProject)")
     }
     if r.topModelFamily != "(none)" { details.append("mostly \(r.topModelFamily)") }

@@ -19,11 +19,21 @@ private func usd4(_ v: Double) -> String {
     String(format: "%.4f", v)
 }
 
-/// Strip characters that would break a bare (unquoted) CSV field: commas, quotes, and newlines all
-/// become spaces. Project rule is to avoid commas inside fields rather than quote them.
+/// Make a value safe to put in a bare CSV field, in both senses of safe.
+///
+/// The first is layout: commas, quotes and newlines would break an unquoted field, so they become
+/// spaces. The project rule is to avoid them rather than quote around them.
+///
+/// The second is that a spreadsheet treats a cell beginning with =, +, - or @ as a FORMULA and
+/// runs it on open. Chat titles come from whatever was typed into a conversation, and this app
+/// writes them into a file the user then opens in Excel or Numbers. A chat named
+/// "=HYPERLINK(...)" is a working formula in that cell, which is a way to make someone's own
+/// exported data act against them. A leading apostrophe is the standard defence: spreadsheets
+/// treat the cell as text and do not display the apostrophe.
 private func csvSafe(_ s: String) -> String {
     var out = s
-    for bad in [",", "\"", "\n", "\r"] { out = out.replacingOccurrences(of: bad, with: " ") }
+    for bad in [",", "\"", "\n", "\r", "\t"] { out = out.replacingOccurrences(of: bad, with: " ") }
+    if let f = out.first, "=+-@".contains(f) { out = "'" + out }
     return out
 }
 
@@ -117,10 +127,24 @@ func exportMarkdownByDay(_ records: [UsageRecord], calendar: Calendar = .current
 ///
 /// Pure and deterministic: same records in, same bytes out, so it can be tested and diffed.
 func exportReportMarkdown(records: [UsageRecord], sessions: [SessionUsage], scopeLabel: String,
-                          generated: Date, calendar: Calendar = .current) -> String {
+                          generated: Date, calendar: Calendar = .current,
+                          windowDays: Int? = nil,
+                          // Renames are applied by the UI layer, which owns the alias table. Passed
+                          // in rather than reached for, so this file stays headless-testable. The
+                          // export used to print raw titles, so a chat the reader had renamed
+                          // months ago came back under its old name in their own report.
+                          display: (String) -> String = { $0 }) -> String {
     let agg = totals(records)
     let days = rollupByDay(records, calendar: calendar)
     let activeDays = days.filter { $0.tokens > 0 }
+    // "Days with usage: 5 of 5" was the only answer this could ever give, because the denominator
+    // counted the days that appear in the rollup, and a day with no usage does not appear. The
+    // caller passes the window's real length so the line can say 5 of 30, which is the fact the
+    // reader wanted.
+    let windowDayCount = windowDays ?? days.count
+    // Conversations, not log files. Claude Code starts a new log whenever a conversation is resumed
+    // or compacted, so counting rows here reported one long piece of work as four conversations.
+    let conversationCount = mergeSessions(sessions).count
     let busiest = days.max { $0.tokens < $1.tokens }
     let stamp = DateFormatter()
     stamp.dateFormat = "yyyy-MM-dd HH:mm"
@@ -140,8 +164,8 @@ func exportReportMarkdown(records: [UsageRecord], sessions: [SessionUsage], scop
     out.append("| Tokens | \(fmtTok(agg.tokens)) (\(agg.tokens)) |")
     out.append("| Estimated cost | \(moneyTable(agg.cost)) |")
     out.append("| Usage records | \(records.count) |")
-    out.append("| Conversations | \(sessions.count) |")
-    out.append("| Days with usage | \(activeDays.count) of \(days.count) |")
+    out.append("| Conversations | \(conversationCount) |")
+    out.append("| Days with usage | \(activeDays.count) of \(windowDayCount) |")
     if let b = busiest, b.tokens > 0 {
         out.append("| Busiest day | \(b.key), \(fmtTok(b.tokens)) |")
     }
@@ -193,7 +217,7 @@ func exportReportMarkdown(records: [UsageRecord], sessions: [SessionUsage], scop
             out.append("| Conversation | Tokens | Estimated cost |")
             out.append("| --- | ---: | ---: |")
             for s in homeChats {
-                out.append("| \(mdSafe(s.title)) | \(fmtTok(s.tokens)) | \(moneyTable(s.cost)) |")
+                out.append("| \(mdSafe(display(s.title))) | \(fmtTok(s.tokens)) | \(moneyTable(s.cost)) |")
             }
             out.append("")
         }
@@ -208,7 +232,7 @@ func exportReportMarkdown(records: [UsageRecord], sessions: [SessionUsage], scop
         out.append("| --- | --- | --- | ---: | ---: |")
         let d = DateFormatter(); d.dateFormat = "yyyy-MM-dd"; d.calendar = calendar
         for s in top {
-            out.append("| \(mdSafe(s.title)) | \(mdSafe(s.project)) | \(d.string(from: s.date)) "
+            out.append("| \(mdSafe(display(s.title))) | \(mdSafe(s.project)) | \(d.string(from: s.date)) "
                        + "| \(fmtTok(s.tokens)) | \(moneyTable(s.cost)) |")
         }
         out.append("")
@@ -237,6 +261,15 @@ func exportReportMarkdown(records: [UsageRecord], sessions: [SessionUsage], scop
 
 /// Keep a title from breaking the table it sits in.
 private func mdSafe(_ s: String) -> String {
-    s.replacingOccurrences(of: "|", with: "\\|")
-     .replacingOccurrences(of: "\n", with: " ")
+    // Pipes and newlines would break the table this sits in. The brackets and backtick matter for a
+    // different reason: a chat title is arbitrary text that lands in a document the user may open
+    // in a Markdown viewer, and "[click](http://...)" renders as a working link the reader did not
+    // write, while a stray backtick swallows the rest of the row into a code span. Escaping the
+    // characters that CARRY meaning leaves the title readable and stops it acting.
+    var out = s
+    for ch in ["\\", "|", "[", "]", "`", "<", ">"] {
+        out = out.replacingOccurrences(of: ch, with: "\\" + ch)
+    }
+    return out.replacingOccurrences(of: "\n", with: " ")
+              .replacingOccurrences(of: "\r", with: " ")
 }

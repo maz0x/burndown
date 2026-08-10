@@ -44,5 +44,18 @@ let otherDay = noon.addingTimeInterval(3 * 86_400)
 check(untitledChatLabel(otherDay, now: noon) != untitledChatLabel(noon, now: noon),
       "different days read differently")
 
+// A chat message can contain any text at all, including text that talks about the tags this parser
+// looks for. The two tags were located independently and sliced between, so a message that merely
+// mentioned the closing one first produced a range ending before it started, which is a crash
+// rather than an empty result: the app died on opening a conversation whose first message
+// discussed slash commands.
+print("a message that mentions the tags does not crash:")
+check(cleanChatTitle("the closing tag is </command-name> and the opening one is <command-name>") != nil,
+      "tags in the wrong order are left alone rather than sliced")
+check(cleanChatTitle("</command-name>") == nil, "a lone tag is still refused as a title, as anything starting with < is")
+check(cleanChatTitle("<command-name>commit</command-name>") == "commit", "and a real pair still extracts the name")
+check(cleanChatTitle("<command-name></command-name>") == nil, "an empty pair yields no title rather than a blank one")
+_ = cleanChatTitle("</command-name><command-name>")   // reaching this line at all is the test
+
 print(failures == 0 ? "\nALL PASS" : "\n\(failures) FAILURE(S)")
 exit(failures == 0 ? 0 : 1)

@@ -54,10 +54,15 @@ struct ModelUse: Equatable, Identifiable {
 struct UsageSnapshot {
     // ── Local-log estimates / token counts (supplementary) ──
     var sessionFresh: Int = 0
-    var sessionCap: Int = 1_000_000
+    /// The floor used until enough real sessions have been observed to learn the true cap. Named,
+    /// because "have we learned anything yet" is a question other code has to be able to ask, and
+    /// comparing against a literal repeated at the asking site is how those two drift apart.
+    static let defaultSessionCap = 1_000_000
+    static let defaultWeeklyCap = 2_000_000
+    var sessionCap: Int = defaultSessionCap
     var resetAt: Date? = nil
     var weeklyFresh: Int = 0
-    var weeklyCap: Int = 2_000_000
+    var weeklyCap: Int = defaultWeeklyCap
     var weeklyCost: Double = 0
     var sessionCost: Double = 0
     var modelUsage: [ModelUse] = []   // per-family share of this week's spend (local; all models)
@@ -223,9 +228,10 @@ final class UsageEngine: ObservableObject {
         let activeStart = blocks.last.flatMap { now < $0.start.addingTimeInterval(FIVE_HOURS) ? $0.start : nil }
         let newCap = resolveCap(blocks: blocks, excludingStart: activeStart)
         let newWeekly = resolveWeeklyCap(entries: entries, now: now)
-        let snap = Self.computeSnapshot(entries: entries, cap: newCap, weeklyCap: newWeekly, now: now)
-        print(String(format: "session: $%.2f  (%d fresh tokens)", snap.sessionCost, snap.sessionFresh))
-        print(String(format: "weekly:  $%.2f  (%d fresh tokens)", snap.weeklyCost, snap.weeklyFresh))
+        let snap = Self.computeSnapshot(entries: entries, cap: newCap, weeklyCap: newWeekly, now: now,
+                                        weeklyResetAt: self.snapshot.weeklyResetAt)
+        print(String(format: "session: $%.2f  (%ld fresh tokens)", snap.sessionCost, snap.sessionFresh))
+        print(String(format: "weekly:  $%.2f  (%ld fresh tokens)", snap.weeklyCost, snap.weeklyFresh))
         // Per calendar day (local), to line up with ccusage's daily rows.
         let cal = Calendar.current
         var byDay: [Date: Double] = [:]
@@ -245,15 +251,22 @@ final class UsageEngine: ObservableObject {
     var recordDays: Int = 30
 
     func fullScan() {
+        // Read every piece of shared state on the caller's thread, the way quickRefresh does.
+        // recordDays is written by the settings sink on main, and reading it from the background
+        // closure is a plain unsynchronized cross-thread read of a value the user can change at any
+        // moment. prevWeeklyReset is the same story: it belongs to the published snapshot.
+        let days = max(30, self.recordDays)
+        let prevWeeklyReset = self.snapshot.weeklyResetAt
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
-            let entries = self.loadEntries(since: Date().addingTimeInterval(-Double(max(30, self.recordDays)) * 24 * 3600))
+            let entries = self.loadEntries(since: Date().addingTimeInterval(-Double(days) * 24 * 3600))
             let blocks = Self.buildBlocks(entries)
             let now = Date()
             let activeStart = blocks.last.flatMap { now < $0.start.addingTimeInterval(FIVE_HOURS) ? $0.start : nil }
             let newCap = self.resolveCap(blocks: blocks, excludingStart: activeStart)
             let newWeekly = self.resolveWeeklyCap(entries: entries, now: now)
-            let snap = Self.computeSnapshot(entries: entries, cap: newCap, weeklyCap: newWeekly, now: now)
+            let snap = Self.computeSnapshot(entries: entries, cap: newCap, weeklyCap: newWeekly, now: now,
+                                            weeklyResetAt: prevWeeklyReset)
             DispatchQueue.main.async {
                 self.cap = newCap; self.weeklyCap = newWeekly
                 var s = snap; s.copyLive(from: self.snapshot)
@@ -265,17 +278,29 @@ final class UsageEngine: ObservableObject {
     }
 
     private var refreshInFlight = false   // coalesce: never pile up overlapping full-week log scans
+    /// The same coalescing for the full-history scan, plus everyone waiting on the one in flight.
+    /// Both are touched only on the main thread (scanAllUsage is called from the Insights window).
+    private var scanInFlight = false
+    private var scanWaiters: [([UsageRecord], [SessionUsage]) -> Void] = []
     func quickRefresh() {
         if refreshInFlight { return }     // a scan is already running; the next tick will catch up
         refreshInFlight = true
         let cap = self.cap, weeklyCap = self.weeklyCap
+        let prevWeeklyReset2 = self.snapshot.weeklyResetAt
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
             let scanStart = Date().addingTimeInterval(-WEEK - FIVE_HOURS)
             let entries = self.loadEntries(since: scanStart)
-            let snap = Self.computeSnapshot(entries: entries, cap: cap, weeklyCap: weeklyCap, now: Date())
+            let snap = Self.computeSnapshot(entries: entries, cap: cap, weeklyCap: weeklyCap, now: Date(),
+                                            weeklyResetAt: prevWeeklyReset2)
             let now2 = Date()
             let activeStart = Self.buildBlocks(entries).last.flatMap { now2 < $0.start.addingTimeInterval(FIVE_HOURS) ? $0.start : nil }
+            // Built here, not on main. This maps a week of parsed entries into records, and it ran
+            // inside the main-thread block below on every live tick: a couple of seconds apart,
+            // forever, on the thread that also has to draw. The filter that follows it stays on
+            // main because it reads the published store, and one pass over that array is cheap
+            // next to building this one.
+            let fresh = Self.recordsFrom(entries)
             DispatchQueue.main.async {
                 var s = snap; s.copyLive(from: self.snapshot)
                 self.snapshot = s; self.ready = true
@@ -283,7 +308,7 @@ final class UsageEngine: ObservableObject {
                 // scan only covers ~7 days, and overwriting would snap every 14/30/90-day chart
                 // back to a week of data until the next deep scan.
                 let tail = self.records.filter { $0.date < scanStart }
-                self.records = tail + Self.recordsFrom(entries)
+                self.records = tail + fresh
                 self.activeBlockStart = activeStart
                 self.refreshInFlight = false
             }
@@ -295,10 +320,23 @@ final class UsageEngine: ObservableObject {
     /// live refresh, so it runs only when the Insights window opens. The logs already hold the
     /// complete past, so this is fully retroactive and non-intrusive (read-only).
     func scanAllUsage(completion: @escaping ([UsageRecord], [SessionUsage]) -> Void) {
+        // Coalesced, like quickRefresh. The caller's own guard cannot do this job: Insights only
+        // marks itself scanned when the scan COMPLETES, and its window is kept alive across close
+        // and reopen, so closing it during the first multi-second scan and opening it again starts
+        // a second one. Two scans then walk a thousand files at once and both write the cache.
+        // Everyone waiting gets the single result.
+        scanWaiters.append(completion)
+        if scanInFlight { return }
+        scanInFlight = true
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { DispatchQueue.main.async { completion([], []) }; return }
             let (recs, sessions) = self.scanFilesSync()
-            DispatchQueue.main.async { completion(recs, sessions) }
+            DispatchQueue.main.async {
+                self.scanInFlight = false
+                let waiting = self.scanWaiters
+                self.scanWaiters = []
+                for done in waiting { done(recs, sessions) }
+            }
         }
     }
 
@@ -420,7 +458,8 @@ final class UsageEngine: ObservableObject {
             recs.append(contentsOf: items.map {
                 CachedRecord(ts: $0.0.ts.timeIntervalSince1970, model: $0.0.model,
                              input: $0.0.input, output: $0.0.output, cache5m: $0.0.cache5m,
-                             cache1h: $0.0.cache1h, cacheRead: $0.0.cacheRead)
+                             cache1h: $0.0.cache1h, cacheRead: $0.0.cacheRead,
+                             key: ScanCache.keyHash($0.1))
             })
             next[path] = CachedFile(mod: mod, size: size, offset: base + consumed,
                                     project: project, title: title, records: recs)
@@ -437,9 +476,18 @@ final class UsageEngine: ObservableObject {
         }
 
         // Flatten. De-duplication happens across the whole set, not per file, because the same
-        // message can appear in more than one log after a resume.
+        // message really does appear in more than one log: Claude Code copies a conversation's
+        // earlier usage lines into the new file when it is resumed or compacted. Counting those
+        // copies inflated every Insights total, and the per-chat rows worst of all, since the
+        // duplicates all land on the same conversation. The live path has always de-duped this way;
+        // this one silently did not, so the card and Insights disagreed about the same day.
+        //
+        // Files are visited in a dictionary's arbitrary order, so which copy is kept is arbitrary
+        // too. That is fine, because the copies are identical by construction: same message id,
+        // same request id, same token counts.
         var records: [UsageRecord] = []
         var sessions: [SessionUsage] = []
+        var seen = Set<UInt64>()
         records.reserveCapacity(next.values.reduce(0) { $0 + $1.records.count })
         for (path, f) in next {
             guard !f.records.isEmpty else { continue }
@@ -447,6 +495,12 @@ final class UsageEngine: ObservableObject {
             var cost = 0.0
             var maxTs = Date(timeIntervalSince1970: 0)
             for r in f.records {
+                // key 0 means the line carried no message id, so there is nothing to match on and
+                // the row is kept. Dropping unidentifiable rows would lose real usage.
+                if r.key != 0 {
+                    if seen.contains(r.key) { continue }
+                    seen.insert(r.key)
+                }
                 let date = Date(timeIntervalSince1970: r.ts)
                 let rec = UsageRecord(date: date, model: r.model, project: f.project, session: f.title,
                                       input: r.input, output: r.output, cache5m: r.cache5m,
@@ -457,8 +511,20 @@ final class UsageEngine: ObservableObject {
                                   cache5m: r.cache5m, cache1h: r.cache1h, cacheRead: r.cacheRead)
                 if date > maxTs { maxTs = date }
             }
+            // Every row in this file was a copy of one already counted, which is exactly what a
+            // resumed conversation's older log looks like once the newer one has been read. It
+            // contributes nothing, and listing it would put an empty chat dated 1970 in front of
+            // the reader.
+            guard tokens > 0 || cost > 0 else { continue }
             sessions.append(SessionUsage(id: path, title: f.title, project: f.project,
                                          date: maxTs, tokens: tokens, cost: cost))
+        }
+        if ProcessInfo.processInfo.environment["CUB_SCAN_TIME"] != nil {
+            let raw = next.values.reduce(0) { $0 + $1.records.count }
+            print("CUB_SCAN: kept \(records.count) of \(raw) records "
+                  + "(\(raw - records.count) were copies of a resumed conversation), "
+                  + "\(sessions.count) chats")
+            fflush(stdout)
         }
         return (records, sessions)
     }
@@ -649,11 +715,20 @@ final class UsageEngine: ObservableObject {
                 var ok = false
                 switch result {
                 case .success(let api):
-                    s.apiSession = api.fiveHour
-                    s.apiWeekly = api.sevenDay
-                    s.apiSonnet = api.sevenDaySonnet
-                    s.apiOpus = api.sevenDayOpus
-                    s.modelLimits = api.modelLimits
+                    // Keep the last good reading for any window this response did not carry.
+                    //
+                    // A response is a success when it parses, not when it is complete: the service
+                    // can answer with the five-hour window and omit the per-model ones, and
+                    // assigning the missing pieces straight through replaced real numbers with
+                    // nothing. The reader watches a cap row vanish and reappear for no reason they
+                    // can see. A window that is genuinely gone stays visible until the next full
+                    // answer, which is the better of the two wrong states: stale beats absent, and
+                    // liveUpdated already says how old the reading is.
+                    s.apiSession = api.fiveHour ?? s.apiSession
+                    s.apiWeekly = api.sevenDay ?? s.apiWeekly
+                    s.apiSonnet = api.sevenDaySonnet ?? s.apiSonnet
+                    s.apiOpus = api.sevenDayOpus ?? s.apiOpus
+                    if !api.modelLimits.isEmpty { s.modelLimits = api.modelLimits }
                     s.liveUpdated = Date()
                     s.liveError = nil
                     self.liveBackoffStep = 0
@@ -699,20 +774,29 @@ final class UsageEngine: ObservableObject {
            size > 2_000_000, let all = try? Data(contentsOf: url) {
             try? all.suffix(all.count / 4).write(to: url)
         }
+        // Created private, then appended to. The append path cannot set permissions, so the file
+        // has to exist with the right mode before the first byte goes into it.
+        if !FileManager.default.fileExists(atPath: url.path) { writePrivate(Data(), to: url) }
+        // The modern throwing API, not seekToEndOfFile/write. The legacy pair raises an
+        // Objective-C exception on a write failure (a full disk, a revoked permission), and a
+        // raised exception in Swift is not catchable: it terminates the process. A diagnostic log
+        // must never be able to take the app down, least of all while it is recording a problem.
         if let h = try? FileHandle(forWritingTo: url) {
-            h.seekToEndOfFile(); h.write(data); try? h.close()
+            defer { try? h.close() }
+            do {
+                try h.seekToEnd()
+                try h.write(contentsOf: data)
+            } catch { /* the log is best effort; losing a line is not worth reporting */ }
         } else {
-            try? data.write(to: url)
+            writePrivate(data, to: url)
         }
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
 
     /// Empty the diagnostic log (sign-out, or the Settings reset).
     static func truncateDebugLog() {
         let url = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".config/burndown/live-debug.log")
-        try? Data().write(to: url)
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        writePrivate(Data(), to: url)
     }
 
     private static func queryUsageAPI() async -> Result<APIUsage, LiveError> {
@@ -881,12 +965,45 @@ final class UsageEngine: ObservableObject {
     /// Keychain item, so sign-out sticks and a fresh install touches nothing without permission.
     static var cliBootstrapAllowed = false
 
+/// One token refresh at a time, and everyone else gets ITS answer.
+///
+/// Coalescing rather than queueing, because a second refresh is not merely wasteful here: refreshing
+/// rotates the refresh token, so the loser of a race presents one that was invalidated a moment ago,
+/// fails, and drops the user back to local estimates with nothing on screen to explain it.
+actor RefreshGate {
+    private var inFlight: Task<String?, Never>?
+    func run(_ make: @Sendable @escaping () async -> String?) async -> String? {
+        if let t = inFlight { return await t.value }
+        let t = Task { await make() }
+        inFlight = t
+        let v = await t.value
+        inFlight = nil
+        return v
+    }
+}
+
+    /// Serialises token refreshes. A refresh ROTATES the refresh token: the old one stops working
+    /// the moment the new one is issued. Two refreshes racing means the slower one presents a token
+    /// that has just been invalidated, fails, and drops the user back to local estimates with no
+    /// explanation. Only one may be in flight, and whoever else arrives waits and re-reads the
+    /// result rather than starting a second one.
+    private static let refreshGate = RefreshGate()
+
     private static func ensureAccessToken() async -> String? {
         let now = Date().timeIntervalSince1970 * 1000
         if let s = loadStored() {
             if s.expMs > now + 60_000 { return s.access }
-            if let r = await refresh(s) { saveStored(r); dbg("refresh=ok(stored)"); return r.access }
-            dbg("refresh=failed(stored)")
+            let got: String? = await refreshGate.run {
+                // Re-read inside the gate: another caller may have refreshed while this one waited,
+                // in which case there is a perfectly good token on disk and nothing left to do.
+                let fresh = Date().timeIntervalSince1970 * 1000
+                let base = loadStored() ?? s
+                if base.expMs > fresh + 60_000 { return base.access }
+                if let r = await refresh(base) { saveStored(r); dbg("refresh=ok(stored)"); return r.access }
+                dbg("refresh=failed(stored)")
+                return nil
+            }
+            if let got { return got }
         }
         guard cliBootstrapAllowed else { dbg("bootstrap=disabled(no consent)"); return nil }
         guard let kc = readKeychainCreds() else { dbg("bootstrap=no-creds"); return nil }
@@ -1020,11 +1137,9 @@ final class UsageEngine: ObservableObject {
         if let og = snapshot.accountOrg { root["org"] = og }
         try? FileManager.default.createDirectory(at: cacheURL.deletingLastPathComponent(),
                                                  withIntermediateDirectories: true)
+        // Owner-only from the instant it exists: this holds account email, org and plan.
         if let data = try? JSONSerialization.data(withJSONObject: root, options: .prettyPrinted) {
-            try? data.write(to: cacheURL)
-            // Owner-only: this now holds account email/org/plan. Keep it private even though it lives
-            // in a local (non-synced) ~/.config path, matching how the token file is locked down.
-            try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: cacheURL.path)
+            writePrivate(data, to: cacheURL)
         }
         writeBurndownContract()
     }
@@ -1052,8 +1167,8 @@ final class UsageEngine: ObservableObject {
             sessionCost: snapshot.sessionCost > 0 ? snapshot.sessionCost : nil
         )
         let url = cacheURL.deletingLastPathComponent().appendingPathComponent("burndown-live.json")
-        try? encodeBurndownLive(live).data(using: .utf8)?.write(to: url)
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        // Carries the current chat's name, so it is owner-only like everything else here.
+        if let d = encodeBurndownLive(live).data(using: .utf8) { writePrivate(d, to: url) }
     }
 
     private func loadLiveCache() {
@@ -1119,7 +1234,8 @@ final class UsageEngine: ObservableObject {
 
     // MARK: - Local snapshot computation
 
-    private static func computeSnapshot(entries: [Entry], cap: Int, weeklyCap: Int, now: Date) -> UsageSnapshot {
+    private static func computeSnapshot(entries: [Entry], cap: Int, weeklyCap: Int, now: Date,
+                                        weeklyResetAt: Date? = nil) -> UsageSnapshot {
         var snap = UsageSnapshot()
         snap.sessionCap = cap
         snap.weeklyCap = weeklyCap
@@ -1129,7 +1245,12 @@ final class UsageEngine: ObservableObject {
             snap.sessionCost = active.cost
             snap.resetAt = active.start.addingTimeInterval(FIVE_HOURS)
         }
-        let weekAgo = now.addingTimeInterval(-WEEK)
+        // The local estimate covers the same week the service is measuring, when the last live
+        // answer told us where that week starts. A rolling seven days does not line up with a fixed
+        // window, so the estimate disagreed with the live figure it stands in for, most visibly
+        // right after a reset when a rolling week still carries the previous week's work.
+        let weekAgo = weeklyResetAt.flatMap { $0 > now ? $0.addingTimeInterval(-WEEK) : nil }
+            ?? now.addingTimeInterval(-WEEK)
         var byFamily: [String: Double] = [:]
         for e in entries where e.ts >= weekAgo {
             snap.weeklyFresh += e.freshTokens
@@ -1215,7 +1336,13 @@ final class UsageEngine: ObservableObject {
     private static func parseUsageBytes(_ data: Data, project: String, session: String,
                                         _ iso: ISO8601DateFormatter, _ isoNoFrac: ISO8601DateFormatter) -> (items: [(Entry, String)], consumed: UInt64) {
         var items: [(Entry, String)] = []
-        for lineData in data.split(separator: 0x0A, omittingEmptySubsequences: false) {
+        // Parse ONLY the complete lines. The trailing piece after the last newline is not consumed
+        // (see `consumed` below), so parsing it here would hand back an entry whose bytes the next
+        // scan reads again: one write landing exactly on a line boundary, and that message is
+        // counted twice. Deciding the boundary once, before the loop, is what keeps the two in step.
+        let lastNL = data.lastIndex(of: 0x0A)
+        let complete = lastNL.map { data[data.startIndex...$0] } ?? Data()[...]
+        for lineData in complete.split(separator: 0x0A, omittingEmptySubsequences: false) {
             guard lineData.range(of: Self.usageNeedle) != nil, let line = String(data: lineData, encoding: .utf8),
                   let ld = line.data(using: .utf8),
                   let obj = try? JSONSerialization.jsonObject(with: ld) as? [String: Any],
@@ -1238,10 +1365,9 @@ final class UsageEngine: ObservableObject {
                 model: (message["model"] as? String) ?? "unknown",
                 project: project, session: session), key))
         }
-        // Consume only through the last newline; a trailing partial line is re-read next scan.
-        let consumed: UInt64
-        if let lastNL = data.lastIndex(of: 0x0A) { consumed = UInt64(data.distance(from: data.startIndex, to: lastNL) + 1) }
-        else { consumed = 0 }
+        // Consume exactly what was parsed: through the last newline. A trailing partial line is
+        // left for the next scan, which reads it once the rest of it exists.
+        let consumed = lastNL.map { UInt64(data.distance(from: data.startIndex, to: $0) + 1) } ?? 0
         return (items, consumed)
     }
 
@@ -1298,10 +1424,21 @@ final class UsageEngine: ObservableObject {
             let session = Self.resolvedTitle(sid: sid, url: url)
             // Read only the appended bytes when the file only grew; otherwise (new / shrank / rotated)
             // read the whole thing.
-            let base = (cached != nil && size >= cached!.offset) ? cached!.offset : 0
-            var items = base > 0 ? cached!.items : []
+            // Appending is only safe when the file has GROWN. Comparing against the parse offset
+            // alone misses the case where a log was rewritten shorter and then grew again past that
+            // offset: the bytes before it are different bytes now, and reading from there splices
+            // the middle of a new file onto entries from an old one. The scan path already tests
+            // both; this one is the same rule, written the same way.
+            let canAppend = cached != nil && size >= cached!.size && size >= cached!.offset
+            let base = canAppend ? cached!.offset : 0
+            var items = canAppend ? cached!.items : []
             guard let h = try? FileHandle(forReadingFrom: url) else {
-                entryCache[path] = FileEntries(mod: mod, size: size, offset: base, items: items); continue
+                // Leave the cache entry exactly as it was. Stamping the file's CURRENT date and
+                // size onto an entry we failed to read makes it look freshly parsed, so the
+                // unchanged check skips it from then on and that conversation's usage is frozen
+                // for the life of the process. A file we could not open is a file we know nothing
+                // new about; the next pass should try again.
+                continue
             }
             try? h.seek(toOffset: base)
             let data = h.readDataToEndOfFile(); try? h.close()
@@ -1309,7 +1446,16 @@ final class UsageEngine: ObservableObject {
             items.append(contentsOf: newItems)
             entryCache[path] = FileEntries(mod: mod, size: size, offset: base + consumed, items: items)
         }
-        entryCache = entryCache.filter { live.contains($0.key) }   // drop deleted files
+        // Drop deleted files, and also files that have fallen entirely out of the window. Only the
+        // first of those used to happen, so every log ever touched kept its parsed entries in
+        // memory for the life of the process: on a machine with a thousand logs the cache grew
+        // without limit and never gave anything back. A file that returns to the window later is
+        // simply re-read from the start, which is what happens for one it had never seen.
+        entryCache = entryCache.filter { path, fe in
+            guard live.contains(path) else { return false }
+            guard let newest = fe.items.last?.entry.ts else { return true }   // parsed, nothing in it
+            return newest >= since
+        }
         // Merge cached items, de-duped by message id (identical copies, so order is irrelevant), filtered by `since`.
         var seen = Set<String>(); var out: [Entry] = []
         for (_, fe) in entryCache {

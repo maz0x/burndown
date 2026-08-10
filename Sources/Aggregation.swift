@@ -29,6 +29,14 @@ struct UsageRecord {
 extension UsageRecord {
     /// All billed tokens for this record (fresh input/output plus every cache bucket).
     var totalTokens: Int { input + output + cache5m + cache1h + cacheRead }
+    /// Everything billed except cache READS: what "how hard am I going right now" should mean.
+    ///
+    /// Cache reads are a tenth the price and many times the volume of anything else, so a rate that
+    /// counts them measures how much context is being re-read rather than how much work is being
+    /// done, and it swamps the number the reader is actually watching. The live rate has always
+    /// been computed this way (LiveActivity.swift); this names the basis so the charts alongside it
+    /// can agree instead of each picking one. A chart that is ABOUT caching still counts reads.
+    var burnTokens: Int { input + output + cache5m + cache1h }
     /// Estimated USD cost, delegating to the shared Pricing table (Pricing.swift).
     var cost: Double {
         tokenCost(model: model, input: input, output: output,
@@ -49,6 +57,8 @@ struct UsageRollup {
 
     var tokens: Int { input + output + cache5m + cache1h + cacheRead }
     var cacheTokens: Int { cache5m + cache1h + cacheRead }
+    /// See UsageRecord.burnTokens: billed tokens minus cache reads.
+    var burnTokens: Int { input + output + cache5m + cache1h }
     var freshTokens: Int { input + output }
 
     mutating func add(_ r: UsageRecord) {
@@ -123,6 +133,39 @@ struct MergedSession: Identifiable {
     let tokens: Int
     let cost: Double
     let parts: Int
+}
+
+/// Per-conversation totals for a slice of records, computed FROM those records.
+///
+/// The obvious-looking alternative is to take the lifetime session rows and keep the ones whose
+/// last activity falls inside the window, and that is what Insights used to do. It is wrong in a
+/// way that is easy to miss and impossible to unsee: a conversation from months ago that you sent
+/// one message to yesterday reports its ENTIRE life as this week's usage. A year-old chat could sit
+/// at the top of "Biggest chats, 7 days" with a number larger than everything else combined.
+///
+/// Known limit: records carry the conversation's title, not its log id, so two different chats that
+/// were both auto-labelled on the same day (both "Untitled chat, Aug 5") add up as one row here,
+/// where the lifetime list keeps them apart. Giving UsageRecord a session id is the real fix and is
+/// tracked separately; counting a named conversation correctly matters more than splitting two
+/// unnamed ones.
+func sessionsInWindow(_ records: [UsageRecord]) -> [SessionUsage] {
+    var by: [String: SessionUsage] = [:]
+    var order: [String] = []
+    for r in records {
+        let title = r.session.isEmpty ? "(unknown)" : r.session
+        let project = r.project.isEmpty ? kUnknownProject : r.project
+        let key = project + "\u{0000}" + title
+        if let e = by[key] {
+            by[key] = SessionUsage(id: e.id, title: e.title, project: e.project,
+                                   date: max(e.date, r.date), tokens: e.tokens + r.totalTokens,
+                                   cost: e.cost + r.cost)
+        } else {
+            by[key] = SessionUsage(id: key, title: title, project: project, date: r.date,
+                                   tokens: r.totalTokens, cost: r.cost)
+            order.append(key)
+        }
+    }
+    return order.compactMap { by[$0] }
 }
 
 func mergeSessions(_ sessions: [SessionUsage]) -> [MergedSession] {

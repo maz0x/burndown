@@ -58,10 +58,16 @@ func nearestSample(_ samples: [TimedSample], to date: Date) -> TimedSample? {
 func modelWeekShareSeries(records: [UsageRecord], weeklyPct: Double,
                           weeklyResetAt: Date?, now: Date = Date()) -> [(label: String, samples: [TimedSample])] {
     guard weeklyPct > 0 else { return [] }
-    // The current weekly window opened seven days before it is due to reset. With no reset time
-    // known, fall back to the earliest record rather than inventing a boundary.
-    let weekStart = weeklyResetAt.map { $0.addingTimeInterval(-7 * 86_400) }
-        ?? records.map(\.date).min() ?? now
+    // The current weekly window opened seven days before it is due to reset.
+    //
+    // With no reset time known (or a stale one that has already passed), the app's own weekly
+    // figure is a rolling seven days, so this has to be the same seven days. It used to fall back
+    // to the EARLIEST record, which calibrates however much history is retained, up to thirty-five
+    // days of it, against a seven-day percentage: the lines came out a fraction of their true
+    // height and the whole chart quietly lied whenever the service was unreachable.
+    let known = weeklyResetAt.flatMap { $0 > now ? $0 : nil }
+    let weekStart = known.map { $0.addingTimeInterval(-7 * 86_400) }
+        ?? now.addingTimeInterval(-7 * 86_400)
 
     // Split deliberately: as one chained filter+sort the Swift type-checker times out.
     var rows: [UsageRecord] = []
@@ -71,7 +77,7 @@ func modelWeekShareSeries(records: [UsageRecord], weeklyPct: Double,
         rows.append(r)
     }
     rows.sort { $0.date < $1.date }
-    let grand = rows.reduce(0) { $0 + $1.totalTokens }
+    let grand = rows.reduce(0) { $0 + $1.burnTokens }
     guard grand > 0 else { return [] }
 
     // Percentage points per logged token, shared by every model so the lines stay additive.
@@ -83,10 +89,15 @@ func modelWeekShareSeries(records: [UsageRecord], weeklyPct: Double,
     for r in rows {
         let fam = modelFamily(r.model)
         if series[fam] == nil {
-            series[fam] = [TimedSample(t: weekStart, v: 0)]
+            // Two zeros, not one: at the window's opening and again just before this model's first
+            // record. With a single anchor the curve interpolates smoothly from the boundary to
+            // that first point, drawing a gentle ramp across hours when the model was not used at
+            // all. Holding it flat at zero until the moment something happens is the truth.
+            series[fam] = [TimedSample(t: weekStart, v: 0),
+                           TimedSample(t: max(weekStart, r.date.addingTimeInterval(-1)), v: 0)]
             families.append(fam)
         }
-        running[fam, default: 0] += r.totalTokens
+        running[fam, default: 0] += r.burnTokens
         series[fam]?.append(TimedSample(t: r.date, v: Double(running[fam] ?? 0) * k))
     }
     // Carry every line to `now` so they all end level with the weekly reading between them.

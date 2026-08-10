@@ -8,12 +8,17 @@ import Charts
 
 struct BurnHistogramChart: View {
     let ctx: ChartCtx
+    @State private var memo = ChartMemo()
     @State private var sel: CatValue?
     var body: some View {
         let p = ctx.p
-        let now = Date()
+        // ctx.tick, not Date(): a cache keyed on a clock that never repeats can never hit, which is
+        // why this was the one chart still re-bucketing its whole series on every mouse move.
+        let now = ctx.tick
         let lower = ctx.lower(ctx.burnSamples.first?.t, now: now)
-        let bands = burnHistogram(ctx.burnSamples, from: lower)
+        let bands = memo.value(ctx.dataKey + "|h\(ctx.burnSamples.count)") {
+            burnHistogram(ctx.burnSamples, from: lower)
+        }
         let peak = bands.map(\.v).max() ?? 0
         let total = bands.reduce(0) { $0 + $1.v }
         let busiest = bands.filter { $0.v > 0 }.last
@@ -23,7 +28,7 @@ struct BurnHistogramChart: View {
             } else {
                 Chart {
                     ForEach(bands) { b in
-                        BarMark(x: .value("band", b.name), y: .value("count", b.v), width: .ratio(0.72))
+                        BarMark(x: .value("band", b.name), y: .value("count", b.v), width: .ratio(kBarFill))
                             .foregroundStyle(ctx.accent.opacity(sel == nil || sel?.id == b.id ? 0.8 : 0.3))
                             .cornerRadius(1.5)
                     }
@@ -45,7 +50,7 @@ struct BurnHistogramChart: View {
                     AxisMarks(values: bands.enumerated().filter { $0.offset % 2 == 0 }.map { $0.element.name }) { v in
                         AxisValueLabel {
                             if let s = v.as(String.self) {
-                                Text(s).font(.system(size: 7.5, design: .monospaced)).foregroundStyle(p.faint)
+                                Text(s).font(.system(size: 8.5, design: .monospaced)).foregroundStyle(p.faint)
                             }
                         }
                     }
@@ -103,7 +108,7 @@ struct PaceGaugeChart: View {
                                         .compactMap { $0 }.joined(separator: ". "))
             }
             statLine(worst >= 1.0 ? "Over pace" : "Comfortable", "\u{00B7} 1.0× is on pace", p,
-                     tint: worst >= 1.0 ? hue(worst, p) : nil, gutter: false)
+                     tint: worst >= 1.0 ? hue(worst, p) : nil)
         }
     }
 
@@ -156,11 +161,14 @@ struct ModelCapsChart: View {
         var rows: [(name: String, pct: Double, active: Bool)] = [("All models", ctx.weeklyPct, false)]
         rows += ctx.modelLimits.map { (name: $0.label, pct: $0.pct, active: $0.active) }
         return VStack(alignment: .leading, spacing: 5) {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 7) {
                 ForEach(rows.indices, id: \.self) { i in
                     let r = rows[i]
                     HStack(spacing: 8) {
-                        if r.active { Circle().fill(p.session).frame(width: 4, height: 4) } else { Spacer().frame(width: 4) }
+                        // The dot lives inside the name column, exactly as CapLimitRow does it, so
+                        // a row without one starts at the same left edge as the heading above and
+                        // as every other row chart in the card.
+                        if r.active { Circle().fill(p.session).frame(width: 4, height: 4) }
                         Text(r.name).font(.system(size: 11, weight: r.active ? .semibold : .regular))
                             .foregroundStyle(r.active ? p.ink : p.sub)
                             .frame(width: 62, alignment: .leading).lineLimit(1)
@@ -169,9 +177,14 @@ struct ModelCapsChart: View {
                         // "54%" beside a bar filled to 46% is a contradiction unless the reader
                         // already knows which one is which, and the only thing saying so was a
                         // 9.5pt caption at the bottom of the chart. The row says it itself now.
-                        Text("\(Int(((1 - r.pct) * 100).rounded()))% left")
+                        // Shared value column, and the text-safe tint of its own bar, so this row
+                        // reads exactly like the same row in the card's week section and in the
+                        // Account window. Three places, one appearance.
+                        Text("\(usedAndLeftPercent(r.pct).left)% left")
                             .font(.system(size: 11, weight: .medium, design: .monospaced))
-                            .foregroundStyle(p.ink).monospacedDigit().fixedSize()
+                            .foregroundStyle(r.active ? p.sessionText : p.weeklyText)
+                            .monospacedDigit()
+                            .frame(width: kRowValueWidth, alignment: .trailing)
                     }
                 }
                 if rows.count < 3 { Spacer(minLength: 0) }
@@ -179,14 +192,19 @@ struct ModelCapsChart: View {
             // minHeight, not height: the API can report several per-model caps, and a fixed frame
             // would clip the fourth row. The card grows with the rows instead.
             .frame(minHeight: ctx.plotH, alignment: .top)
+            // Same gutters as the other row charts, so every value in the card ends on one edge.
+            // The 2pt leading gutter aligned to nothing: the in-box left edge is now one token,
+                .padding(.trailing, 8)   // the box's own content edge.
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Weekly limits")
-            .accessibilityValue(rows.map { "\($0.name) \(Int((1 - $0.pct) * 100)) percent left" }.joined(separator: ", "))
+            // Rounded, not truncated, so the spoken figure matches the one drawn beside it. Int() on
+            // 38.7 says 38 while the row says 39, and a screen reader disagreeing with the screen is
+            // the one kind of accessibility bug the user cannot check for themselves.
+            .accessibilityValue(rows.map { "\($0.name) \(usedAndLeftPercent($0.pct).left) percent left" }.joined(separator: ", "))
             // Measured against the 264pt card, not guessed: both of the old captions ran past the
             // end of the line and were cut off mid-sentence.
             statLine("\(rows.count) weekly limit\(rows.count == 1 ? "" : "s")",
-                     ctx.modelLimits.contains(where: { $0.active }) ? "\u{00B7} dot = binding cap" : "", p,
-                     gutter: false)
+                     ctx.modelLimits.contains(where: { $0.active }) ? "\u{00B7} dot = binding cap" : "", p)
         }
     }
 }
@@ -195,6 +213,20 @@ struct ModelCapsChart: View {
 
 struct TopChatsChart: View {
     let ctx: ChartCtx
+    /// Observed, so a rename redraws this chart immediately.
+    @ObservedObject private var chatNames = ChatNames.shared
+
+    /// The reader's own truncation choice, which this chart ignored while the chat rows below it
+    /// honoured it. Hoisted out of the view body: inline, the ternary pushed the row expression
+    /// past what the type-checker will solve.
+    private var nameTruncation: Text.TruncationMode { ctx.truncation == .end ? .tail : .middle }
+
+    /// Is this row's conversation producing tokens right now? Both sides resolve names through the
+    /// same index, so matching on the display name is reliable.
+    private func isLive(_ raw: String) -> Bool {
+        let shown = chatNames.display(raw)
+        return ctx.activeStreams.contains { chatNames.display($0.name) == shown }
+    }
     @State private var sel: CatValue?
     @State private var memo = ChartMemo()
     var body: some View {
@@ -224,43 +256,95 @@ struct TopChatsChart: View {
                 // nothing at all.
                 VStack(alignment: .leading, spacing: 7) {
                     ForEach(rows.prefix(4)) { r in
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(r.name)
-                                .font(.system(size: 10.5)).foregroundStyle(p.ink)
-                                .lineLimit(1).truncationMode(.tail)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                            HStack(spacing: 6) {
-                                GeometryReader { g in
-                                    ZStack(alignment: .leading) {
-                                        Capsule().fill(p.track)
-                                        Capsule().fill(ctx.accent.opacity(sel?.id == r.id ? 1.0 : 0.75))
-                                            .frame(width: max(2, g.size.width * CGFloat(r.v / peak)))
-                                    }
-                                }
-                                .frame(height: 4)
-                                Text(fmtTok(Int(r.v)))
-                                    .font(.system(size: 9.5, design: .monospaced))
-                                    .foregroundStyle(p.sub).monospacedDigit()
-                                    .frame(width: 44, alignment: .trailing)
+                        TopChatRow(row: r, peak: peak, p: p, accent: ctx.accent,
+                                   name: chatNames.display(r.name), live: isLive(r.name),
+                                   truncation: nameTruncation, selected: sel?.id == r.id)
+                            .contentShape(Rectangle())
+                            // Every other chart gates its hover on ctx.hover; this one did not, so
+                            // the Settings gallery's static previews lit up under the pointer.
+                            .onHover { inside in
+                                guard ctx.hover else { return }
+                                sel = inside ? r : nil
                             }
-                        }
-                        .contentShape(Rectangle())
-                        .onHover { inside in sel = inside ? r : nil }
                     }
                 }
-                // minHeight, not height: four two-line rows are taller than the base plot, and a
-                // fixed frame would clip the fourth.
-                .frame(minHeight: ctx.plotH, alignment: .top)
-                .padding(.leading, 2).padding(.trailing, 8)
+                // No height frame at all. A row list is as tall as its rows; borrowing the plotted
+                // charts' height here made SwiftUI lay the summary out as though the rows ended at
+                // 74pt, and it printed itself straight over the fourth row.
+                // The 2pt leading gutter aligned to nothing: the in-box left edge is now one token,
+                .padding(.trailing, 8)   // the box's own content edge.
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("Top chats")
-                .accessibilityValue(rows.map { "\($0.name) \(fmtTok(Int($0.v)))" }.joined(separator: ", "))
+                .accessibilityValue(rows.map { "\(chatNames.display($0.name)) \(fmtTok(Int($0.v)))" }.joined(separator: ", "))
             }
-            // Right-aligned, under the column it totals, so it reads as the sum of the numbers
-            // above rather than a figure parked at random in the middle of the row.
-            statLine(sel.map { fmtTok(Int($0.v)) } ?? fmtTok(Int(total)),
-                     sel.map { "\u{00B7} \($0.name)" } ?? "top \(min(4, rows.count)) chats \u{00B7}", p,
-                     gutter: false, trailing: true)
+            // The summary belongs to the ROWS, so it is drawn only when there are rows: outside
+            // the branch it printed "top 0 chats" under the empty-state placeholder.
+            //
+            // With exactly one row the total IS that row's own number, printed twice a few points
+            // apart, so the text is suppressed while the SLOT is kept: the live cadence indicator
+            // overlays this line, and removing the view entirely would drop the indicator onto the
+            // last row of data.
+            if rows.isEmpty {
+                statLine("", "", p)
+            } else if rows.count == 1 && sel == nil {
+                statLine("", "", p)
+            } else {
+                statLine(sel.map { fmtTok(Int($0.v)) } ?? fmtTok(Int(total)),
+                         sel.map { "\u{00B7} \(chatNames.display($0.name))" }
+                            ?? (rows.count == 1 ? "\u{00B7} only chat this window"
+                                                : "\u{00B7} top \(min(4, rows.count)) chats this window"), p)
+            }
+        }
+    }
+}
+
+
+/// One row of TOP CHATS: the name on its own line, then the bar and the number.
+///
+/// Extracted from the chart body because the row had grown past what the Swift type-checker will
+/// solve inline. It is also the natural home for the row's own rules: the live dot, the reader's
+/// truncation choice, and the value column every row chart in the card shares.
+private struct TopChatRow: View {
+    let row: CatValue
+    let peak: Double
+    let p: Palette
+    let accent: Color
+    let name: String
+    let live: Bool
+    let truncation: Text.TruncationMode
+    let selected: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduce
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 5) {
+                // A chat burning RIGHT NOW gets the same breathing dot the card uses below.
+                // Without it, the busiest chat this window and the one actually running are
+                // indistinguishable in a list whose whole job is telling them apart.
+                if live {
+                    // Same recipe as the chats-burning rows below, so one signal reads one way.
+                    BreathDot(color: p.live, size: 5, lo: 0.4, hi: 1.0, period: 3.0, still: reduce)
+                        .accessibilityHidden(true)
+                }
+                Text(name)
+                    .font(.system(size: 11)).foregroundStyle(p.ink)
+                    .lineLimit(1).truncationMode(truncation)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            HStack(spacing: 6) {
+                GeometryReader { g in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(p.track)
+                        Capsule().fill(accent.opacity(selected ? 1.0 : 0.8))
+                            .frame(width: max(2, g.size.width * CGFloat(row.v / peak)))
+                    }
+                }
+                .frame(height: kRowBarHeight)
+                Text(fmtTok(Int(row.v)))
+                    .font(.system(size: 11, weight: .medium, design: .monospaced))
+                    .foregroundStyle(p.sub).monospacedDigit()
+                    .frame(width: kRowValueWidth, alignment: .trailing)
+            }
         }
     }
 }
@@ -280,11 +364,21 @@ struct ShareSplitChart: View {
             byModel ? shareSplit(ctx.records, from: lower) { modelFamily($0.model) }
                     : shareSplit(ctx.records, from: lower) { $0.project.isEmpty ? kUnknownProject : $0.project }
         }
-        let shown = Array(rows.prefix(6))
+        // The tail becomes a real slice rather than being dropped.
+        //
+        // These fractions sum to 1 across EVERY category, and the bar drew only the first six, so
+        // with seven or more projects the bar simply did not fill and nothing on screen said why.
+        // A proportional bar that does not add up is the one thing a proportional bar must not do.
+        let head = Array(rows.prefix(6))
+        let tail = rows.dropFirst(6).reduce(0.0) { $0 + $1.v }
+        let shown = tail > 0.0005
+            ? head + [CatValue(id: 9_999, name: "Other", v: tail)]
+            : head
         func hue(_ i: Int, _ name: String) -> Color {
-            byModel ? modelHue(name, p) : categoryHue(i, ctx.accent, p)
+            if name == "Other" { return p.faint }   // a remainder, not a category
+            return byModel ? modelHue(name, p) : categoryHue(i, ctx.accent, p)
         }
-        return VStack(alignment: .leading, spacing: 7) {
+        return VStack(alignment: .leading, spacing: 5) {
             if shown.isEmpty {
                 chartPlaceholder("No usage in this window", p)
             } else {
@@ -367,7 +461,7 @@ struct WeekdayProfileChart: View {
             } else {
                 Chart {
                     ForEach(rows) { r in
-                        BarMark(x: .value("day", r.name), y: .value("tokens", r.v), width: .ratio(0.68))
+                        BarMark(x: .value("day", r.name), y: .value("tokens", r.v), width: .ratio(kBarFill))
                             .foregroundStyle(ctx.accent.opacity(r.name == today ? 1.0 : (sel == nil || sel?.id == r.id ? 0.7 : 0.3)))
                             .cornerRadius(1.5)
                     }
@@ -418,21 +512,21 @@ struct DailyTokensChart: View {
             } else {
                 Chart {
                     ForEach(rows) { r in
-                        BarMark(x: .value("day", r.name), y: .value("tokens", r.v), width: .ratio(0.7))
+                        BarMark(x: .value("day", r.name), y: .value("tokens", r.v), width: .ratio(kBarFill))
                             .foregroundStyle(ctx.accent.opacity(sel == nil || sel?.id == r.id ? 0.8 : 0.3))
                             .cornerRadius(1.5)
                     }
                     if avg > 0 {
+                        // Unlabelled, for the same reason as the burn charts: the stat line below
+                        // already names the average, and a label inside the plot competes with the
+                        // bars it is drawn over.
                         RuleMark(y: .value("avg", avg))
                             .foregroundStyle(p.sub.opacity(0.55))
                             .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                            .annotation(position: .top, alignment: .leading, spacing: 1) {
-                                Text("avg \(fmtTok(Int(avg)))").font(.system(size: 8.5, weight: .medium)).foregroundStyle(p.sub)
-                            }
                     }
                 }
                 .chartYAxis { tokenYAxis(peak, p, style: ctx.style) }
-                .chartXAxis { thinnedCatXAxis(rows.map(\.name), p, size: 8, maxLabels: 7) }
+                .chartXAxis { thinnedCatXAxis(rows.map(\.name), p, maxLabels: 7) }
                 .chartPlotStyle { $0.background(Color.clear) }
                 .transaction { $0.animation = nil }
                 .frame(height: ctx.plotH)
@@ -619,16 +713,14 @@ struct MonthCostChart: View {
                                                             startPoint: .top, endPoint: .bottom))
                             .interpolationMethod(.monotone)
                         LineMark(x: .value("day", c.name), y: .value("spend", c.v))
-                            .foregroundStyle(ctx.accent).lineStyle(StrokeStyle(lineWidth: 1.6))
+                            .foregroundStyle(ctx.accent).lineStyle(StrokeStyle(lineWidth: ctx.lineW))
                             .interpolationMethod(.monotone)
                     }
                     if projected > total {
+                        // The rule keeps its position and loses its label, like the averages above.
+                        // A trailing annotation sits exactly where a rising cumulative line ends up.
                         RuleMark(y: .value("proj", projected))
                             .foregroundStyle(p.sub.opacity(0.5)).lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                            .annotation(position: .top, alignment: .trailing, spacing: 1) {
-                                Text("at this rate \(moneyCents(projected))").font(.system(size: 8.5, weight: .medium))
-                                    .foregroundStyle(p.sub)
-                            }
                     }
                     if let s = sel {
                         RuleMark(x: .value("day", s.name)).foregroundStyle(p.ink.opacity(0.25))
@@ -643,7 +735,7 @@ struct MonthCostChart: View {
                         AxisGridLine().foregroundStyle(p.ink.opacity(v.as(Double.self) == 0 ? 0.14 : 0.07))
                         AxisValueLabel {
                             if let d = v.as(Double.self) {
-                                Text(d >= 1 ? "$\(Int(d))" : "$0").font(.system(size: 9, weight: .medium, design: .monospaced))
+                                Text(moneyAxisLabel(d)).font(.system(size: 9, weight: .medium, design: .monospaced))
                                     .foregroundStyle(p.sub).shadow(color: p.bg, radius: 1.5)
                             }
                         }
@@ -670,8 +762,12 @@ struct MonthCostChart: View {
                 .accessibilityLabel("Spend to date")
                 .accessibilityValue("\(moneyCents(total)) so far, about \(moneyCents(projected)) at this rate")
             }
+            // The projection moved off the plot and into the caption, which is where every other
+            // chart puts its second fact.
             statLine(sel.map { moneyCents($0.v) } ?? moneyCents(total),
-                     sel.map { "· by \($0.name)" } ?? "· so far, last \(ctx.days)d", p)
+                     sel.map { "\u{00B7} by \($0.name)" }
+                        ?? (projected > total ? "\u{00B7} at this pace \(moneyCents(projected))"
+                                              : "\u{00B7} so far, last \(ctx.days)d"), p)
         }
     }
 }

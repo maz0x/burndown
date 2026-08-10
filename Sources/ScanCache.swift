@@ -21,6 +21,15 @@ struct CachedRecord {
     let ts: Double            // seconds since 1970
     let model: String
     let input, output, cache5m, cache1h, cacheRead: Int
+    /// Identity of the underlying message, as a stable hash of "<message id>:<request id>".
+    ///
+    /// Claude Code rewrites earlier usage lines into the new log when a conversation is resumed or
+    /// compacted, so the same message really does appear in several files. Without this the scan
+    /// counts a chat resumed three times almost four times over. 0 means the line carried no
+    /// message id, which is never de-duplicated: an unidentifiable row is kept rather than guessed
+    /// at. Hashed rather than stored whole because these strings are unique per record, so a string
+    /// table of them would be larger than the rest of the cache put together.
+    let key: UInt64
 }
 
 /// Everything one session log contributed, plus the stamps that say whether it is still valid.
@@ -39,8 +48,19 @@ enum ScanCache {
     ///
     /// - 2: the "no folder recorded" project label changed wording. It is stored per file, so a
     ///   version 1 cache would have kept serving the old label forever.
-    static let version: UInt32 = 2
+    /// - 3: records carry a dedup key. A version 2 cache has no way to tell one message from a
+    ///   copy of itself, so it is discarded rather than counted twice.
+    static let version: UInt32 = 3
     private static let magic: UInt32 = 0x42445343   // "BDSC"
+
+    /// FNV-1a, 64-bit. Swift's own `hashValue` is seeded per process, so a cache written by one
+    /// launch would not agree with itself on the next one. This does.
+    static func keyHash(_ s: String) -> UInt64 {
+        if s.isEmpty { return 0 }
+        var h: UInt64 = 14695981039346656037
+        for b in s.utf8 { h = (h ^ UInt64(b)) &* 1099511628211 }
+        return h == 0 ? 1 : h      // 0 is reserved for "no id"
+    }
 
     static var url: URL {
         FileManager.default.homeDirectoryForCurrentUser
@@ -60,7 +80,7 @@ enum ScanCache {
         }
 
         var body = Data()
-        body.reserveCapacity(files.values.reduce(0) { $0 + $1.records.count * 32 + 64 })
+        body.reserveCapacity(files.values.reduce(0) { $0 + $1.records.count * 40 + 64 })
         var fileCount: UInt32 = 0
         for (path, f) in files {
             fileCount += 1
@@ -79,6 +99,7 @@ enum ScanCache {
                 append(&body, Int32(clamping: r.cache5m))
                 append(&body, Int32(clamping: r.cache1h))
                 append(&body, Int32(clamping: r.cacheRead))
+                append(&body, r.key)
             }
         }
 
@@ -132,9 +153,9 @@ enum ScanCache {
             for _ in 0..<n {
                 guard let ts: Double = dbl(), let mi: UInt32 = u32(), let model = str(mi),
                       let a: Int32 = i32(), let b: Int32 = i32(), let c: Int32 = i32(),
-                      let d: Int32 = i32(), let e: Int32 = i32() else { return nil }
+                      let d: Int32 = i32(), let e: Int32 = i32(), let k: UInt64 = u64() else { return nil }
                 recs.append(CachedRecord(ts: ts, model: model, input: Int(a), output: Int(b),
-                                         cache5m: Int(c), cache1h: Int(d), cacheRead: Int(e)))
+                                         cache5m: Int(c), cache1h: Int(d), cacheRead: Int(e), key: k))
             }
             out[path] = CachedFile(mod: mod, size: size, offset: offset,
                                    project: proj, title: title, records: recs)
@@ -154,8 +175,15 @@ enum ScanCache {
                                                  withIntermediateDirectories: true)
         // Written to a sibling and moved into place, so a crash mid-write cannot leave a
         // half-written cache that the next launch has to detect and discard.
-        let tmp = url.appendingPathExtension("tmp")
+        //
+        // The sibling's name carries this process's id. A single fixed name is shared by every
+        // writer, and two of them (a second copy of the app, or one scan overlapping another)
+        // interleave their bytes in that one file before either promotes it, producing a cache that
+        // is not half-written but wrongly written. The move into place stays atomic either way, so
+        // the loser of the race simply overwrites the winner with its own complete file.
+        let tmp = url.appendingPathExtension("\(ProcessInfo.processInfo.processIdentifier).tmp")
         guard (try? encode(files).write(to: tmp)) != nil else { return }
+        defer { try? FileManager.default.removeItem(at: tmp) }
         _ = try? FileManager.default.replaceItemAt(url, withItemAt: tmp)
         try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }

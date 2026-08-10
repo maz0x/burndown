@@ -39,8 +39,19 @@ func weeklyPacing(fractionUsed: Double, ratePerHour: Double, hoursUntilReset: Do
         summary = "At this pace you reach the weekly cap in ~\(hoursText(h)), before the reset"
     } else {
         // On pace to coast to the reset with room to spare.
-        let n = Int(sessionsRemaining.rounded())
-        summary = "On pace to finish the week with headroom, about \(n) \(n == 1 ? "session" : "sessions") left"
+        //
+        // The session count is dropped entirely when sessionFraction is 0, which is how the caller
+        // says "nothing has been learned about the caps yet". Dividing one placeholder by another
+        // produced a confident "about 2 sessions left" that was arithmetic on two guesses. The
+        // verdict itself still holds: it comes from the rate and the time, not from the caps.
+        // Rounded DOWN otherwise. "About 3 sessions left" is a promise the reader plans against,
+        // and rounding 2.5 up to 3 promises a session that is not there.
+        if sessionFraction > 0 {
+            let n = max(0, Int(sessionsRemaining.rounded(.down)))
+            summary = "On pace to finish the week with headroom, about \(n) \(n == 1 ? "session" : "sessions") left"
+        } else {
+            summary = "On pace to finish the week with headroom"
+        }
     }
 
     return PacingProjection(hitsCapBeforeReset: hitsCapBeforeReset,
@@ -54,6 +65,9 @@ func hoursText(_ hours: Double) -> String {
     let h = max(0, hours)
     if h < 1 {
         let mins = Int((h * 60).rounded())
+        // Rounding can carry a shade under an hour up to a flat sixty, and "60m" is a unit the
+        // reader has to convert themselves when the whole point of this is not to make them.
+        if mins >= 60 { return "1h" }
         return "\(mins)m"
     }
     return "\(Int(h.rounded()))h"

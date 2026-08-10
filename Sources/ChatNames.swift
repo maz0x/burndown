@@ -20,8 +20,7 @@ final class ChatNames: ObservableObject {
     private func save() {
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         guard let d = try? JSONSerialization.data(withJSONObject: aliases, options: [.sortedKeys]) else { return }
-        try? d.write(to: url)
-        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+        writePrivate(d, to: url)
     }
 
     /// The name to show: the user's alias if set, else the harvested original.
@@ -33,7 +32,12 @@ final class ChatNames: ObservableObject {
     func display(_ original: String) -> String {
         if let a = aliases[original] { return a }
         if looksLikeSessionID(original) {
-            return SessionTitles.shared.title(for: original) ?? untitledChatLabel(nil)
+            // Check the alias table AGAIN against the resolved title. A chat first seen as a raw id
+            // is renamed under the name the reader saw, which is the resolved one, so looking up
+            // only the id meant a renamed chat kept surfacing under its old name wherever the id
+            // arrived first.
+            guard let resolved = SessionTitles.shared.title(for: original) else { return untitledChatLabel(nil) }
+            return aliases[resolved] ?? resolved
         }
         return original
     }

@@ -2,6 +2,21 @@
 
 ## 0.9.5
 
+- **The Account window is readable.** It was locked to a narrow width, which was the cause of all
+  of it: your organization name arrived split across two lines and still cut off with dots, the
+  padlock floated in the gap between two lines of a sentence that should have been one, and the
+  diagnostics section talked about "folder 0700, files 0600". It is wider now, the organization
+  name sits on its own line and simply fits, and the diagnostics say what they mean: your sign-in
+  renews itself, and your data is readable only by you.
+- **Everything in the card now lines up.** Section headings, rows, bars and numbers share one
+  grid, so a total sits in the same place in every chart and a number in one chart ends on the
+  same edge as a number in the next. "Last 7 days" was the one heading sitting on the right while
+  its bars sat on the left; it reads like the rows above it now.
+- **Each weekly limit's percentage is coloured to match its own bar**, in the card and the Account
+  window alike, so the number and the bar read as one thing.
+- **The average line on the burn charts lost its label.** It printed itself over the newest data
+  point on a busy chart; the line under the chart already tells you the average.
+
 - **The screenshot of the Insights window on the site was cut off down its right-hand side.** The
   window was widened in 0.9.4 but the picture of it was still being drawn at the old, narrower
   size, so the last column was sliced off mid-word in every published shot.

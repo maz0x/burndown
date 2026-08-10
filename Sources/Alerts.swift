@@ -34,7 +34,7 @@ final class UsageAlerts {
     // which eval triggered it. 10 min sits comfortably under the smallest repeat-while-over interval
     // (15 min), so it never fights an intentional re-alert, only true duplicates.
     private let dedupWindow: TimeInterval = 10 * 60
-    private let dStore = UserDefaults.standard
+    private let dStore = appDefaults   // never the real domain during a QA run
     private let dKey = "alertLastPosted"
     private lazy var lastPosted: [String: Date] = {
         (dStore.dictionary(forKey: dKey) as? [String: Double])?.mapValues { Date(timeIntervalSince1970: $0) } ?? [:]
@@ -138,12 +138,16 @@ final class UsageAlerts {
         if quietNow(s, now) { return }
 
         if s.alertRunaway {
-            burnHistory.append(burn)
-            if burnHistory.count > 40 { burnHistory.removeFirst(burnHistory.count - 40) }
-            if burnHistory.count >= 5 {
-                let v = runawayVerdict(history: burnHistory, current: burn)
-                if v.level == .runaway { post("Possible runaway burn", v.summary + ".", s.alertSound) }
+            let v = runawayVerdict(history: burnHistory, current: burn)
+            // Learn from calm, not from the emergency. The window holds only a minute or two, so a
+            // runaway that lasts that long would otherwise become the new "normal" and the alert
+            // would fall silent while the thing it warned about was still running. Samples taken
+            // while the verdict is elevated are watched, never learned from.
+            if v.level == .normal {
+                burnHistory.append(burn)
+                if burnHistory.count > 40 { burnHistory.removeFirst(burnHistory.count - 40) }
             }
+            if v.level == .runaway { post("Possible runaway burn", v.summary + ".", s.alertSound) }
         }
 
         if s.budgetEnabled, s.alertBudget, s.budgetLimit > 0 {
@@ -177,7 +181,7 @@ final class UsageAlerts {
         cal.firstWeekday = 2                                   // Monday
         guard cal.component(.weekday, from: now) == 2 else { return }
         let week = cal.dateInterval(of: .weekOfYear, for: now)?.start ?? now
-        let d = UserDefaults.standard
+        let d = appDefaults   // a QA run must not consume the real weekly-digest stamp
         if let last = d.object(forKey: "lastWeeklyDigestAt") as? Date, last >= week { return }
         let since = now.addingTimeInterval(-7 * 86_400)
         let agg = totals(recordsInWindow(records, since: since, until: now.addingTimeInterval(1)))

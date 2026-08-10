@@ -39,8 +39,17 @@ struct BudgetStatus {
 /// BudgetStatus. With no elapsed time yet (elapsedFraction <= 0) we cannot pace, so we fall back
 /// to the raw spent value rather than dividing by zero.
 func budgetProjectedEnd(spent: Double, config: BudgetConfig, elapsedFraction: Double) -> Double {
-    elapsedFraction > 0 ? spent / elapsedFraction : spent
+    // Nothing is projected from the first sliver of a period. One minute past midnight is 0.07% of
+    // a day, so a single call at 12:01 would be scaled up fourteen hundred times and reported as a
+    // budget about to be blown. Below the threshold the honest projection is what has actually been
+    // spent, which is what this returns.
+    guard elapsedFraction >= kBudgetMinElapsed else { return spent }
+    return spent / elapsedFraction
 }
+
+/// How far into a period the app must be before pacing means anything (5%: about seventy minutes
+/// into a day, about eight hours into a week).
+let kBudgetMinElapsed = 0.05
 
 /// Evaluate a budget: how much is used, the projected end-of-period spend, whether that pace will
 /// exceed the limit, and a plain-English one-liner. warn at fractionUsed >= 0.8, over at >= 1.0.

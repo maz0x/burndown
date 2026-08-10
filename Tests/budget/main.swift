@@ -82,5 +82,21 @@ check(!startS.willExceed, "small spend at start -> will not exceed")
 // raw fields are passed through faithfully.
 check(overS.spent == 130 && overS.limit == 100, "spent and limit echoed on status")
 
+// One minute past midnight is seven hundredths of a percent of a day, so a single call then used
+// to be scaled up fourteen hundred times and reported as a budget about to be blown. Below the
+// threshold the honest projection is simply what has been spent.
+print("no pacing from the first sliver of a period:")
+do {
+    let cfg = BudgetConfig(metric: .usd, limit: 50, period: .day)
+    check(budgetProjectedEnd(spent: 2, config: cfg, elapsedFraction: 0.0007) == 2,
+          "a minute into the day projects what was actually spent, not 1400x it")
+    check(!budgetStatus(spent: 2, config: cfg, elapsedFraction: 0.0007).willExceed,
+          "so it does not claim a $50 budget is about to be blown by $2")
+    check(budgetProjectedEnd(spent: 2, config: cfg, elapsedFraction: 0.5) == 4,
+          "but halfway through the day it paces normally")
+    check(budgetProjectedEnd(spent: 5, config: cfg, elapsedFraction: kBudgetMinElapsed) == 100,
+          "and the threshold itself is the first point that paces")
+}
+
 print(failures == 0 ? "\nALL BUDGET TESTS PASSED" : "\n\(failures) FAILURE(S)")
 exit(failures == 0 ? 0 : 1)

@@ -70,5 +70,27 @@ check(alertForecastEval(minsLeft: 45, threshold: 30, reset: R.addingTimeInterval
 check(alertForecastEval(minsLeft: nil, threshold: 30, reset: R.addingTimeInterval(200), state: &fs) == nil,
       "no ETA -> nil")
 
+// A reset that moves BACKWARD is still a new window. Only forward jumps used to count, so a reset
+// time that corrected itself earlier left every threshold alert disarmed for that whole window.
+print("a reset that moves earlier:")
+do {
+    let t = Date()
+    check(isNewCycle(.some(t), t.addingTimeInterval(-3600)), "an hour earlier is a new cycle")
+    check(isNewCycle(.some(t), t.addingTimeInterval(3600)), "and so is an hour later")
+    check(!isNewCycle(.some(t), t.addingTimeInterval(-30)), "thirty seconds either way is still jitter")
+    check(!isNewCycle(.some(t), t.addingTimeInterval(30)), "in both directions")
+
+    // End to end: cross 80%, then have the reset jump backward, and the level must re-arm.
+    var st = AlertPctState()
+    let r1 = t.addingTimeInterval(3 * 3600)
+    _ = alertPctEval(pct: 0.85, reset: r1, base: 80, repeatMin: 0, now: t, state: &st)
+    check(st.fired.contains(80), "80 percent fired once")
+    let again = alertPctEval(pct: 0.85, reset: r1, base: 80, repeatMin: 0, now: t, state: &st)
+    check(again == .none, "and does not fire twice in the same window")
+    let moved = alertPctEval(pct: 0.85, reset: r1.addingTimeInterval(-3600), base: 80,
+                             repeatMin: 0, now: t, state: &st)
+    check(moved != .none, "but a reset that jumped an hour earlier re-arms it")
+}
+
 print(failures == 0 ? "\nALL PASS" : "\n\(failures) FAILURE(S)")
 exit(failures == 0 ? 0 : 1)

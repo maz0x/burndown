@@ -25,15 +25,38 @@ struct UpdateRelease: Equatable {
 enum UpdateLogic {
     /// Compare dotted version strings numerically: 1.10 is newer than 1.9, 1.0 is not newer than 1.0.
     static func isNewer(_ candidate: String, than current: String) -> Bool {
+        // A pre-release tag is cut off before the numbers are read, not parsed along with them.
+        // Splitting "0.9.6-beta.1" on every dot yields a fourth component and makes the beta look
+        // NEWER than the 0.9.6 it precedes, so a released user would be offered a downgrade to a
+        // test build. Everything from the first "-" is a pre-release marker by semver's own rules.
+        func release(_ s: String) -> Substring { s.prefix(while: { $0 != "-" && $0 != "+" }) }
         func parts(_ s: String) -> [Int] {
-            s.split(separator: ".").map { Int($0.prefix(while: \.isNumber)) ?? 0 }
+            release(s).split(separator: ".").map { Int($0.prefix(while: \.isNumber)) ?? 0 }
         }
         let a = parts(candidate), b = parts(current)
         for i in 0..<max(a.count, b.count) {
             let x = i < a.count ? a[i] : 0, y = i < b.count ? b[i] : 0
             if x != y { return x > y }
         }
-        return false
+        // Same numbers. A pre-release is BEHIND its release, never ahead of it, so 0.9.6-beta does
+        // not update a 0.9.6 and 0.9.6 does update a 0.9.6-beta.
+        let candPre = candidate.contains("-"), curPre = current.contains("-")
+        return !candPre && curPre
+    }
+
+    /// Hosts a release asset is allowed to come from.
+    ///
+    /// The download and checksum links arrive inside the API payload, so whatever that payload says
+    /// is where the app would fetch an executable from and then run it. Transport security already
+    /// makes tampering hard; this makes a redirected asset link useless rather than merely
+    /// difficult, and costs one comparison.
+    static let allowedAssetHosts = ["github.com", "objects.githubusercontent.com",
+                                    "release-assets.githubusercontent.com"]
+
+    /// True when a release asset URL is one this app is willing to fetch.
+    static func isAllowedAssetURL(_ raw: String) -> Bool {
+        guard let u = URL(string: raw), u.scheme == "https", let host = u.host?.lowercased() else { return false }
+        return allowedAssetHosts.contains(host) || host.hasSuffix(".githubusercontent.com")
     }
 
     /// Parse the GitHub "latest release" payload. Requires a .zip asset; the .sha256 sidecar is
@@ -54,8 +77,9 @@ enum UpdateLogic {
             }
             return nil
         }
-        guard let zip = url(suffix: ".zip") else { return nil }
-        return UpdateRelease(version: version, zipURL: zip, checksumURL: url(suffix: ".sha256"),
+        guard let zip = url(suffix: ".zip"), isAllowedAssetURL(zip) else { return nil }
+        let sum = url(suffix: ".sha256").flatMap { isAllowedAssetURL($0) ? $0 : nil }
+        return UpdateRelease(version: version, zipURL: zip, checksumURL: sum,
                              notes: (o["body"] as? String) ?? "")
     }
 
@@ -116,7 +140,7 @@ final class Updater: ObservableObject {
     @Published private(set) var pendingVersion: String?
 
     private var lastCheck: Date?
-    private let d = UserDefaults.standard
+    private let d = appDefaults   // never the real domain during a QA run
 
     var isDevBuild: Bool {
         UpdateLogic.isDevelopmentCheckout(bundlePath: Bundle.main.bundlePath) {
@@ -236,10 +260,23 @@ final class Updater: ObservableObject {
         state = .downloading(0)
 
         // 1. Fetch the published checksum, 2. download the zip, 3. verify, 4. swap.
-        URLSession.shared.dataTask(with: sumURL) { [weak self] data, _, _ in
-            let expected = data.flatMap { String(data: $0, encoding: .utf8) }.flatMap(UpdateLogic.parseChecksum)
+        URLSession.shared.dataTask(with: sumURL) { [weak self] data, response, error in
+            // The response and the error were both discarded, so a redirect to a sign-in page or a
+            // dropped connection arrived here as "could not read the checksum", which sends the
+            // reader looking at the release rather than at their network.
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            let expected = (status == 200 ? data : nil)
+                .flatMap { String(data: $0, encoding: .utf8) }.flatMap(UpdateLogic.parseChecksum)
             DispatchQueue.main.async {
                 guard let self else { return }
+                if let error {
+                    self.state = .failed("Could not reach the release: \(error.localizedDescription)")
+                    return
+                }
+                guard status == 200 else {
+                    self.state = .failed("The release checksum could not be fetched (HTTP \(status)).")
+                    return
+                }
                 guard let expected else { self.state = .failed("Could not read the release checksum."); return }
                 self.download(zipURL, expecting: expected, version: rel.version)
             }
@@ -324,8 +361,9 @@ final class Updater: ObservableObject {
         sleep 0.5
         rm -rf "\(dest.path).old"
         mv "\(dest.path)" "\(dest.path).old" 2>/dev/null
-        /usr/bin/ditto "\(newApp.path)" "\(dest.path)"
-        if [ -x "\(dest.path)/Contents/MacOS/Burndown" ]; then
+        # ditto's exit status decides, not just the presence of an executable afterwards: a copy
+        # that failed halfway can still leave something with the executable bit set.
+        if /usr/bin/ditto "\(newApp.path)" "\(dest.path)" && [ -x "\(dest.path)/Contents/MacOS/Burndown" ]; then
             /usr/bin/xattr -cr "\(dest.path)" 2>/dev/null
             rm -rf "\(dest.path).old"
         else

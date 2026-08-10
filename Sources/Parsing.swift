@@ -24,6 +24,17 @@ func fastISO8601Date(_ s: String) -> Date? {
     let era = (y >= 0 ? y : y - 399) / 400
     let yoe = y - era * 400
     let doy = (153 * (M > 2 ? M - 3 : M + 9) + 2) / 5 + D - 1
+    // Everything above computed a UTC instant, so the stamp had better be in UTC. Anything after
+    // the seconds is a suffix: optional fractional digits, then "Z" or a "+HH:MM" / "-HH:MM"
+    // offset. The offset used to be read and thrown away, which silently turned a local wall-clock
+    // time into a UTC one and moved the record by as many hours as the offset. Refusing the shape
+    // hands it to the tolerant formatter, which does honour the offset.
+    var i = 19
+    if i < b.count, b[i] == 46 {                       // "."
+        i += 1
+        while i < b.count, b[i] >= 48, b[i] <= 57 { i += 1 }
+    }
+    if i < b.count, b[i] != 90 { return nil }          // not end, not "Z": an offset, so hand it back
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy
     let days = era * 146097 + doe - 719468   // days since 1970-01-01 (UTC)
     return Date(timeIntervalSince1970: Double(days * 86400 + h * 3600 + mi * 60 + se))

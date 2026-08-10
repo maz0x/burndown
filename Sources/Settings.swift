@@ -1,6 +1,28 @@
 import Foundation
 import Combine
 
+/// The defaults database this run is allowed to write to.
+///
+/// CUB_SANDBOX promises that a QA run "boots against a throwaway defaults suite instead of the
+/// user's own", and the settings object honoured it. Everything else did not: the alert dedup
+/// store, the updater's last-checked stamp and anything else reaching for UserDefaults.standard
+/// wrote straight into the owner's real domain, so a screenshot pass could suppress a real alert
+/// or move a real timestamp. One accessor, so a new call site cannot quietly reintroduce it.
+///
+/// Resolved once. If the suite cannot be opened the run stops rather than silently falling back to
+/// the real domain, which is the failure the fallback was hiding: the whole point of the flag is
+/// that the user's own settings are not touched.
+let appDefaults: UserDefaults = {
+    guard ProcessInfo.processInfo.environment["CUB_SANDBOX"] != nil else { return .standard }
+    let suite = "com.maz.burndown.sandbox"
+    guard let d = UserDefaults(suiteName: suite) else {
+        fatalError("CUB_SANDBOX was requested but the sandbox defaults suite could not be opened. "
+                   + "Refusing to run against the real settings.")
+    }
+    return d
+}()
+
+
 enum MenuBarShow: String, CaseIterable, Identifiable {
     case session, weekly, both
     var id: String { rawValue }
@@ -287,6 +309,24 @@ enum MenuBarStyle: String, CaseIterable, Identifiable {
     case twins, splitArc, halfGauge, coPie, vsplit, heatRows, weeklyClock // BOTH-only,session + weekly
 
     var id: String { rawValue }
+
+    /// Styles whose meaning is carried by COLOUR, so they must never be drawn as template images.
+    ///
+    /// A template image throws colour away and keeps only alpha, letting the system tint the
+    /// silhouette. That is exactly right for a line-art glyph and destroys anything whose whole
+    /// point is its hue: the burning-number family fades from cool to hot as usage climbs, and the
+    /// fire styles are built from several colours at once. Drawn as templates they collapse into
+    /// flat monochrome blobs, which is not a subtler version of the design but a different one.
+    /// Only Beacon used to be exempt, and it is the one that says "native system ink" on the tin.
+    var carriesOwnColor: Bool {
+        switch self {
+        case .smolder, .burnfront, .kiln, .flame, .inferno, .ignite, .charred, .molten, .coals,
+             .ember, .beacon:
+            return true
+        default:
+            return false
+        }
+    }
 
     /// Styles that animate to live token consumption (needle swing, rolling digits,
     /// streaming sparkline / bars). The app drives these at ~30fps while tokens flow.
@@ -592,7 +632,16 @@ final class AppSettings: ObservableObject {
     @Published var chartDays: Int { didSet { d.set(chartDays, forKey: "chartDays") } }
     /// Hover/scrub readout on the charts.
     @Published var chartHover: Bool { didSet { d.set(chartHover, forKey: "chartHover") } }
-    @Published var dockEdge: DockEdge { didSet { d.set(dockEdge.rawValue, forKey: "dockEdge") } }
+    @Published var dockEdge: DockEdge {
+        didSet {
+            d.set(dockEdge.rawValue, forKey: "dockEdge")
+            // Remember the last REAL edge, so switching the widget off and on again brings it back
+            // where the user put it instead of silently resetting to Bottom.
+            if dockEdge != .off { d.set(dockEdge.rawValue, forKey: "dockEdgeLast") }
+        }
+    }
+    /// The edge to restore when the docked widget is switched back on.
+    var dockEdgeLast: DockEdge { DockEdge(rawValue: d.string(forKey: "dockEdgeLast") ?? "") ?? .bottom }
     @Published var tideLine: Bool { didSet { d.set(tideLine, forKey: "tideLine") } }   // screen-edge remaining-budget filament
     @Published var tideEdge: DockEdge { didSet { d.set(tideEdge.rawValue, forKey: "tideEdge") } }   // which screen edge the tide line hugs
     @Published var tideStyle: EmberLineStyle { didSet { d.set(tideStyle.rawValue, forKey: "tideStyle") } }   // Ember Line style (area 5)

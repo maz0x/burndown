@@ -30,14 +30,14 @@ let good: [String: Any] = [
     "tag_name": "v1.1",
     "body": "notes here",
     "assets": [
-        ["name": "Burndown-1.1.zip", "browser_download_url": "https://example.test/Burndown-1.1.zip"],
-        ["name": "Burndown-1.1.zip.sha256", "browser_download_url": "https://example.test/Burndown-1.1.zip.sha256"],
+        ["name": "Burndown-1.1.zip", "browser_download_url": "https://github.com/maz0x/burndown/releases/download/v1/Burndown-1.1.zip"],
+        ["name": "Burndown-1.1.zip.sha256", "browser_download_url": "https://github.com/maz0x/burndown/releases/download/v1/Burndown-1.1.zip.sha256"],
     ],
 ]
 let rel = UpdateLogic.parseRelease(good)
 check(rel?.version == "1.1", "tag v1.1 parses to version 1.1 (leading v stripped)")
-check(rel?.zipURL == "https://example.test/Burndown-1.1.zip", "zip asset found")
-check(rel?.checksumURL == "https://example.test/Burndown-1.1.zip.sha256", "checksum asset found")
+check(rel?.zipURL == "https://github.com/maz0x/burndown/releases/download/v1/Burndown-1.1.zip", "zip asset found")
+check(rel?.checksumURL == "https://github.com/maz0x/burndown/releases/download/v1/Burndown-1.1.zip.sha256", "checksum asset found")
 check(rel?.notes == "notes here", "release notes carried")
 
 // A release with no zip is unusable.
@@ -45,7 +45,7 @@ check(UpdateLogic.parseRelease(["tag_name": "v1.1", "assets": []]) == nil, "no z
 // Missing checksum parses but must be flagged (the installer refuses it).
 let noSum = UpdateLogic.parseRelease([
     "tag_name": "1.2",
-    "assets": [["name": "Burndown-1.2.zip", "browser_download_url": "https://example.test/z.zip"]],
+    "assets": [["name": "Burndown-1.2.zip", "browser_download_url": "https://github.com/maz0x/burndown/releases/download/v1/z.zip"]],
 ])
 check(noSum?.version == "1.2", "tag without a leading v still parses")
 check(noSum?.checksumURL == nil, "missing checksum is reported as nil, not invented")
@@ -57,11 +57,11 @@ check(UpdateLogic.parseRelease(["assets": []]) == nil, "missing tag means no upd
 
 let list: [[String: Any]] = [
     ["tag_name": "v2.0-beta", "prerelease": true, "draft": false,
-     "assets": [["name": "Burndown-2.0.zip", "browser_download_url": "https://example.test/b.zip"]]],
+     "assets": [["name": "Burndown-2.0.zip", "browser_download_url": "https://github.com/maz0x/burndown/releases/download/v1/b.zip"]]],
     ["tag_name": "v1.5", "prerelease": false, "draft": false,
-     "assets": [["name": "Burndown-1.5.zip", "browser_download_url": "https://example.test/s.zip"]]],
+     "assets": [["name": "Burndown-1.5.zip", "browser_download_url": "https://github.com/maz0x/burndown/releases/download/v1/s.zip"]]],
     ["tag_name": "v9.9", "draft": true,
-     "assets": [["name": "Burndown-9.9.zip", "browser_download_url": "https://example.test/d.zip"]]],
+     "assets": [["name": "Burndown-9.9.zip", "browser_download_url": "https://github.com/maz0x/burndown/releases/download/v1/d.zip"]]],
 ]
 check(UpdateLogic.parseReleaseList(list, allowPrerelease: false)?.version == "1.5",
       "stable-only picks the newest stable, skipping pre-release and draft")
@@ -70,7 +70,7 @@ check(UpdateLogic.parseReleaseList(list, allowPrerelease: true)?.version == "2.0
 check(UpdateLogic.parseReleaseList(list, allowPrerelease: true)?.version != "9.9",
       "drafts are never offered")
 let onlyBeta: [[String: Any]] = [["tag_name": "v3.0", "prerelease": true,
-    "assets": [["name": "Burndown-3.0.zip", "browser_download_url": "https://example.test/x.zip"]]]]
+    "assets": [["name": "Burndown-3.0.zip", "browser_download_url": "https://github.com/maz0x/burndown/releases/download/v1/x.zip"]]]]
 check(UpdateLogic.parseReleaseList(onlyBeta, allowPrerelease: false) == nil,
       "a beta-only project offers nothing to stable users")
 check(UpdateLogic.parseReleaseList(onlyBeta, allowPrerelease: true)?.version == "3.0",
@@ -99,6 +99,29 @@ check(!UpdateLogic.isDevelopmentCheckout(bundlePath: "/Applications/Burndown.app
       "an installed app is not a dev checkout")
 check(!UpdateLogic.isDevelopmentCheckout(bundlePath: "/repo/Burndown.app") { $0 == "/repo/Sources" },
       "Sources/ alone (no build.sh) is not enough to call it a dev checkout")
+
+// A pre-release tag used to be split on every dot along with the numbers, so "0.9.6-beta.1" read
+// as a fourth component and looked NEWER than the 0.9.6 it comes before. A user on the release
+// would have been offered a downgrade to a test build.
+print("pre-release ordering:")
+check(!UpdateLogic.isNewer("0.9.6-beta", than: "0.9.6"), "a beta does not update the release it precedes")
+check(!UpdateLogic.isNewer("0.9.6-beta.1", than: "0.9.6"), "not even with a numbered pre-release part")
+check(UpdateLogic.isNewer("0.9.6", than: "0.9.6-beta"), "but the release does update the beta")
+check(UpdateLogic.isNewer("0.9.7-beta", than: "0.9.6"), "and a beta of a LATER version still counts")
+check(UpdateLogic.isNewer("0.9.10", than: "0.9.9"), "ten is still newer than nine, not older")
+check(!UpdateLogic.isNewer("0.9.6", than: "0.9.6"), "and the same version is never newer than itself")
+
+// The download link arrives inside the API payload, so whatever it says is where the app would
+// fetch an executable from and then run it.
+print("asset links are pinned to the release host:")
+check(UpdateLogic.isAllowedAssetURL("https://github.com/x/y/releases/download/v1/a.zip"), "github.com is allowed")
+check(UpdateLogic.isAllowedAssetURL("https://objects.githubusercontent.com/a.zip"), "and the asset CDN")
+check(!UpdateLogic.isAllowedAssetURL("https://evil.test/a.zip"), "another host is refused")
+check(!UpdateLogic.isAllowedAssetURL("http://github.com/a.zip"), "and so is plain http on the right host")
+check(!UpdateLogic.isAllowedAssetURL("https://github.com.evil.test/a.zip"), "a lookalike host does not pass")
+check(UpdateLogic.parseRelease(["tag_name": "v9.9", "assets": [["name": "Burndown-9.9.zip",
+      "browser_download_url": "https://evil.test/Burndown-9.9.zip"]]]) == nil,
+      "a release pointing at another host parses to nothing at all")
 
 print(failures == 0 ? "ALL UPDATE TESTS PASSED" : "\(failures) UPDATE TEST(S) FAILED")
 exit(failures == 0 ? 0 : 1)

@@ -143,5 +143,36 @@ check(mergeSessions(untitled).count == 2, "untitled chats are never merged into 
 check(merged.map(\.title) == ["Long piece of work", "Something else", "Long piece of work"],
       "first-seen order is preserved")
 
+
+// A conversation's totals inside a window must come from that window's records. Insights used to
+// take the lifetime rows and keep the ones touched recently, so one message sent to an old chat
+// dragged its entire history into "this week".
+print("sessions inside a window:")
+do {
+    let now = Date()
+    func rec(_ ago: Double, _ title: String, _ input: Int, _ project: String = "app") -> UsageRecord {
+        UsageRecord(date: now.addingTimeInterval(-ago), model: "claude-fable-5", project: project,
+                    session: title, input: input, output: 0, cache5m: 0, cache1h: 0, cacheRead: 0)
+    }
+    // "Old chat" ran hot a year ago and was touched once this morning; only the touch is in window.
+    let rows = sessionsInWindow([rec(3600, "Old chat", 500), rec(7200, "New chat", 2000)])
+    check(rows.count == 2, "one row per conversation")
+    let old = rows.first { $0.title == "Old chat" }
+    check(old?.tokens == 500, "the old chat contributes only what it burned inside the window")
+    check(rows.first { $0.title == "New chat" }?.tokens == 2000, "and the new one all of it")
+    check(old?.date ?? .distantPast > now.addingTimeInterval(-3601), "the row is dated by its latest record")
+
+    let split = sessionsInWindow([rec(60, "Fix the build", 10, "alpha"), rec(60, "Fix the build", 20, "beta")])
+    check(split.count == 2, "the same name in two projects stays two rows")
+    check(split.allSatisfy { $0.tokens == 10 || $0.tokens == 20 }, "and neither absorbs the other")
+
+    let cached = sessionsInWindow([UsageRecord(date: now, model: "claude-fable-5", project: "app",
+                                               session: "c", input: 1, output: 2, cache5m: 4,
+                                               cache1h: 8, cacheRead: 16)])
+    check(cached.first?.tokens == 31, "tokens include every cache bucket")
+    check((cached.first?.cost ?? 0) > 0, "and the cost is real, not zero")
+    check(sessionsInWindow([]).isEmpty, "no records means no rows, not one empty one")
+}
+
 if failures == 0 { print("ALL AGGREGATION TESTS PASSED") }
 else { print("\(failures) FAILURE(S)"); exit(1) }

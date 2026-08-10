@@ -206,15 +206,24 @@ struct Palette {
 }
 
 // fmtTok + money moved to Sources/Format.swift (Foundation-pure, headless-testable).
-func resetDayString(_ date: Date) -> String {
-    let f = DateFormatter(); f.dateFormat = "EEE h:mm a"; return f.string(from: date)
+func resetDayString(_ date: Date, now: Date = Date()) -> String {
+    let f = DateFormatter()
+    // A weekly window resets on the same weekday it began, so "Mon 9:00 AM" alone cannot say
+    // whether that is tomorrow or in a week. Past six days out it takes the date instead.
+    let days = Calendar.current.dateComponents([.day],
+                                               from: Calendar.current.startOfDay(for: now),
+                                               to: Calendar.current.startOfDay(for: date)).day ?? 0
+    f.dateFormat = days >= 6 ? "MMM d, h:mm a" : "EEE h:mm a"
+    return f.string(from: date)
 }
 
 /// Clock time alone ("4:12 PM"), or with the weekday when it is not today - a run-out three days out
 /// must not read as this afternoon.
 func shortClock(_ date: Date, now: Date = Date()) -> String {
     let f = DateFormatter()
-    f.dateFormat = Calendar.current.isDate(date, inSameDayAs: now) ? "h:mm a" : "EEE h a"
+    // Minutes are kept on every day, not only today. "Thu 4 PM" for a run-out at 4:55 is nearly an
+    // hour out, and the whole value of this string is telling the reader when to stop.
+    f.dateFormat = Calendar.current.isDate(date, inSameDayAs: now) ? "h:mm a" : "EEE h:mm a"
     return f.string(from: date)
 }
 
@@ -241,7 +250,10 @@ struct HBar: View {
     @Environment(\.accessibilityReduceMotion) private var reduce
     var body: some View {
         GeometryReader { g in
-            let w = max(height, g.size.width * pct)
+            // Nothing used draws NOTHING. max(height, ...) exists so a sliver of usage is still
+            // visible as a rounded pip rather than a hairline, but it also gave a bar at zero a
+            // pip of its own, which reads as "a little bit used" when the honest answer is none.
+            let w = pct <= 0 ? 0 : max(height, g.size.width * pct)
             let r = max(0, min(1, redline))
             let fill = (r > 0 && overLimit != nil) ? color.blended(to: overLimit!, r) : color
             ZStack(alignment: .leading) {
@@ -269,7 +281,7 @@ struct CapLimitRow: View {
     let m: ScopedLimit; let p: Palette; var barColor: Color = kSlate; var nameWidth: CGFloat = 52
     /// Width of the trailing "% left" column. Fixed, so every row's number ends on the same edge
     /// as the bars above and below it instead of wherever its own digits happen to finish.
-    var valueWidth: CGFloat = 66
+    var valueWidth: CGFloat = kRowValueWidth
     var body: some View {
         HStack(spacing: 8) {
             // The dot is drawn INSIDE the name column, not in front of it.
@@ -284,20 +296,20 @@ struct CapLimitRow: View {
                     .foregroundStyle(m.active ? p.ink : p.sub).lineLimit(1)
             }
             .frame(width: nameWidth, alignment: .leading)
-            HBar(pct: m.pct, color: m.active ? barColor : barColor.opacity(0.6), track: p.track, height: 5,
-                 a11yLabel: "\(m.label) weekly cap")
+            HBar(pct: m.pct, color: m.active ? barColor : barColor.opacity(0.6), track: p.track,
+                 height: kRowBarHeight, a11yLabel: "\(m.label) weekly cap")
             // Tinted to its own bar, so the number and the bar it belongs to read as one thing.
-            // The binding cap keeps the session hue it is already marked with; the rest take the
-            // weekly slate at full strength, which still clears contrast because the roles were
-            // corrected at palette level.
-            // Tinted to its own bar, so the number and the bar it belongs to read as one thing,
-            // but in the TEXT-safe version of the hue: the graphic one is only held to 3:1.
-            Text("\(Int((m.remaining * 100).rounded()))% left")
+            // Tinted to ITS OWN BAR, in the text-safe version of that hue (the graphic one is only
+            // held to 3:1). The binding cap used to take the session orange while its bar stayed
+            // slate, so the row showed an orange number attached to a blue bar and the eye read
+            // them as two different facts. The dot beside the name already says which cap binds,
+            // and saying it twice in two colours is what made the row look wrong.
+            Text("\(usedAndLeftPercent(m.pct).left)% left")
                 .font(.system(size: 12, weight: .medium, design: .monospaced)).monospacedDigit()
-                .foregroundStyle(m.active ? p.sessionText : p.weeklyText)
+                .foregroundStyle(barColor == p.session ? p.sessionText : p.weeklyText)
                 .frame(width: valueWidth, alignment: .trailing)
         }
-        .help("\(m.label): \(Int((m.pct * 100).rounded()))% of its own weekly cap used" + (m.resetAt.map { ", resets \(resetDayString($0))" } ?? ""))
+        .help("\(m.label): \(usedAndLeftPercent(m.pct).used)% of its own weekly cap used" + (m.resetAt.map { ", resets \(resetDayString($0))" } ?? ""))
     }
 }
 
@@ -363,17 +375,24 @@ struct TimeRing: View {
     var track: Color; var ink: Color; var faint: Color; var ring: Color; var size: CGFloat = 60
     var body: some View {
         let lw = max(2.2, size * 0.05)
-        let f = max(0.001, min(1, frac))
+        let f = max(0, min(1, frac))
+        // A trim of 0.001 is not invisible: it is a nub at twelve o'clock that reads as a glitch on
+        // a ring that should be empty. And a trim of 0.99 leaves a hairline gap at the same place
+        // that reads as one too, on a window that has only just opened. Both ends are special.
+        let full = f >= 0.995
         ZStack {
             Circle().stroke(track, lineWidth: lw)
+            if full { Circle().stroke(ring, style: StrokeStyle(lineWidth: lw, lineCap: .round)) }
             // No implicit animation: the arc must not sweep in from 0 on first paint
             // (that read as bits of the ring "flying" onto the popover).
             // Angular gradient along the arc (dim tail, bright head) for depth.
-            Circle().trim(from: 0, to: f)
-                .stroke(AngularGradient(colors: [ring.opacity(0.55), ring], center: .center,
-                                        startAngle: .degrees(0), endAngle: .degrees(360 * f)),
-                        style: StrokeStyle(lineWidth: lw, lineCap: .round))
-                .rotationEffect(.degrees(-90))
+            if f > 0, !full {
+                Circle().trim(from: 0, to: f)
+                    .stroke(AngularGradient(colors: [ring.opacity(0.55), ring], center: .center,
+                                            startAngle: .degrees(0), endAngle: .degrees(360 * f)),
+                            style: StrokeStyle(lineWidth: lw, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+            }
             // Rounded end cap dot, sitting EXACTLY on the arc centerline (radius = size/2, the
             // same circle the stroke is centered on). Same color as the arc head so it reads as
             // the arc's own tip, not a separate ornament; hidden when the arc is tiny or full.
@@ -394,6 +413,19 @@ struct TimeRing: View {
 
 // MARK: - Usage detail (Layout B, Claude theme)
 
+/// The whole-percent a headline shows, with "<1" instead of a flat 0 for real-but-tiny usage.
+///
+/// Rounding to nearest turns 0.4% into "0", which sat above a line reading two dollars and
+/// eight thousand tokens a minute and made the card argue with itself. Zero is reserved for
+/// actually zero.
+func heroPercent(_ pct: Double) -> String {
+    let v = max(0, pct) * 100
+    if v <= 0 { return "0" }
+    if v < 0.5 { return "<1" }
+    return "\(Int(v.rounded()))"
+}
+
+
 struct DetailCard: View {
     var snapshot: UsageSnapshot
     @ObservedObject var settings: AppSettings
@@ -404,6 +436,24 @@ struct DetailCard: View {
     var signedIn: Bool = true            // false to show the inline sign-in card
     var loading: Bool = false            // true on cold start, before any data (skeleton)
     var dailySpark: [Double] = []        // last-7-days cost, normalized 0…1 (This-week mini bars)
+
+    /// What the seven mini bars say, in words.
+    ///
+    /// The values are normalised, so the only honest things to name are which day was busiest and
+    /// how the others compare to it. That is also all the bars themselves convey to someone looking
+    /// at them, which is the right bar for a spoken equivalent to clear.
+    var sevenDaySpoken: String {
+        let vals = Array(dailySpark.suffix(7))
+        guard !vals.isEmpty, let peak = vals.max(), peak > 0 else { return "No usage in the last 7 days" }
+        let names = ["6 days ago", "5 days ago", "4 days ago", "3 days ago", "2 days ago", "Yesterday", "Today"]
+        let offset = names.count - vals.count
+        let busiestIdx = vals.firstIndex(of: peak) ?? 0
+        let busiest = names[min(names.count - 1, max(0, busiestIdx + offset))]
+        let quiet = vals.filter { $0 <= 0 }.count
+        var out = "Busiest was \(busiest)"
+        if quiet > 0 { out += ", \(quiet) day\(quiet == 1 ? "" : "s") with no usage" }
+        return out
+    }
     var records: [UsageRecord] = []      // per-call records (burn-chart spike attribution)
     var apiSpend: APISpend = APISpend()  // developer-API spend (separate account); popover line only when configured
     var onRefresh: () -> Void = {}
@@ -434,7 +484,17 @@ struct DetailCard: View {
     }
 
     // Compact dollar amount: "$112" or "$1.2k".
-    private func money1k(_ v: Double) -> String { v < 1000 ? "$\(Int(v.rounded()))" : String(format: "$%.1fk", v / 1000) }
+    /// One decimal below $10, whole dollars above, "k" past a thousand.
+    ///
+    /// NOT cents: this recomputes every couple of seconds while tokens are flowing, and a cents
+    /// figure would tick continuously in the corner of the eye, which is the opposite of what a
+    /// calm card is for. One decimal is enough to see a session move without it becoming a clock.
+    private func money1k(_ v: Double) -> String {
+        if v < 0.05 { return "$0" }
+        if v < 10 { return String(format: "$%.1f", v) }
+        if v < 1000 { return "$\(Int(v.rounded()))" }
+        return String(format: "$%.1fk", v / 1000)
+    }
 
     // The one contextual line under the Session number. Returns (text, color).
     // Covers offline/stale ("last updated"), fresh window, sparse-forecast (low confidence),
@@ -456,7 +516,13 @@ struct DetailCard: View {
             if let r = snapshot.sessionResetAt { return ("Resets in \(weekLeftString(r))", p.overLimit) }
             return nil
         }
-        if sp <= 0.005 { return ("Fresh 5h window, nothing burned yet", p.faint) }
+        // "nothing burned yet" has to be true of everything the card is showing, not just of the
+        // percentage. It sat directly under a line reading two dollars and eight thousand tokens a
+        // minute, because a session under half a percent still rounds to zero.
+        if sp <= 0.005 {
+            let quiet = snapshot.sessionCost < 0.01 && live.rate < 1
+            return (quiet ? "Fresh 5h window, nothing burned yet" : "Fresh 5h window", p.faint)
+        }
         guard let f = forecastToLimit(live.usageSamples, current: sp, resetAt: snapshot.sessionResetAt) else { return nil }
         let clean = f.replacingOccurrences(of: "~", with: "")
         // Sparse data: a confident-looking ETA can rest on a thin recent slice, so flag low confidence.
@@ -470,8 +536,8 @@ struct DetailCard: View {
     // only when its Popover toggle is on, so "Estimated cost" / "Token rate" actually control something.
     private func sessionMeta() -> String {
         var parts: [String] = []
-        if settings.showCost { parts.append("≈\(money1k(snapshot.sessionCost))") }
-        if settings.showTokens { parts.append("\(fmtTok(Int(max(0, live.rate)))) tok/min") }
+        if settings.showCost { parts.append("~\(money1k(snapshot.sessionCost))") }
+        if settings.showTokens { parts.append("\(fmtTok(Int(max(0, live.rate))))/min") }
         return parts.joined(separator: " · ")
     }
 
@@ -560,7 +626,7 @@ struct DetailCard: View {
                         (Text(title).font(.system(size: 15.5, weight: .bold)).foregroundColor(p.ink)
                          + Text(" usage").font(.system(size: 14, weight: .medium)).foregroundColor(p.faint))
                             .tracking(-0.1)
-                            .lineLimit(1).minimumScaleFactor(0.7).layoutPriority(1)
+                            .lineLimit(1).minimumScaleFactor(0.8).layoutPriority(1)
                         Spacer(minLength: 6)
                         // Quiet-hours moon: a crescent leading the badge, text in the
                         // tooltip so the header title keeps its room; distinct from the connection state
@@ -589,7 +655,9 @@ struct DetailCard: View {
             // Developer API spend: one opt-in line at the very bottom, only when a key is
             // configured. No key -> neither this line nor its hairline exist, layout byte-for-byte unchanged.
             if settings.showDeveloperApiLine, apiSpend.configured, apiSpend.error == nil {
-                Rectangle().fill(p.divider).frame(height: 1).padding(.vertical, settings.popoverCompact ? 10 : 12)
+                // Routed through the section separator so it honours the dividers setting and the
+            // compact spacing system, instead of being a hand-rolled copy that ignores both.
+            if settings.popoverDividers { Rectangle().fill(p.divider).frame(height: 1).padding(.vertical, settings.popoverCompact ? 10 : 12) }
                 developerApiLine(p)
             }
         }
@@ -599,12 +667,12 @@ struct DetailCard: View {
     // percent blocks. Eyebrow + connection dot on the left, dollars (its only unit) right-aligned.
     private func developerApiLine(_ p: Palette) -> some View {
         HStack(spacing: 7) {
-            Text("DEVELOPER API").font(.system(size: 10, weight: .semibold)).tracking(1.2).foregroundStyle(p.sub).fixedSize()
+            Text("DEVELOPER API").font(.system(size: 9.5, weight: .semibold)).tracking(1.0).foregroundStyle(p.sub).fixedSize()
             Circle().fill(p.live).frame(width: 5, height: 5)
             Spacer(minLength: 6)
             Text("$\(Int(apiSpend.monthToDate.rounded())) mo · $\(Int(apiSpend.today.rounded())) today")
                 .font(.system(size: 11, design: .monospaced)).foregroundStyle(p.sub)
-                .lineLimit(1).minimumScaleFactor(0.75)
+                .lineLimit(1).minimumScaleFactor(0.8)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Developer API spend, \(Int(apiSpend.monthToDate.rounded())) dollars this month, \(Int(apiSpend.today.rounded())) dollars today")
@@ -623,12 +691,17 @@ struct DetailCard: View {
                     // instrument until you burn hot.
                     let warmth = snapshot.over ? 1.0 : max(0, min(1, (snapshot.sessionPct - (settings.alertSessionAt - 0.15)) / 0.15))
                     let heroBase = Color(nsColor: NSColor(p.ink).blended(to: NSColor(sColor), CGFloat(warmth)))
-                    Text("\(Int((snapshot.sessionPct * 100).rounded()))")
+                    let heroText = heroPercent(snapshot.sessionPct)
+                    Text(heroText)
                         .font(.system(size: 60, weight: .semibold, design: .serif)).tracking(-0.5)
                         .foregroundStyle(snapshot.over ? AnyShapeStyle(p.overLimit)
                             : warmth > 0.02 ? AnyShapeStyle(LinearGradient(colors: [heroBase.brighten(0.10 * warmth), heroBase], startPoint: .top, endPoint: .bottom))
                             : AnyShapeStyle(p.ink))
-                        .monospacedDigit().numberAnim(reduce ? .none : settings.numberStyle, Int((snapshot.sessionPct * 100).rounded()))
+                        // The rolling-number animation counts integers, so it cannot animate "<1".
+                        // It is switched off for that one case rather than forced.
+                        .monospacedDigit()
+                        .numberAnim(reduce || heroText == "<1" ? .none : settings.numberStyle,
+                                    Int((snapshot.sessionPct * 100).rounded()))
                         .scaleEffect(milestonePulse ? 1.035 : 1, anchor: .leading)
                     Text("%").font(.system(size: 28, weight: .regular, design: .serif)).foregroundStyle(p.sub)
                 }
@@ -636,7 +709,7 @@ struct DetailCard: View {
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("Session")
                 .accessibilityValue({
-                    var s = snapshot.over ? "limit reached" : "\(Int((snapshot.sessionPct * 100).rounded())) percent used"
+                    var s = snapshot.over ? "limit reached" : "\(heroPercent(snapshot.sessionPct)) percent used"
                     if settings.showCost { s += ", about \(money1k(snapshot.sessionCost))" }
                     if let r = snapshot.sessionResetAt { s += ", \(weekLeftString(r)) until reset" }
                     return s
@@ -688,9 +761,12 @@ struct DetailCard: View {
             // (it is a fact about the data, not a projection).
             if (settings.showForecastLine || snapshot.over || liveState == .offline || liveState == .stale),
                let st = sessionStateLine(liveState, sColor, p) {
-                Text(st.0).font(.system(size: 13, weight: .medium)).foregroundStyle(st.1).padding(.top, 2).lineLimit(1)
-                    .help("Session status: time to limit, approaching limit, offline, or a fresh window.")
-            }
+                // 11.5 regular, not 13 medium. This is context under the number, and it was set
+                // HEAVIER than the cost line directly above it, so the quietest fact on the card
+                // was also its boldest. Weight and colour are reserved for the warning and
+                // over-limit branches, which set their own colour through st.1.
+                Text(st.0).font(.system(size: 11.5)).foregroundStyle(st.1).padding(.top, 2).lineLimit(1)
+                                }
             // Flat fill at rest; the glow and the overLimit tint are redline-only.
             HBar(pct: snapshot.sessionPct, color: sColor, track: p.track, height: 7,
                  redline: snapshot.over ? 1 : max(0, (min(1, snapshot.sessionPct) - 0.85) / 0.15),
@@ -723,7 +799,11 @@ struct DetailCard: View {
             // reaches OUT instead: -9 against the card's 16 leaves a 7pt margin outside it, while
             // the inset inside stays at 10 so nothing touches the border. Thin outside, roomy
             // inside, and the charts end up 12pt wider than they were before any of this.
-            .padding(.horizontal, 10).padding(.vertical, 11)
+            // 16 (card) - 9 (box reaches out) + 9 (inset) puts box content exactly on the card's
+            // 16pt grid. It was an inset of 10, which landed everything inside the box one point
+            // off the column every other section sits on: invisible alone, and the reason the box
+            // never quite lined up with the rows above it.
+            .padding(.horizontal, 9).padding(.vertical, 11)
             .background(RoundedRectangle(cornerRadius: 12).fill(p.raisedBg))
             .padding(.horizontal, -9)
     }
@@ -742,7 +822,12 @@ struct DetailCard: View {
             HStack(alignment: .firstTextBaseline, spacing: 6) {
                 if settings.popoverEyebrows {
                     Text("THIS WEEK").font(.system(size: 11, weight: .semibold)).tracking(1.4).foregroundStyle(p.sub)
-                    InfoDot(text: "Your weekly allowance across every model. Some models also carry their own weekly cap, listed below.", p: p, accent: Color(hex: settings.accentHex), on: settings.popoverExplain)
+                    InfoDot(text: "Your weekly allowance across every model."
+                            // The second sentence promises rows that only exist when the
+                            // service reports per-model caps, so it is only said then.
+                            + (snapshot.modelLimits.isEmpty ? ""
+                               : " Some models also carry their own weekly cap, listed below."),
+                            p: p, accent: Color(hex: settings.accentHex), on: settings.popoverExplain)
                 }
                 Spacer(minLength: 8)
                 if let rc = resetCaption {
@@ -753,23 +838,39 @@ struct DetailCard: View {
             if settings.showWeekPercent {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     HStack(alignment: .firstTextBaseline, spacing: 1) {
-                        Text("\(Int((snapshot.weeklyPct * 100).rounded()))")
+                        let weekText = heroPercent(snapshot.weeklyPct)
+                        Text(weekText)
                             .font(.system(size: 30, weight: .semibold, design: .serif)).tracking(-0.25)
                             .foregroundStyle(wColor)
-                            .monospacedDigit().numberAnim(reduce ? .none : settings.numberStyle, Int((snapshot.weeklyPct * 100).rounded()))
+                            .monospacedDigit()
+                            .numberAnim(reduce || weekText == "<1" ? .none : settings.numberStyle,
+                                        Int((snapshot.weeklyPct * 100).rounded()))
                         Text("%").font(.system(size: 15, weight: .regular, design: .serif)).foregroundStyle(p.sub)
                     }
                     HBar(pct: snapshot.weeklyPct, color: wColor, track: p.track, height: 5, a11yLabel: "Weekly usage, all models").padding(.bottom, 6)
                 }
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("This week, all models")
-                .accessibilityValue("\(Int((snapshot.weeklyPct * 100).rounded())) percent used")
+                .accessibilityValue("\(heroPercent(snapshot.weeklyPct)) percent used")
             } else {
                 HBar(pct: snapshot.weeklyPct, color: wColor, track: p.track, height: 5, a11yLabel: "Weekly usage").padding(.top, 4)
             }
             // 7-day history belongs with the all-models total, right beneath it.
             if settings.showLast7Days, dailySpark.contains(where: { $0 > 0 }) {
+                // Label LEADING, data trailing, like every other row in the card. This one was the
+                // exception: its label sat on the right while its bars sat on the left, so the
+                // eye had to switch sides to read a section that lives directly under THIS WEEK.
                 HStack(alignment: .bottom, spacing: 5) {
+                    // Secondary eyebrow tier: 9.5 semibold, tracking 1.0. It was 9 BOLD at 0.8, a fourth
+            // size and a weight nothing else in the card uses.
+            Text("LAST 7 DAYS").font(.system(size: 9.5, weight: .semibold)).tracking(1.0)
+                        .foregroundStyle(p.sub).padding(.bottom, 1).fixedSize()
+                    // The row-level .help() this replaces would have fired UNDER the mark too,
+                    // showing the same sentence twice. One affordance per thing.
+                    InfoDot(text: "Your daily usage over the last 7 days. The tallest bar is your busiest day, and today is the highlighted bar on the right.",
+                            p: p, accent: Color(hex: settings.accentHex), on: settings.popoverExplain)
+                        .padding(.bottom, 1)
+                    Spacer(minLength: 8)
                     HStack(alignment: .bottom, spacing: 3) {   // 5pt bars / 3pt gap (design annotation 9)
                         ForEach(Array(dailySpark.suffix(7).enumerated()), id: \.offset) { i, v in
                             let isToday = i == min(6, dailySpark.count - 1)
@@ -778,16 +879,14 @@ struct DetailCard: View {
                                 .frame(width: 5, height: 3 + 13 * max(0, min(1, v)) + (isToday ? 1 : 0))
                         }
                     }
-                    Spacer(minLength: 8)   // "LAST 7 DAYS" label right-aligned (design)
-                    Text("LAST 7 DAYS").font(.system(size: 9, weight: .bold)).tracking(0.8)
-                        .foregroundStyle(p.sub).padding(.bottom, 1)
-                    // The row-level .help() this replaces would have fired UNDER the mark too,
-                    // showing the same sentence twice. One affordance per thing.
-                    InfoDot(text: "Your daily usage over the last 7 days. The tallest bar is your busiest day, and today is the highlighted bar on the right.",
-                            p: p, accent: Color(hex: settings.accentHex), on: settings.popoverExplain)
-                        .padding(.bottom, 1)
                 }
                 .frame(height: 16, alignment: .bottom).padding(.top, 8)
+                // Seven days of real numbers that a screen reader could not see at all: the bars are
+                // bare rectangles, and the eyebrow beside them named the section without saying
+                // anything about the data. Spoken as one summary rather than seven anonymous bars.
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Last 7 days")
+                .accessibilityValue(sevenDaySpoken)
             }
             // ── PER MODEL: caps (a model with its own weekly limit) stay visible; the share split hides ──
             if !caps.isEmpty {
@@ -802,17 +901,18 @@ struct DetailCard: View {
                 HStack(spacing: 6) {
                     Button { withAnimation(.emberEase(Dur.d120)) { settings.modelsExpanded.toggle() } } label: {
                         HStack(spacing: 6) {
-                            // Both fixed to one line. Without it, a narrow card wrapped "share of
-                            // week" onto two lines and then squeezed the heading itself down to
-                            // "BY MO...", so the one piece of text that names the section was the
-                            // first thing to break. The subtitle is the part that may disappear.
                             // No subtitle. "share of week" could not fit beside the heading at any
                             // card width and rendered as "share...", which is not a word. The info
                             // mark next to it says the same thing properly.
-                            Text("BY MODEL").font(.system(size: 10, weight: .semibold)).tracking(1.0)
+                            Text("BY MODEL").font(.system(size: 9.5, weight: .semibold)).tracking(1.0)
                                 .foregroundStyle(p.sub).fixedSize()
-                        }.contentShape(Rectangle())
+                        }
+                        .frame(height: 22)              // the row already owns this height; the
+                        .contentShape(Rectangle())      // button had been hit-testing under 18
                     }.buttonStyle(.plain).focusable(false)
+                    .accessibilityLabel("By model")
+                    .accessibilityHint(settings.modelsExpanded ? "Hides the per-model split" : "Shows the per-model split")
+                    .accessibilityAddTraits(settings.modelsExpanded ? [.isButton, .isSelected] : .isButton)
                     InfoDot(text: "How this week's usage splits across the models you used, as a share of the week. Click the row to see the full list.",
                             p: p, accent: Color(hex: settings.accentHex), on: settings.popoverExplain)
                     Button { withAnimation(.emberEase(Dur.d120)) { settings.modelsExpanded.toggle() } } label: {
@@ -822,6 +922,10 @@ struct DetailCard: View {
                                 .foregroundStyle(p.faint).rotationEffect(.degrees(settings.modelsExpanded ? 90 : 0))
                         }.contentShape(Rectangle())
                     }.buttonStyle(.plain).focusable(false)
+                    // The chevron is a second way to press the SAME control, so it is decoration as
+                    // far as a screen reader is concerned. Announced separately it would read as an
+                    // unnamed button that does something unexplained.
+                    .accessibilityHidden(true)
                 }.frame(height: 22).padding(.top, caps.isEmpty ? 12 : 9)
                 if settings.modelsExpanded {
                     ByModelSplit(usage: usage, p: p).padding(.top, 6)
@@ -832,30 +936,6 @@ struct DetailCard: View {
 
     private func capRow(_ m: ScopedLimit, _ p: Palette, _ wColor: Color) -> some View {
         CapLimitRow(m: m, p: p, barColor: wColor)
-    }
-
-    // A labeled footer row: a fixed-width uppercase label clearly owns its value.
-    // Footer row; pass `bar` (0…1) to add a micro progress bar after the value, so the per-model
-    // weekly shares read at a glance instead of as bare numbers.
-    private func footRow(_ label: String, _ value: String, _ p: Palette,
-                         bar: Double? = nil, barColor: Color = .clear, active: Bool = false) -> some View {
-        // Footer row: label left, value right-aligned. Plain rows (resets) stay text-only per the
-        // design; a per-model weekly row passes `bar` to add a small usage bar and, when it's the
-        // binding limit (`active`), an ember dot + the session-hue label so it reads as "the one to watch".
-        HStack(spacing: 8) {
-            if active { Circle().fill(p.session).frame(width: 4, height: 4) }
-            Text(label.uppercased()).font(.system(size: 10, weight: .semibold)).tracking(1.0)
-                .foregroundStyle(active ? p.session : p.sub).lineLimit(1)
-            if let bar {
-                ZStack(alignment: .leading) {
-                    Capsule().fill(p.track).frame(width: 34, height: 4)
-                    Capsule().fill(barColor).frame(width: max(2, 34 * min(1, max(0, bar))), height: 4)
-                }
-            }
-            Spacer(minLength: 8)
-            Text(value).font(.system(size: 13, weight: active ? .medium : .regular))
-                .foregroundStyle(active ? p.ink : p.sub).lineLimit(1).monospacedDigit()
-        }
     }
 
     // Re-auth banner: the token expired; tap to sign in again.
@@ -914,7 +994,9 @@ struct DetailCard: View {
     private func skeletonCard(_ p: Palette) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
-                Text(kAppName).font(.system(size: 16, weight: .bold)).foregroundStyle(p.ink)
+                // The connected header's exact spec. This state ran a sans version of it, so the
+                // wordmark visibly changed shape the moment real data landed.
+                Text(kAppName).font(.system(size: 16, weight: .bold, design: .serif)).foregroundStyle(p.ink)
                 Text("usage").font(.system(size: 16, weight: .semibold)).foregroundStyle(p.faint)
                 Spacer()
                 HStack(spacing: 5) {
@@ -1161,6 +1243,11 @@ struct MonitorChart: View {
                  accent: accent, secondary: secondary, p: p, plotH: plotH, style: chartStyle,
                  window: burnSpan.seconds, days: chartDays, hover: chartHover,
                  currentRate: live.rate,
+                 // What is burning right now, and the reader's own truncation choice: TOP CHATS
+                 // could show neither, so it marked no live chat and ignored a setting ChatRow
+                 // three inches below it honours.
+                 activeStreams: live.activeStreams.map { ($0.name, $0.project, $0.tok) },
+                 truncation: truncation,
                  hiddenSeries: hiddenSeries, onToggleSeries: onToggleSeries)
     }
 
@@ -1174,11 +1261,10 @@ struct MonitorChart: View {
             ForEach(Array(shown.enumerated()), id: \.element) { i, kind in
                 if i > 0 { Spacer().frame(height: 7) }
                 if chrome {
-                HStack(spacing: 6) {
+                HStack(spacing: 5) {
                     Text(kind.label.uppercased())
                         .font(.system(size: 9.5, weight: .semibold)).tracking(1.0)
                         .foregroundStyle(p.faint)
-                        .help(kind.blurb)
                     InfoDot(text: kind.blurb, p: p, accent: accent, on: explain)
                     Spacer()
                     if i == 0 {
@@ -1186,13 +1272,19 @@ struct MonitorChart: View {
                             Image(systemName: "gearshape").font(.system(size: 10.5))
                                 .foregroundStyle(gearHover ? p.sub : p.faint).opacity(gearHover ? 1 : 0.5)
                         }
-                        .buttonStyle(.plain).focusable(false).help("Choose charts and chart options")
+                        .buttonStyle(.plain).focusable(false)
+                        .accessibilityLabel("Choose charts and chart options")
                         .onHover { gearHover = $0 }
                         .animation(.easeInOut(duration: 0.15), value: gearHover)
                     }
                 }
                 }
                 ChartBodyView(kind: kind, ctx: ctx)
+                    // Only the chart that actually HOSTS the indicator reserves room for it. The
+                    // flag defaulted to true and was never set per chart, so all of them held back
+                    // 52 points on the trailing edge of their stat line for something only the last
+                    // one draws, and every other caption truncated about 44 points early.
+                    .environment(\.chartHasCadence, showCadence && i == shown.count - 1)
                     // One place for the refresh indicator: it lands on the trailing edge of the LAST
                     // chart's stat line, instead of every chart re-implementing it.
                     .overlay(alignment: .bottomTrailing) {
@@ -1757,6 +1849,17 @@ struct AdvancedCard<Content: View>: View {
     }
 }
 
+/// How tall the Account window renders for a screenshot. Its content is longer than the window,
+/// which scrolls; the picture cannot, so it gets the full height. At the old 450 the Contact and
+/// privacy sections were simply below the frame, and the published picture never showed them.
+let kAccountPreviewHeight: CGFloat = 760
+
+/// The Account window's width, shared by the window and by the screenshot that pictures it.
+///
+/// Named once because they have to agree: when Insights was widened and its renderer was not, every
+/// published screenshot of it lost its right-hand column, and nothing failed to say so.
+let kAccountWindowWidth: CGFloat = 460
+
 struct AccountView: View {
     @ObservedObject var engine: UsageEngine
     @ObservedObject var settings: AppSettings
@@ -1908,10 +2011,15 @@ struct AccountView: View {
             if previewSignedIn == nil {
                 ScrollView { content(p) }
             } else {
-                content(p).frame(height: 450, alignment: .top)
+                content(p).frame(height: kAccountPreviewHeight, alignment: .top)
             }
         }
-        .frame(width: 340, height: 450)
+        // The view's own size, and the reason the window and its screenshot kept disagreeing:
+        // this was hard-coded to 340x450 and quietly overrode both the window's content size and
+        // the renderer's proposal. Width comes from the shared constant now; height is fixed only
+        // for the screenshot, where nothing can scroll, and left to the window otherwise.
+        .frame(width: kAccountWindowWidth,
+               height: previewSignedIn == nil ? nil : kAccountPreviewHeight)
         .background(p.bg)
         .onAppear { engine.refreshAPISpend() }
     }
@@ -1946,21 +2054,27 @@ struct AccountView: View {
                 // Diagnostics live behind the drawer: real facts for a bug report or a trust
                 // check, zero noise for everyone else.
                 AdvancedCard(title: "Diagnostics and storage", p: p) {
-                    diagRow("Access token", engine.tokenExpiry.map {
-                        $0 > Date() ? "expires in \(weekLeftString($0))" : "expired, will refresh on next fetch"
-                    } ?? "none stored yet", p)
-                    diagRow("Live cache", engine.snapshot.liveUpdated.map {
-                        "updated \(Int(max(0, Date().timeIntervalSince($0))))s ago"
-                    } ?? "never written", p)
-                    diagRow("Storage", "~/.config/burndown · folder 0700, files 0600", p)
+                    // "expires in 4h" on its own reads like a countdown to something breaking. It
+                    // renews itself, so the row says that first and the timing second.
+                    diagRow("Sign-in", engine.tokenExpiry.map {
+                        $0 > Date() ? "renews itself, current one lasts \(weekLeftString($0))"
+                                    : "renewing on the next check"
+                    } ?? "not signed in yet", p)
+                    diagRow("Live data", engine.snapshot.liveUpdated.map {
+                        "last checked \(Int(max(0, Date().timeIntervalSince($0))))s ago"
+                    } ?? "not fetched yet", p)
+                    diagRow("Where it is kept", "~/.config/burndown, readable only by you", p)
                 }
 
                 // Privacy footer: lock + trust sentence, no chmod here; logs link below.
                 VStack(alignment: .leading, spacing: 8) {
-                    HStack(spacing: 5) {
+                    // firstTextBaseline, not centre: when the sentence wrapped, a centred lock sat
+                    // halfway down the gap between its two lines, attached to neither.
+                    HStack(alignment: .firstTextBaseline, spacing: 5) {
                         Image(systemName: "lock.fill").font(.system(size: 9))
                         Text(kTrustSentence).font(.system(size: 11))
-                    }.foregroundStyle(p.sub).fixedSize(horizontal: false, vertical: true)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }.foregroundStyle(p.sub)
                     Button(action: onOpenLogs) { Text("Open diagnostic logs").font(.system(size: 12)) }
                         .buttonStyle(.plain).foregroundStyle(coral)
                 }
@@ -2013,11 +2127,19 @@ struct AccountView: View {
                 VStack(alignment: .leading, spacing: 9) {
                     eyebrow("WEEKLY LIMITS", p)
                     HStack(spacing: 8) {
-                        Text("All models").font(.system(size: 13)).foregroundStyle(p.sub)
+                        // Built on the same geometry as the CapLimitRows beneath it. It was
+                        // hand-rolled at 13pt with a natural-width value while they use the shared
+                        // 12pt component with a fixed column, so the right edges did not line up
+                        // and this row's number was ink where theirs are tinted: one list that
+                        // visibly disagreed with itself about what a row looks like.
+                        Text("All models").font(.system(size: 12)).foregroundStyle(p.sub)
                             .frame(width: 66, alignment: .leading)
-                        HBar(pct: w.pct, color: kSlate, track: p.track, height: 5, a11yLabel: "Weekly usage, all models")
-                        Text("\(Int(((1 - w.pct) * 100).rounded()))% left").font(.system(size: 13, weight: .medium, design: .monospaced))
-                            .monospacedDigit().foregroundStyle(p.ink).fixedSize()
+                        HBar(pct: w.pct, color: kSlate, track: p.track, height: kRowBarHeight,
+                             a11yLabel: "Weekly usage, all models")
+                        Text("\(usedAndLeftPercent(w.pct).left)% left")
+                            .font(.system(size: 12, weight: .medium, design: .monospaced))
+                            .monospacedDigit().foregroundStyle(p.weeklyText)
+                            .frame(width: kRowValueWidth, alignment: .trailing)
                     }
                     ForEach(snap.modelLimits) { m in CapLimitRow(m: m, p: p, barColor: kSlate, nameWidth: 66) }
                 }
@@ -2026,7 +2148,10 @@ struct AccountView: View {
                     VStack(alignment: .leading, spacing: 9) {
                         HStack(spacing: 6) {
                             eyebrow("BY MODEL", p)
-                            Text("share of week").font(.system(size: 10)).foregroundStyle(p.faint)
+                            // Same as the card: the explanation lives in the mark, not in a faint
+                            // subtitle floating beside the heading.
+                            InfoDot(text: "How this week's usage splits across the models you used, as a share of the week.",
+                                    p: p, accent: Color(hex: settings.accentHex))
                         }
                         ByModelSplit(usage: snap.modelUsage, p: p)
                     }
@@ -2036,12 +2161,19 @@ struct AccountView: View {
             if let o = snap.accountOrg {
                 VStack(alignment: .leading, spacing: 4) {
                     eyebrow("CONTACT", p)
-                    HStack(alignment: .top) {
+                    // Label on one line, value on the next, both leading.
+                    //
+                    // It used to be a right-aligned value in a fixed 190pt box capped at two lines,
+                    // so an organization named after an email address arrived split across two
+                    // lines AND truncated with an ellipsis: the two worst outcomes at once. A name
+                    // is not a number and has no reason to be right-aligned or boxed; given the
+                    // whole width and no line cap it simply fits.
+                    VStack(alignment: .leading, spacing: 2) {
                         Text("Organization").font(.system(size: 13)).foregroundStyle(p.sub)
-                        Spacer(minLength: 8)
                         Text(o).font(.system(size: 13, weight: .medium)).foregroundStyle(p.ink)
-                            .multilineTextAlignment(.trailing).lineLimit(2)
-                            .frame(width: 190, alignment: .trailing).help(o)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
                     }
                 }
             }
@@ -2304,7 +2436,6 @@ struct SettingsView: View {
     @State private var exportNote: String?
     @State private var testNote: String?
     @ObservedObject private var updater = Updater.shared
-    @State private var lastDock: DockEdge = .bottom   // remembers the edge so the on/off toggle can restore it
     // Bumped when the app re-activates so the Accessibility card re-checks after a trip to
     // System Settings; reading it in body makes the check re-run on the bump.
     @State private var axRecheck = 0
@@ -2585,7 +2716,12 @@ struct SettingsView: View {
         card(p) {
             row("Attach to the Claude window", p, info: "Attaches a usage widget to an edge of the Claude Desktop window and follows it. Turn it on, then pick the edge below. The first time, macOS asks for Accessibility permission; that is what lets the widget follow the window instantly instead of lagging behind it.") {
                 Toggle("", isOn: Binding(get: { settings.dockEdge != .off },
-                                         set: { on in settings.dockEdge = on ? (lastDock == .off ? .bottom : lastDock) : .off }))
+                                         // Restores the edge the user actually chose. This used to
+                                         // read a @State that starts at Bottom and is only written
+                                         // by the edge picker, so a widget docked to the Left came
+                                         // back on the Bottom after one off/on, and after a restart
+                                         // every edge came back as Bottom.
+                                         set: { on in settings.dockEdge = on ? settings.dockEdgeLast : .off }))
                     .labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(coral)
             }
             if settings.dockEdge != .off, axRecheck >= 0, !AXIsProcessTrusted() {
@@ -2597,7 +2733,7 @@ struct SettingsView: View {
                 row("Edge", p, info: "Which edge of the Claude window the widget attaches to: a slim bar on Top or Bottom, a card on Left or Right.") {
                     Segmented(options: [("Top", DockEdge.top), ("Bottom", .bottom), ("Left", .left), ("Right", .right)],
                               selection: Binding(get: { settings.dockEdge == .off ? .bottom : settings.dockEdge },
-                                                 set: { settings.dockEdge = $0; lastDock = $0 }), p: p)
+                                                 set: { settings.dockEdge = $0 }), p: p)
                 }
                 div(p)
                 row("Place inside the window", p, info: "Tuck the widget just inside the window edge instead of just outside it. Combine with Position to sit it snugly in a corner, like the bottom right.") {
@@ -2752,7 +2888,7 @@ struct SettingsView: View {
                     }
                 }
                 div(p)
-                row("Quiet hours", p, info: "Suppress alerts during these hours; anything crossed is alerted once the window ends.") {
+                row("Quiet hours", p, info: "No alerts at all during these hours. Anything crossed while quiet is not announced later, so a threshold passed overnight is simply not mentioned; the numbers themselves are always current in the card.") {
                     Toggle("", isOn: $settings.quietHours).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(coral)
                 }
                 if settings.quietHours {
@@ -3002,7 +3138,7 @@ struct SettingsView: View {
             div(p)
             HStack(spacing: 6) {
                 Text("Presets").font(.system(size: 13)).foregroundStyle(p.ink)
-                InfoDot(text: "One-tap looks. Crystal stays clear but readable; Minimal is fully clear; Frosted is a soft blur; Vivid is saturated and tinted.", p: p, accent: Color(hex: settings.accentHex))
+                InfoDot(text: "One-tap looks, in chip order. Liquid is the macOS 26 glass; Crystal stays clear but readable; Frosted is a soft blur; Vivid is saturated and tinted; Minimal is fully clear.", p: p, accent: Color(hex: settings.accentHex))
                 Spacer()
                 ForEach(AppSettings.glassPresets, id: \.self) { name in
                     Button { settings.applyGlassPreset(name) } label: {
@@ -3089,7 +3225,7 @@ struct SettingsView: View {
         // the card content-hugs to a shorter height with no gaps.
         subhead("Session", p)
         card(p) {
-            row("Estimated cost", p, info: "Show the estimated pay-as-you-go API price of the tokens you have used (what it would cost without a subscription) on the Session and This week lines. An estimate, not a bill.") {
+            row("Estimated cost", p, info: "Show the estimated pay-as-you-go API price of this session's tokens (what it would cost without a subscription) on the Session line. An estimate, not a bill.") {
                 Toggle("", isOn: $settings.showCost).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(coral)
             }
             div(p)
@@ -3105,14 +3241,14 @@ struct SettingsView: View {
             visRow("Week percentage", $settings.showWeekPercent, "The large weekly percentage and its bar.", p, coral); div(p)
             visRow("Last 7 days", $settings.showLast7Days, "The seven small daily-usage bars.", p, coral); div(p)
             visRow("Week resets", $settings.showWeekResets, "When the weekly window resets.", p, coral); div(p)
-            visRow("By model breakdown", $settings.showOpusShare, "The BY MODEL split showing each model's share of the week, and any per-model caps.", p, coral)
+            visRow("By model breakdown", $settings.showOpusShare, "The BY MODEL split showing each model's share of the week. Per-model weekly limits stay visible either way: they are limits, not a breakdown.", p, coral)
         }
         subhead("Chart & chats", p)
         card(p) {
             visRow("Chart section", $settings.showBurnChart, "The chart card. Off hides the whole chart section and its divider. Pick which charts it shows in the Charts tab.", p, coral); div(p)
             visRow("Chats burning now", $settings.showChatsBurning, "The list of chats currently using tokens.", p, coral); div(p)
             visRow("Chats expanded", $settings.chatsExpanded, "Show the chat rows expanded. The popover remembers whichever way you leave it.", p, coral); div(p)
-            row("Chat name truncation", p, info: "How long chat names are shortened: keep the middle, keep the start, or the full name on hover.") {
+            row("Chat name truncation", p, info: "How a long chat name is shortened in the card. Middle keeps the start AND the end, which is usually what tells two chats apart; End keeps the start only. Either way, hovering a row shows the full name, and Full simply skips the shortening.") {
                 DropPicker(options: ChatTruncation.allCases.map { ($0.label, $0) }, selection: $settings.chatTruncation, p: p)
             }
         }
@@ -3167,6 +3303,10 @@ struct SettingsView: View {
         let coral = Color(hex: settings.accentHex)
         let slot = settings.chartKinds.firstIndex(of: k)
         let on = slot != nil
+        // At the limit, a card that is not already chosen cannot be added, and the card said
+        // nothing about it: the plus sign still invited a click and the click did nothing at all.
+        // A control that refuses silently reads as broken, so it says why instead.
+        let atLimit = !on && settings.chartKinds.count >= Self.kMaxPopoverCharts
         return Button {
             if let i = settings.chartKinds.firstIndex(of: k) {
                 guard settings.chartKinds.count > 1 else { return }   // the popover always shows at least one
@@ -3189,11 +3329,13 @@ struct SettingsView: View {
                             .background(Circle().fill(coral))
                             .help("Shown in the popover, position \(i + 1). Click to remove.")
                     } else {
-                        Image(systemName: "plus")
+                        Image(systemName: atLimit ? "nosign" : "plus")
                             .font(.system(size: 9, weight: .semibold)).foregroundStyle(p.faint)
                             .frame(width: 16, height: 16)
                             .background(Circle().stroke(p.divider, lineWidth: 1))
-                            .help("Click to show this chart in the popover.")
+                            .help(atLimit
+                                  ? "The card is showing the most charts it can (\(Self.kMaxPopoverCharts)). Remove one to add this."
+                                  : "Click to show this chart in the popover.")
                     }
                 }
                 ChartBodyView(kind: k, ctx: ctx)
@@ -3217,6 +3359,7 @@ struct SettingsView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(10)
+            .opacity(atLimit ? 0.55 : 1)
             .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(p.track.opacity(on ? 0.55 : 0.3)))
             .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(on ? coral.opacity(0.75) : p.divider, lineWidth: on ? 1.5 : 0.5))
@@ -3430,7 +3573,9 @@ struct SettingsView: View {
         let mode = settings.colorMode
         let sec = (mode == .system) ? NSColor.labelColor : secondaryNSColor(accent: accent, mode: mode)
         func uc(_ pct: Double) -> NSColor { (mode == .system) ? .labelColor : usageNSColor(pct: pct, over: false, accent: accent, mode: mode) }
-        func pctStr(_ x: Double) -> String { "\(Int((x * 100).rounded()))%" }
+        // Same rule as the card's hero, so the menu bar and the popover never disagree about
+        // whether a session has started.
+        func pctStr(_ x: Double) -> String { heroPercent(x) + "%" }
         var g: GlyphData
         if settings.chipLivePreview {
             let s = engine.snapshot
@@ -3440,7 +3585,7 @@ struct SettingsView: View {
             case .weekly:  g = GlyphData(pct: wP, pctText: pctStr(wP), primary: uc(wP), secFrac: 0.6, secText: s.weeklyResetAt.map { weekLeftString($0) } ?? "-", secondary: sec, pLabel: "", sLabel: "")
             case .both:    g = GlyphData(pct: sP, pctText: pctStr(sP), primary: uc(sP), secFrac: wP, secText: pctStr(wP), secondary: uc(wP), pLabel: "S", sLabel: "W")
             }
-            g.costText = money(s.sessionCost); g.tokText = "≈" + fmtTok(s.sessionFresh)
+            g.tokText = "≈" + fmtTok(s.sessionFresh)
             g.needle = min(1, live.rate / LiveActivity.RATE_FULL); g.active = live.active; g.rollPhase = 1
             g.hasSecondary = (settings.menuBarShow == .both)
             if let r = s.weeklyResetAt { g.weekLeftText = weekLeftString(r) }
@@ -3453,7 +3598,7 @@ struct SettingsView: View {
         case .weekly:  g = GlyphData(pct: 0.13, pctText: "13%", primary: uc(0.13), secFrac: 0.6, secText: "3d", secondary: sec, pLabel: "", sLabel: "")
         case .both:    g = GlyphData(pct: 0.46, pctText: "46%", primary: uc(0.46), secFrac: 0.13, secText: "13%", secondary: sec, pLabel: "S", sLabel: "W")
         }
-        g.costText = "$112"; g.tokText = "≈3.0M"; g.needle = 0.62; g.active = true; g.rollPhase = 1
+        g.tokText = "≈3.0M"; g.needle = 0.62; g.active = true; g.rollPhase = 1
         g.hasSecondary = (settings.menuBarShow == .both)
         g.weekLeftText = "3d 4h"
         g.spark = [0.05, 0.12, 0.08, 0.22, 0.18, 0.4, 0.32, 0.55, 0.6, 0.5, 0.78, 0.7]
@@ -3487,6 +3632,21 @@ struct NumberDemoRow: View {
 // The one unified settings row: a 46pt baseline, label 13.5/medium with an optional info-dot and
 // description, control right-aligned, and a 4% ink hover tint. Replaces the old 34pt ad-hoc rows so
 // every pane shares one rhythm.
+/// The title of the settings row a control is sitting in.
+///
+/// Controls in this window are drawn bare, with their meaning carried entirely by the row's label
+/// beside them. A sighted user reads the two together; a screen reader, handed the control on its
+/// own, gets a set of anonymous options. Rather than repeat the label at forty call sites and
+/// watch them drift apart from the visible one, the row hands its own title down and the controls
+/// name themselves with it.
+private struct RowTitleKey: EnvironmentKey { static let defaultValue = "" }
+extension EnvironmentValues {
+    var settingRowTitle: String {
+        get { self[RowTitleKey.self] }
+        set { self[RowTitleKey.self] = newValue }
+    }
+}
+
 struct SettingRow<C: View>: View {
     let title: String
     var desc: String? = nil
@@ -3507,7 +3667,7 @@ struct SettingRow<C: View>: View {
                 }
             }
             Spacer(minLength: 8)
-            control()
+            control().environment(\.settingRowTitle, title)
         }
         .frame(minHeight: 46)
         .contentShape(Rectangle())
@@ -3543,15 +3703,24 @@ struct InfoDot: View {
                 .foregroundStyle(show ? accent : (hover ? p.sub : p.faint))
         }
         .frame(width: Self.d, height: Self.d)
-        // The gear's exact rest state: faint at half opacity, lifting to full on hover.
-        .opacity(show || hover ? 1 : 0.5)
+        // Quieter at rest. There are around nine of these on a full card, and at half opacity the
+        // whole thing looked dotted with circles competing with the numbers they annotate. They
+        // still come fully forward on hover and when open, so nothing is harder to find.
+        .opacity(show || hover ? 1 : 0.35)
         // This mark is a SYMBOL, not text. In a `.firstTextBaseline` stack SwiftUI would otherwise
         // align it by the baseline of the tiny "i" inside it, which sits lower than the label's
         // own baseline and drops the dot a couple of points - visible next to "THIS WEEK" but not
         // next to "SESSION", because those two rows use different stack alignments. Report the
         // baseline from the mark's centre instead, so it lands level with the label either way.
         .alignmentGuide(.firstTextBaseline) { $0[VerticalAlignment.center] + Self.d * 0.35 }
+        // A 10.5pt circle is the smallest target in the card, on its most-used affordance. The
+        // VISUAL stays 10.5; the clickable area is padded out to 18, inside the component, so all
+        // nine dots inherit it and none of them shifts by a pixel.
+        .padding((18 - Self.d) / 2)
         .contentShape(Circle())
+        // Negative padding puts the LAYOUT footprint back to 10.5 after the hit area has been
+        // taken. Without it every dot would occupy 18 points and nudge the label beside it.
+        .padding(-(18 - Self.d) / 2)
         .onTapGesture { withAnimation(.emberEase(Dur.d240)) { show.toggle() } }
         // Tell the app to pin the card open while this bubble is up. The observer for this has
         // existed since the marks were built, but nothing ever posted to it, so the card was one
@@ -3628,7 +3797,7 @@ struct ChatRow: View {
                                 Text(display).font(.system(size: 11.5)).foregroundStyle(p.ink)
                                     .frame(maxWidth: 260, alignment: .leading)
                                     .fixedSize(horizontal: false, vertical: true)
-                                Text(renamed ? "Renamed by you" : "Click the pencil to rename")
+                                Text(renamed ? "Renamed by you" : isGeneratedTitle(display) ? "Named automatically until this chat has a title" : "Click the pencil to rename")
                                     .font(.system(size: 9.5)).foregroundStyle(p.faint)
                             }
                             .padding(11)
@@ -3643,12 +3812,19 @@ struct ChatRow: View {
                     if !project.isEmpty {
                         Text("\u{00B7}").foregroundStyle(p.faint).font(.system(size: 10.5))
                         Text(project).font(.system(size: 10.5)).foregroundStyle(p.faint)
-                            .lineLimit(1).truncationMode(.tail)
+                            // Middle, like every other project name in the app: the tail of a path
+                            // is the part that identifies it.
+                            .lineLimit(1).truncationMode(.middle)
                     }
                     Spacer(minLength: 4)
                     // Was a 9.5pt symbol, which at this size reads as a stray dash rather than a
                     // pencil. Bigger, and on its own row where there is room for it.
-                    if hover {
+                    // Not offered for a chat we auto-labelled. Those labels ("Untitled chat, Aug
+                    // 5") are generated from the date and CHANGE FORMAT after midnight, so an alias
+                    // keyed to one of them silently detaches from its own chat overnight and the
+                    // rename appears to have been lost. Renaming becomes possible as soon as the
+                    // conversation has a real title.
+                    if hover, !isGeneratedTitle(display) {
                         Button(action: onBeginRename) {
                             Image(systemName: "pencil").font(.system(size: 11.5, weight: .medium))
                                 .foregroundStyle(p.sub)
@@ -3688,28 +3864,55 @@ struct ChatRow: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(display)
         .accessibilityValue("\(fmtTok(tok)) tokens per minute")
+        // Renaming a chat was reachable only by hovering the row and clicking the pencil that
+        // appears, which is nothing a keyboard or a screen reader can do, and flattening the row
+        // hid even that control. An action puts it on the rotor, where it can actually be invoked.
+        // Reset is there for the same reason: a renamed chat could not be put back either.
+        .accessibilityActions { if !isGeneratedTitle(display) { Button("Rename this chat", action: onBeginRename) } }
+        .accessibilityActions { if renamed { Button("Use the original name", action: onReset) } }
     }
 }
 
+/// A row of mutually exclusive choices, used throughout Settings.
+///
+/// Every option is a real button as far as assistive technology is concerned. Drawn as plain Text
+/// with a tap gesture, which is what this was, the whole control is invisible: VoiceOver announces
+/// static labels with no hint that they can be chosen, no way to activate them, and no indication
+/// of which one is currently selected. That is not a rough edge, it is a control the user cannot
+/// operate at all, repeated in every pane of the window.
 struct Segmented<T: Equatable>: View {
     var options: [(String, T)]
     @Binding var selection: T
     var p: Palette
+    /// What this control chooses, for the screen reader ("Theme", "Budget period"). Left empty it
+    /// takes the title of the settings row it sits in, which is the label a sighted user reads
+    /// beside it, so the two can never say different things.
+    var label: String = ""
+    @Environment(\.settingRowTitle) private var rowTitle
     var body: some View {
         HStack(spacing: 0) {
             ForEach(options.indices, id: \.self) { i in
                 let on = options[i].1 == selection
-                Text(options[i].0)
-                    .font(.system(size: 11, weight: on ? .semibold : .regular))
-                    .lineLimit(1).fixedSize()
-                    .padding(.horizontal, 9).padding(.vertical, 4)
-                    .background(on ? p.bg : .clear)
-                    .foregroundStyle(on ? p.ink : p.sub)
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                    .shadow(color: .black.opacity(on ? 0.12 : 0), radius: 1, y: 0.5)
-                    .onTapGesture { selection = options[i].1 }
+                Button { selection = options[i].1 } label: {
+                    Text(options[i].0)
+                        .font(.system(size: 11, weight: on ? .semibold : .regular))
+                        .lineLimit(1).fixedSize()
+                        .padding(.horizontal, 9).padding(.vertical, 4)
+                        .background(on ? p.bg : .clear)
+                        .foregroundStyle(on ? p.ink : p.sub)
+                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                        .shadow(color: .black.opacity(on ? 0.12 : 0), radius: 1, y: 0.5)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(options[i].0)
+                // .isSelected is what makes VoiceOver say "selected" for the active option, which
+                // is the only way to hear the control's current value.
+                .accessibilityAddTraits(on ? [.isButton, .isSelected] : .isButton)
             }
-        }.padding(2).background(p.track).clipShape(RoundedRectangle(cornerRadius: 8)).fixedSize()
+        }
+        .padding(2).background(p.track).clipShape(RoundedRectangle(cornerRadius: 8)).fixedSize()
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(label.isEmpty ? rowTitle : label)
     }
 }
 

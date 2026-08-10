@@ -9,8 +9,17 @@ struct Price { let input, output: Double }
 func priceFor(model: String) -> Price {
     let m = model.lowercased()
     if m.contains("opus") {
-        // Opus 4.5-4.8 are $5/$25; older Opus (3 / 4.0 / 4.1) were $15/$75.
-        if m.contains("opus-4-0") || m.contains("opus-4-1") || m.contains("opus-3") {
+        // Opus 4.5 and later are $5/$25; the older ones (3, 4.0, 4.1) were $15/$75.
+        //
+        // These have to be matched against the ids that actually appear in the logs, which is what
+        // the previous set did not do. "opus-4-0" was written for a model whose real id is
+        // claude-opus-4-20250514: there is no "4-0" anywhere in it, so it never matched and every
+        // Opus 4.0 token was priced at a third of its true cost. "opus-3" had the same defect, for
+        // the same reason: the id is claude-3-opus-20240229, which reads "3-opus", not "opus-3".
+        //
+        // The dated form is matched by its year, NOT by a bare "opus-4" prefix, because that would
+        // swallow opus-4-5 and opus-4-8 and charge them triple.
+        if m.contains("opus-4-20") || m.contains("opus-4-1") || m.contains("3-opus") {
             return Price(input: 15, output: 75)
         }
         return Price(input: 5, output: 25)
