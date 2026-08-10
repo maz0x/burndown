@@ -1,5 +1,49 @@
 # What's new in Burndown
 
+## 0.9.6
+
+- **Insights was counting a lot of your usage twice.** When you resume a conversation, Claude Code
+  starts a new log and copies the earlier part of the chat into it. Burndown was adding up both
+  copies. On a heavy machine more than half of all the rows turned out to be copies, which meant
+  Insights could overstate tokens by about two and a half times and estimated spend by nearly three
+  (dollars come off worse because the duplicated rows lean toward the expensive models). The menu
+  bar card was always right, which is why the two could disagree about the same day. Every number in
+  Insights, and every export, is now counted once.
+- **"Biggest chats, 7 days" was showing a chat's whole lifetime.** If you sent one message yesterday
+  to a conversation from months ago, its entire history counted as this week. Now only what actually
+  happened inside the window counts.
+- **"7 days" now means seven days.** The summary used to say "7 days" and then, correctly, "across
+  8 days", because the window was counted in hours and almost always clipped an eighth day.
+- **Only one Burndown runs at a time.** Nothing stopped a second copy starting, so you could end up
+  with two identical icons in the menu bar, both polling, with no way to tell which one a click
+  would reach. Opening it again now just brings the running one forward.
+- **Two crashes are fixed.** A chat whose first message mentioned a slash-command tag could take the
+  app down while it worked out that chat's name. So could a log written while the Mac's clock was
+  wrong.
+- **The runaway-burn alert no longer cries wolf.** It learned "your normal rate" from samples taken
+  whether or not anything was running, so a quiet minute convinced it your normal was zero, and the
+  first reply after that looked infinitely faster than normal. It now learns only from real activity
+  and will not warn until it has seen enough of it.
+- **Settings can be used without a mouse.** Every segmented control in the window was invisible to
+  VoiceOver: it read the options aloud but gave no way to choose one and never said which was
+  selected. They are real buttons now. Chat renaming, the seven-day bars and the by-model section
+  are reachable too.
+- **The app is stricter about your privacy and your settings.** Files holding your sign-in token,
+  account details and chat names are now private from the instant they are created rather than a
+  moment later. The updater only accepts downloads from GitHub, and checks the version properly, so
+  a test build can no longer look newer than a real one.
+- **Quiet hours, the widget edge, and several explanations now say what the app actually does.**
+  Quiet hours drops alerts rather than saving them for later, and said the opposite. Turning the
+  docked widget off and on again brought it back on the bottom instead of where you put it. The
+  first-run tour claimed Burndown "contacts nothing" while the update check was on by default.
+- **Prices, forecasts, budgets and averages were each wrong in a specific way, and are not any more.**
+  Older Opus models were priced at a third of their real rate. A forecast could quietly draw its
+  "current pace" across a month of history. A budget just after midnight could announce you were
+  about to blow it. Weekly budgets followed a rolling seven days instead of your actual reset.
+- **The card reads as one thing.** Rates were written three different ways, headings came in four
+  sizes, and a session under half a percent showed "0%" above a line reading two dollars a minute.
+  There is one grammar now, and "<1" where "0" would be a lie.
+
 ## 0.9.5
 
 - **The Account window is readable.** It was locked to a narrow width, which was the cause of all
