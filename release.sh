@@ -11,7 +11,12 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 VERSION="$(sed -n 's/^let kAppVersion = "\([^"]*\)".*/\1/p' Sources/Settings.swift)"
-VERSION="${VERSION:-1.0}"
+# NO fallback. This used to default to 1.0, which is worse than any failure it was covering: 1.0
+# is from the abandoned 1.x scheme AND it sorts above every real version, so a build stamped with
+# it would report a version that never existed and could never be superseded by a 0.9.x release.
+# The updater would go quiet forever. If the version cannot be read, that is a broken build, and a
+# broken build should stop rather than invent a number.
+[ -n "$VERSION" ] || { echo "ABORT: could not read kAppVersion from Sources/Settings.swift"; exit 1; }
 DIST="dist"
 APP="$DIST/Burndown.app"
 FRAMEWORKS="-framework AppKit -framework SwiftUI -framework Combine -framework Charts -framework UserNotifications -framework ServiceManagement"

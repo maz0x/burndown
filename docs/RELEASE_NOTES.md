@@ -1,5 +1,16 @@
 # What's new in Burndown
 
+## 0.9.7
+
+- **Burndown stops asking macOS for permission every time.** If your Mac ever refused to open it
+  and offered to move it to the Trash, that was macOS reacting to a downloaded copy it cannot
+  verify, not a fault in the app. The button it puts in front of you deletes your install, which is
+  a poor thing to have highlighted. Burndown now clears that mark from itself each time it starts,
+  so once you have let it open, it stops happening. Updates were never affected: the installer has
+  always cleared the mark on the copy it puts in place.
+- **The README now answers "it will not open" directly**, in the words you would search for, and
+  tells you to press Cancel rather than the button macOS highlights.
+
 ## 0.9.6
 
 - **Insights was counting a lot of your usage twice.** When you resume a conversation, Claude Code

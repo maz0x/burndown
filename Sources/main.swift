@@ -388,7 +388,51 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private let activePeriod: Double = 2       // refresh cadence while tokens are flowing
     private var liveInterval: Double = 30       // current backoff interval (Smart refresh)
 
+    /// Clear this app's OWN quarantine flag, if it still carries one.
+    ///
+    /// Releases are ad-hoc signed until a Developer ID certificate lands, so a downloaded copy is
+    /// quarantined, and macOS answers a quarantined app that it cannot verify with a dialog whose
+    /// default button is "Move to Trash". The install instructions tell the reader to clear the
+    /// flag by hand and the updater clears it after every swap, but a flag can arrive later than
+    /// either of those: a fresh download over the top, a restore from a backup, or a Gatekeeper
+    /// re-assessment. The result is an app that opened yesterday and today offers to delete itself.
+    ///
+    /// This is deliberately narrow. It runs only after the user has already allowed this launch, so
+    /// it bypasses no check that has not already been satisfied; it touches nothing but this
+    /// bundle; and it is exactly the command the README asks the reader to type. It cannot rescue
+    /// an app that is being blocked right now, because a blocked app never gets to run: it stops
+    /// the flag accumulating so that day never arrives.
+    private func clearOwnQuarantine() {
+        // Resolve the BUNDLE, not whatever Bundle.main happens to report. Running the executable
+        // directly rather than through LaunchServices can leave bundlePath pointing at a directory
+        // that is not the .app, and clearing a flag on the wrong path silently does nothing, which
+        // is the failure this whole routine exists to avoid.
+        var url = URL(fileURLWithPath: Bundle.main.executablePath ?? Bundle.main.bundlePath)
+        while url.pathExtension != "app" && url.path != "/" { url = url.deletingLastPathComponent() }
+        guard url.pathExtension == "app" else { return }
+        let path = url.path
+        if ProcessInfo.processInfo.environment["CUB_QUARANTINE_DEBUG"] != nil {
+            print("quarantine self-heal target: \(path)"); fflush(stdout)
+        }
+        // Ask first, so the common case costs one syscall and no subprocess at all.
+        let probe = Process()
+        probe.executableURL = URL(fileURLWithPath: "/usr/bin/xattr")
+        probe.arguments = ["-p", "com.apple.quarantine", path]
+        probe.standardOutput = Pipe(); probe.standardError = Pipe()
+        guard (try? probe.run()) != nil else { return }
+        probe.waitUntilExit()
+        guard probe.terminationStatus == 0 else { return }   // no flag, nothing to do
+
+        let clear = Process()
+        clear.executableURL = URL(fileURLWithPath: "/usr/bin/xattr")
+        clear.arguments = ["-dr", "com.apple.quarantine", path]
+        clear.standardOutput = Pipe(); clear.standardError = Pipe()
+        try? clear.run()
+        clear.waitUntilExit()
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        clearOwnQuarantine()
         UNUserNotificationCenter.current().delegate = self   // so alert banners show (incl. when foreground)
         registerNotificationCategory()
         setupStatusItem()

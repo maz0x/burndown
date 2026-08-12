@@ -490,6 +490,31 @@ does not quarantine it, so updates install without any Gatekeeper prompt.
 
 <img src="site/screenshots/settings-general.png" width="660" alt="Settings, General: open at login, dock icon, live usage, refresh rate, the daily update check with the current version and a link to releases and source, and Your data for exporting or clearing history">
 
+## Burndown will not open, and macOS offers to move it to the Trash
+
+That dialog is Gatekeeper, not a fault in the app, and the button it puts in
+front of you deletes your copy. Choose **Cancel**, then clear the quarantine
+flag:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Burndown.app
+```
+
+Open it again and it will start normally. Alternatively, open System Settings,
+Privacy & Security, scroll to the message about Burndown being blocked, and
+click **Open Anyway**.
+
+Why it happens: releases are ad-hoc signed rather than Developer ID signed and
+notarized, so macOS cannot verify who built them and refuses anything carrying
+the quarantine flag that downloads pick up. It can appear on a copy that was
+opening fine yesterday, because the flag can be re-applied by a later download
+over the top, a restore from a backup, or a Gatekeeper re-assessment. From
+0.9.7 Burndown clears the flag from its own bundle each time it starts, so once
+you have let it open, it stops asking.
+
+Auto-updates are not affected: the installer clears the flag on the copy it
+swaps in, so an update never leaves you with a blocked app.
+
 ## FAQ
 
 **Will it slow my Mac down?**
