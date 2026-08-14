@@ -1,5 +1,21 @@
 # What's new in Burndown
 
+## 0.9.8
+
+- **Burndown no longer sits on a CPU core in the background.** If you have a lot of Claude Code
+  history, the part of Burndown that reads your local logs was redoing work it had already done. It
+  keeps a cache of what it has already counted, but two of its own scans wanted different amounts of
+  history, and each one threw away what the other still needed. The quick scan runs every couple of
+  seconds, so the deeper scan spent its life rebuilding a cache that was about to be discarded
+  again. Measured on a 1.7 GB folder of logs, that was 162 MB of re-reading every two seconds and
+  1.22 GB every ten minutes, none of it producing a different answer. The cache now keeps whatever
+  the deepest scan needs, so a shallow scan cannot throw away a deep scan's work. The same numbers
+  reach the screen for a small fraction of the effort: on the machine this was found on, a pegged
+  core became almost nothing, and memory settled from about 800 MB to about 250 MB.
+- **The deep scan can no longer start twice at once.** It runs on a ten minute timer, but the Day
+  span setting and the LIVE button fire it too, and it had nothing to stop a second copy starting on
+  top of one already running. The other two scans already had that guard.
+
 ## 0.9.7
 
 - **Burndown stops asking macOS for permission every time.** If your Mac ever refused to open it
@@ -13,47 +29,111 @@
 
 ## 0.9.6
 
+Three reviews of the whole app, run back to back: one through every calculation it makes, one
+through the parts that had never been examined at all, and one through the design of the card.
+184 findings. All but four are here. What that means in practice:
+
+### The numbers are right now
+
 - **Insights was counting a lot of your usage twice.** When you resume a conversation, Claude Code
   starts a new log and copies the earlier part of the chat into it. Burndown was adding up both
   copies. On a heavy machine more than half of all the rows turned out to be copies, which meant
   Insights could overstate tokens by about two and a half times and estimated spend by nearly three
   (dollars come off worse because the duplicated rows lean toward the expensive models). The menu
-  bar card was always right, which is why the two could disagree about the same day. Every number in
-  Insights, and every export, is now counted once.
-- **"Biggest chats, 7 days" was showing a chat's whole lifetime.** If you sent one message yesterday
-  to a conversation from months ago, its entire history counted as this week. Now only what actually
-  happened inside the window counts.
+  bar card was always right, which is why the two could disagree about the same day.
+- **"Biggest chats, 7 days" was showing a chat's whole lifetime.** If you sent one message
+  yesterday to a conversation from months ago, its entire history counted as this week. The same
+  fault was in "By project" and in the exports.
 - **"7 days" now means seven days.** The summary used to say "7 days" and then, correctly, "across
   8 days", because the window was counted in hours and almost always clipped an eighth day.
+- **Older Opus models were priced at a third of their real rate**, because the price list was
+  matching against a name those models never actually use.
+- **A forecast could quietly draw its "current pace" across a month of history** when the last hour
+  was too quiet to read, and present that as a countdown.
+- **A budget just after midnight could announce you were about to blow it.** One minute past twelve
+  is a fraction of a percent of the day, so a single message was scaled up enormously. Weekly
+  budgets also followed a rolling seven days rather than the week Claude actually resets.
+- **Timestamps written in a different time zone were read as if they were yours**, which could move
+  an evening's work onto the wrong day.
+- **Averages, percentages and rounding now agree with each other.** The burn average was pulled
+  toward busy moments because it counted samples rather than time. "Used" and "left" were rounded
+  separately, so they could add up to 101. Sessions-left rounded up, promising a session that was
+  not there. A run-out time on another day showed the hour but dropped the minutes.
+- **The day charts no longer merge two days into one bar** when a month boundary falls inside the
+  window, and the hour and weekday profiles no longer count a half day as a whole one.
+
+### It behaves properly
+
 - **Only one Burndown runs at a time.** Nothing stopped a second copy starting, so you could end up
   with two identical icons in the menu bar, both polling, with no way to tell which one a click
-  would reach. Opening it again now just brings the running one forward.
+  would reach. Opening it again now brings the running one forward.
 - **Two crashes are fixed.** A chat whose first message mentioned a slash-command tag could take the
   app down while it worked out that chat's name. So could a log written while the Mac's clock was
   wrong.
 - **The runaway-burn alert no longer cries wolf.** It learned "your normal rate" from samples taken
-  whether or not anything was running, so a quiet minute convinced it your normal was zero, and the
-  first reply after that looked infinitely faster than normal. It now learns only from real activity
-  and will not warn until it has seen enough of it.
-- **Settings can be used without a mouse.** Every segmented control in the window was invisible to
-  VoiceOver: it read the options aloud but gave no way to choose one and never said which was
-  selected. They are real buttons now. Chat renaming, the seven-day bars and the by-model section
-  are reachable too.
-- **The app is stricter about your privacy and your settings.** Files holding your sign-in token,
-  account details and chat names are now private from the instant they are created rather than a
-  moment later. The updater only accepts downloads from GitHub, and checks the version properly, so
-  a test build can no longer look newer than a real one.
+  whether or not anything was running, so a quiet minute convinced it your normal was zero and the
+  next reply looked infinitely faster than normal. It now learns only from real activity, waits
+  until it has seen enough, and will not quietly accept a runaway as the new normal.
+- **A threshold alert now re-arms if your reset time moves earlier.** It only noticed the clock
+  moving forward, so a correction the other way left alerts silently switched off for that window.
+- **Chat names, and the app's memory of them, are no longer lost to a race.** Two parts of the app
+  could overwrite each other's work, and a save could write the version from just before the change
+  that triggered it.
+- **Opening Insights twice in quick succession no longer starts two full scans.**
+- **The app gives memory back.** Opening Insights once held your whole history for the rest of the
+  session; a widget switched off kept running invisibly; the file tracker never forgot logs that had
+  been deleted.
+
+### You can use it without a mouse
+
+- **Every segmented control in Settings was invisible to VoiceOver.** It read the options aloud but
+  gave no way to choose one and never said which was selected. They are real buttons now.
+- **Renaming a chat is reachable**, where before it needed a hover and a click on a pencil that only
+  appears on hover.
+- **The seven-day bars, the by-model section and the loading indicator** now describe themselves.
+- **Reduce Motion is honoured** by the Insights loading animation.
+- **The small info marks are easier to hit**, without moving anything on screen.
+
+### Privacy and safety
+
+- **Files holding your sign-in token, account details and chat names are private from the instant
+  they are created**, rather than a moment later.
+- **The updater only accepts downloads from GitHub**, and checks versions properly, so a test build
+  can no longer look newer than a real one and a half-finished install is rolled back rather than
+  left in place.
+- **Exports cannot carry surprises.** A conversation named like a spreadsheet formula is no longer
+  written in a form a spreadsheet would run, and a name written like a link is no longer turned into
+  a working link in the report.
+- **A screenshot or test run can no longer write into your real settings**, which previously could
+  suppress a genuine alert or move a real timestamp.
+
+### The card and the charts
+
+- **The card reads as one thing.** Rates were written three different ways, headings came in four
+  sizes, and a session under half a percent showed "0%" above a line reading two dollars a minute.
+  There is one grammar now, and "<1" where "0" would be a lie.
+- **A weekly limit's percentage matches the colour of its own bar** instead of borrowing another
+  measurement's colour.
+- **The week line keeps its own colour when it is running low**, instead of the whole curve turning
+  warning brown and looking like a different measurement.
+- **A label no longer prints on top of the line it describes.**
+- **An empty bar is empty**, and a full ring is a full circle, rather than each showing a small
+  artefact that reads as a glitch.
+- **The share bar adds up.** With more than six projects it simply did not fill, and nothing said
+  why. The remainder is now its own slice.
+- **The busiest chat that is running right now is marked**, and chat names in that list follow the
+  shortening you chose in Settings.
+- **Model lines only appear on windows wide enough to mean something**, instead of drawing flat
+  dashes across a four-hour view.
+- **Switching a line off in the legend looks switched off**, rather than merely faint.
+- **A day that cost forty cents no longer labels its chart "$0"**, and token axes label their middle
+  as well as their ends.
+- **Charts no longer throw away the spikes** they exist to show, when thinning older history.
 - **Quiet hours, the widget edge, and several explanations now say what the app actually does.**
   Quiet hours drops alerts rather than saving them for later, and said the opposite. Turning the
   docked widget off and on again brought it back on the bottom instead of where you put it. The
   first-run tour claimed Burndown "contacts nothing" while the update check was on by default.
-- **Prices, forecasts, budgets and averages were each wrong in a specific way, and are not any more.**
-  Older Opus models were priced at a third of their real rate. A forecast could quietly draw its
-  "current pace" across a month of history. A budget just after midnight could announce you were
-  about to blow it. Weekly budgets followed a rolling seven days instead of your actual reset.
-- **The card reads as one thing.** Rates were written three different ways, headings came in four
-  sizes, and a session under half a percent showed "0%" above a line reading two dollars a minute.
-  There is one grammar now, and "<1" where "0" would be a lie.
+- **The widget follows a second Claude window**, and stops polling hard when Claude is not running.
 
 ## 0.9.5
 

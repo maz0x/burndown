@@ -223,7 +223,8 @@ final class UsageEngine: ObservableObject {
     // to validate against ccusage's daily table (same-window comparison).
     func cliDump() {
         let now = Date()
-        let entries = loadEntries(since: now.addingTimeInterval(-30 * 24 * 3600))
+        let entries = loadEntries(since: now.addingTimeInterval(-30 * 24 * 3600),
+                                  retain: now.addingTimeInterval(-30 * 24 * 3600))
         let blocks = Self.buildBlocks(entries)
         let activeStart = blocks.last.flatMap { now < $0.start.addingTimeInterval(FIVE_HOURS) ? $0.start : nil }
         let newCap = resolveCap(blocks: blocks, excludingStart: activeStart)
@@ -251,6 +252,13 @@ final class UsageEngine: ObservableObject {
     var recordDays: Int = 30
 
     func fullScan() {
+        // Coalesce, the way quickRefresh and scanAllUsage already do. This is the deep 30-90 day
+        // scan and it is on a 10-minute repeating timer, but it is also fired by the Day-span
+        // setting and by the LIVE button. Without a guard, a scan that outlives its own timer tick
+        // gets a second one started on top of it, and the two then contend for the entry-cache lock
+        // while both walk a thousand logs. A scan already running will pick up anything newer.
+        if fullScanInFlight { return }
+        fullScanInFlight = true
         // Read every piece of shared state on the caller's thread, the way quickRefresh does.
         // recordDays is written by the settings sink on main, and reading it from the background
         // closure is a plain unsynchronized cross-thread read of a value the user can change at any
@@ -259,7 +267,8 @@ final class UsageEngine: ObservableObject {
         let prevWeeklyReset = self.snapshot.weeklyResetAt
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
-            let entries = self.loadEntries(since: Date().addingTimeInterval(-Double(days) * 24 * 3600))
+            let start = Date().addingTimeInterval(-Double(days) * 24 * 3600)
+            let entries = self.loadEntries(since: start, retain: start)
             let blocks = Self.buildBlocks(entries)
             let now = Date()
             let activeStart = blocks.last.flatMap { now < $0.start.addingTimeInterval(FIVE_HOURS) ? $0.start : nil }
@@ -273,10 +282,12 @@ final class UsageEngine: ObservableObject {
                 self.snapshot = s; self.ready = true
                 self.records = Self.recordsFrom(entries)
                 self.activeBlockStart = activeStart
+                self.fullScanInFlight = false
             }
         }
     }
 
+    private var fullScanInFlight = false  // coalesce: never pile up overlapping deep 30-90 day scans
     private var refreshInFlight = false   // coalesce: never pile up overlapping full-week log scans
     /// The same coalescing for the full-history scan, plus everyone waiting on the one in flight.
     /// Both are touched only on the main thread (scanAllUsage is called from the Insights window).
@@ -287,10 +298,14 @@ final class UsageEngine: ObservableObject {
         refreshInFlight = true
         let cap = self.cap, weeklyCap = self.weeklyCap
         let prevWeeklyReset2 = self.snapshot.weeklyResetAt
+        // Read on the caller's thread, like everything else here: recordDays is written by the
+        // settings sink on main. This is the cache's retention depth, NOT this scan's window.
+        let retainDays = max(30, self.recordDays)
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
             let scanStart = Date().addingTimeInterval(-WEEK - FIVE_HOURS)
-            let entries = self.loadEntries(since: scanStart)
+            let entries = self.loadEntries(since: scanStart,
+                                           retain: Date().addingTimeInterval(-Double(retainDays) * 24 * 3600))
             let snap = Self.computeSnapshot(entries: entries, cap: cap, weeklyCap: weeklyCap, now: Date(),
                                             weeklyResetAt: prevWeeklyReset2)
             let now2 = Date()
@@ -1398,7 +1413,16 @@ actor RefreshGate {
         return "files=\(files) fullTokens=\(tFull) deltaTokens=\(tDelta) fullCount=\(cFull) deltaCount=\(cDelta) mismatches=\(mismatches) -> \(ok ? "PASS" : "FAIL")"
     }
 
-    private func loadEntries(since: Date) -> [Entry] {
+    /// `since` is the window the CALLER wants back. `retain` is how far back the shared cache keeps
+    /// its parsed entries, and it must be the DEEPEST window any caller uses - not this call's.
+    /// Three callers share this one cache with different windows (quickRefresh ~7d, fullScan 30-90d,
+    /// cliDump 30d). Pruning to the current caller's window meant the ~2s quickRefresh threw away
+    /// every file older than a week, and the next fullScan re-read and re-parsed all of them from
+    /// byte zero; measured on the owner's own logs that was 1.22 GB every 10 minutes, plus 162 MB
+    /// re-parsed on EVERY quickRefresh tick from 18 files that are touched recently but whose last
+    /// usage entry is older than the quick window. That is what pegged a core. Retention is now a
+    /// property of the engine, so a deep entry survives a shallow scan.
+    private func loadEntries(since: Date, retain: Date) -> [Entry] {
         entryCacheLock.lock(); defer { entryCacheLock.unlock() }
         let fm = FileManager.default
         guard let walker = fm.enumerator(at: projectsDir,
@@ -1454,7 +1478,7 @@ actor RefreshGate {
         entryCache = entryCache.filter { path, fe in
             guard live.contains(path) else { return false }
             guard let newest = fe.items.last?.entry.ts else { return true }   // parsed, nothing in it
-            return newest >= since
+            return newest >= retain
         }
         // Merge cached items, de-duped by message id (identical copies, so order is irrelevant), filtered by `since`.
         var seen = Set<String>(); var out: [Entry] = []
