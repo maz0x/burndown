@@ -11,33 +11,44 @@
 
 </div>
 
-Claude plans come with hard limits: a rolling 5-hour session, a weekly
-allowance, separate caps per model. Hit one mid-task and you are simply
-stopped, sometimes for hours. Burndown is a native Mac menu bar app that
-watches those limits so you never meet one by surprise. It shows how much
-you have left, tells you which conversation is spending it, forecasts when
-you will hit the wall at your current pace, and warns you before it
-happens instead of after.
+You are an hour into a refactor with Claude, and it stops: session limit
+reached, come back in three hours. Or you leave an agent running over
+lunch and return to find it spent half your week.
 
-Under the small menu bar glyph is a real analytics tool: two dozen charts,
-per-chat and per-project attribution, a time-to-limit forecast, adaptive
-runaway-burn detection, spend budgets, a weekly recap, CSV/JSON/Markdown
-export, and a local JSON API your scripts can read. And because it sits
-in your eyeline all day, it is built to be looked at: twenty-plus color themes,
-real glass, and a card where every element answers to you.
+**Burndown is a free Mac menu bar app that sees the limit coming.** It
+watches your Claude plan's 5-hour session, weekly allowance and per-model
+caps, and tells you before you hit one, not after.
 
-**[Download Burndown](https://github.com/maz0x/burndown/releases/latest)**
-for macOS 13 or later, Apple Silicon and Intel. Free and open source.
-It keeps itself up to date from here on.
+- **How much is left**, at a glance in the menu bar, with time to reset.
+- **Which chat is spending it**, by conversation name and by project.
+- **When you will hit the wall** at your current pace: "~45m to limit".
+- **Alerts that find you away from the desk**, including runaway-agent
+  detection that learns your normal burn rate.
+- **Two dozen charts**, budgets, a weekly recap, exports, a Claude Code
+  statusline gauge, and a local JSON API for your scripts.
+- **Nothing leaves your Mac.** No account, no telemetry, no paid tier.
+
+### Install in one line
+
+```bash
+HOMEBREW_CASK_OPTS="--no-quarantine" brew install --cask maz0x/tap/burndown
+```
+
+Or **[download the latest release](https://github.com/maz0x/burndown/releases/latest)**
+(macOS 13+, Apple Silicon and Intel). It keeps itself up to date from
+then on.
+
+> Releases are not yet Developer ID signed, so macOS blocks the first open
+> of a downloaded copy. Run
+> `xattr -d com.apple.quarantine /Applications/Burndown.app` once, or see
+> [Install](#install) for the other routes, including one with no Terminal.
 
 **[Home page](https://burndown-app.pages.dev/)** ·
 **[Full guide](https://burndown-app.pages.dev/guide)** ·
 **[Discussions](https://github.com/maz0x/burndown/discussions)**
 
-> Releases are signed ad hoc for now, so macOS blocks the first open of a
-> downloaded copy. [Install](#install) lists the four ways past it; the
-> shortest is `xattr -d com.apple.quarantine /Applications/Burndown.app`, and
-> building from source avoids the question entirely.
+If Burndown saves you from a limit, a ⭐ on this repo is the easiest way
+to help other Claude users find it.
 
 <p align="center">
   <img src="site/screenshots/hero.png" width="420" alt="The Burndown icon in the macOS menu bar showing 46 percent, with its card open beneath: session and weekly percentages, per-model caps, live burn rate, and a chart">
@@ -578,6 +589,11 @@ releases are Developer ID signed and other providers are supported. If
 something looks wrong,
 [open an issue](https://github.com/maz0x/burndown/issues) and
 say what you saw. That is the fastest way to make it better for everyone.
+
+It is also a one-person project with no marketing budget, so word of
+mouth is everything. If it helps you, star the repo, tell one Claude user
+about it, or say what you would change in
+[Discussions](https://github.com/maz0x/burndown/discussions).
 
 ## Development
 
