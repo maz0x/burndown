@@ -31,15 +31,15 @@ caps, and tells you before you hit one, not after.
 ### Install in one line
 
 ```bash
-HOMEBREW_CASK_OPTS="--no-quarantine" brew install --cask maz0x/tap/burndown
+brew install --cask maz0x/tap/burndown && xattr -d com.apple.quarantine /Applications/Burndown.app
 ```
 
-Or **[download the latest release](https://github.com/maz0x/burndown/releases/latest)**
+The second half clears the macOS quarantine flag, because releases are
+not yet Developer ID signed. Or **[download the latest release](https://github.com/maz0x/burndown/releases/latest)**
 (macOS 13+, Apple Silicon and Intel). It keeps itself up to date from
 then on.
 
-> Releases are not yet Developer ID signed, so macOS blocks the first open
-> of a downloaded copy. Run
+> If you download the zip instead, macOS blocks the first open. Run
 > `xattr -d com.apple.quarantine /Applications/Burndown.app` once, or see
 > [Install](#install) for the other routes, including one with no Terminal.
 
@@ -442,15 +442,15 @@ Pick whichever of these four you are comfortable with.
 **Homebrew:**
 
 ```bash
-HOMEBREW_CASK_OPTS="--no-quarantine" brew install --cask maz0x/tap/burndown
+brew install --cask maz0x/tap/burndown && xattr -d com.apple.quarantine /Applications/Burndown.app
 ```
 
-That environment variable tells Homebrew not to attach the quarantine flag
-to the download. Homebrew's own documentation calls it a Gatekeeper bypass
-that reduces system security, so treat it as your informed choice rather
-than a magic flag. Homebrew removed the old `--no-quarantine` command-line
-flag, and a cask cannot set the variable on your behalf, so this form is
-the only one that still works.
+Homebrew installs the app, then `xattr` clears the quarantine flag so it
+opens. Homebrew no longer skips quarantine for any cask (the
+`--no-quarantine` flag and the `HOMEBREW_CASK_OPTS` route both stopped
+working in 2026), so the flag has to be cleared after install. That is a
+choice to trust this build; the source is right here if you would rather
+check first.
 
 **Download and clear the flag yourself:** grab the
 [latest release](https://github.com/maz0x/burndown/releases/latest)
@@ -555,8 +555,7 @@ worth reading: [docs/PRIVACY.md](docs/PRIVACY.md).
 **Why does macOS warn me on first open?**
 Releases are ad-hoc signed until a Developer ID certificate lands. macOS 15
 removed the old right-click, Open shortcut, so use one of the routes under
-[Install](#install): install through Homebrew with
-`HOMEBREW_CASK_OPTS="--no-quarantine"`, clear the flag with `xattr -d
+[Install](#install): install through Homebrew and clear the flag with `xattr -d
 com.apple.quarantine`, or click Open Anyway in System Settings, Privacy &
 Security. Building from source avoids the warning entirely.
 

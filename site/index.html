@@ -68,7 +68,7 @@
     {"@type":"Question","name":"Do I have to sign in to use it?","acceptedAnswer":{"@type":"Answer","text":"No. A fresh install runs in estimate mode, which reads the session logs Claude Code already keeps on your Mac and makes no network requests at all. Signing in is a separate, explicit opt-in that switches on live mode, where the numbers come from Claude's own usage service."}},
     {"@type":"Question","name":"Is my data safe?","acceptedAnswer":{"@type":"Answer","text":"Everything stays on your Mac. There is no telemetry and no server operated by the project. In live mode the only hosts contacted are Anthropic's own. The updater contacts GitHub for a version number and, if you choose to install, the release file. Local state lives in ~/.config/burndown with owner-only permissions, and signing out deletes the stored token and clears the diagnostic log."}},
     {"@type":"Question","name":"Will it slow my Mac down?","acceptedAnswer":{"@type":"Answer","text":"No. The card tears its whole view tree down when you close it, so it costs almost nothing while hidden, and the app idles at a couple of percent of one core with an animated menu bar style. Choose a static style and even that goes away."}},
-    {"@type":"Question","name":"Why does macOS warn me the first time I open it?","acceptedAnswer":{"@type":"Answer","text":"Releases are ad-hoc signed because the project does not yet have a paid Apple Developer ID certificate, so macOS quarantines a downloaded copy and Gatekeeper blocks the first open. There are four ways past it. Install through Homebrew with HOMEBREW_CASK_OPTS=\"--no-quarantine\" set, which tells Homebrew not to attach the quarantine flag. After a manual download, run xattr -d com.apple.quarantine /Applications/Burndown.app. Without the Terminal, let the launch be blocked, then open System Settings, Privacy and Security, scroll to Security and click Open Anyway; that button only appears for about an hour after a blocked launch. Or build from source, which is never quarantined at all. macOS 15 removed the old right-click Open shortcut, so that no longer works."}},
+    {"@type":"Question","name":"Why does macOS warn me the first time I open it?","acceptedAnswer":{"@type":"Answer","text":"Releases are ad-hoc signed because the project does not yet have a paid Apple Developer ID certificate, so macOS quarantines a downloaded copy and Gatekeeper blocks the first open. There are four ways past it. Install through Homebrew, then run xattr -d com.apple.quarantine /Applications/Burndown.app; Homebrew no longer skips quarantine itself. After a manual download, run the same xattr command: xattr -d com.apple.quarantine /Applications/Burndown.app. Without the Terminal, let the launch be blocked, then open System Settings, Privacy and Security, scroll to Security and click Open Anyway; that button only appears for about an hour after a blocked launch. Or build from source, which is never quarantined at all. macOS 15 removed the old right-click Open shortcut, so that no longer works."}},
     {"@type":"Question","name":"Could using Burndown get my Claude account banned?","acceptedAnswer":{"@type":"Answer","text":"Burndown is a read-only monitor. It never runs inference with your token and never spends your subscription; it only asks how much you have used. Anthropic's February 2026 enforcement targeted a different class of tool, third-party coding clients that spend subscriptions through OAuth. Read-only monitors continue to operate publicly without known enforcement. The call remains Anthropic's, which is exactly why live mode is opt-in and the mechanism is documented in plain English."}},
     {"@type":"Question","name":"Does it work on Claude Pro, or only Max?","acceptedAnswer":{"@type":"Answer","text":"Both. Burndown does not hardcode plan shapes. It shows whatever limits your account reports, including any per-model caps, and the Account window can re-read your plan on the spot after an upgrade."}},
     {"@type":"Question","name":"I only use Claude in the browser or the desktop app. Does it still work?","acceptedAnswer":{"@type":"Answer","text":"Live mode, yes. Your limits are account-wide server-side numbers, so percentages, resets, forecasts and alerts all work no matter where you use Claude. Estimate mode and the attribution features are built from the logs Claude Code writes, so those cover Claude Code sessions."}},
@@ -227,7 +227,7 @@
     <p class="fineprint">Every feature on this page is in the download: no paid tier, no ads, and
     no upgrade screen waiting for you at 80%. Nothing you do is sent anywhere, because there is
     nowhere for it to go, and you can read the code to check rather than take my word for it.</p>
-    <div><span class="brew">HOMEBREW_CASK_OPTS="--no-quarantine" brew install --cask maz0x/tap/burndown</span></div>
+    <div><span class="brew">brew install --cask maz0x/tap/burndown &amp;&amp; xattr -d com.apple.quarantine /Applications/Burndown.app</span></div>
     <p class="meta">macOS 13 or later. Universal, Apple Silicon and Intel. It updates itself.
     · <a href="https://github.com/maz0x/burndown">Star it on GitHub</a></p>
     <div class="shots">
@@ -594,10 +594,8 @@
       ID certificate, so macOS quarantines a downloaded copy and Gatekeeper blocks the first
       open. Four ways past it, in order of least friction:</p>
       <ul>
-        <li>Install with Homebrew, prefixing the command with
-        <code>HOMEBREW_CASK_OPTS="--no-quarantine"</code>. That tells Homebrew not to attach the
-        quarantine flag. Homebrew's own docs call it a Gatekeeper bypass that reduces system
-        security, so it is your call to make.</li>
+        <li>Install with Homebrew, then clear the flag in the same line:
+        <code>brew install --cask maz0x/tap/burndown &amp;&amp; xattr -d com.apple.quarantine /Applications/Burndown.app</code>.</li>
         <li>After a manual download, run
         <code>xattr -d com.apple.quarantine /Applications/Burndown.app</code>.</li>
         <li>Without the Terminal: let the launch get blocked, then open System Settings, Privacy
@@ -607,9 +605,9 @@
         <li>Build from source with <code>./build.sh</code>. An app you compiled locally is never
         quarantined, so Gatekeeper never appears at all.</li>
       </ul>
-      <p>macOS 15 removed the old right-click, Open shortcut, and Homebrew removed the
-      <code>--no-quarantine</code> command-line flag, so any guide still recommending those is
-      out of date.</p></details>
+      <p>macOS 15 removed the old right-click, Open shortcut, and Homebrew stopped skipping
+      quarantine in 2026 (both <code>--no-quarantine</code> and
+      <code>HOMEBREW_CASK_OPTS</code>), so any guide still recommending those is out of date.</p></details>
 
     <details><summary>Could using Burndown get my Claude account banned?</summary>
       <p>Burndown is a read-only monitor. It never runs inference with your token and never
