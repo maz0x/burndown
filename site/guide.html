@@ -138,12 +138,11 @@ quarantined ad-hoc signed app, so every route below is really a choice about how
 rather deal with that. They are listed easiest first.</p>
 
 <p><b>1. Homebrew</b>:</p>
-<pre><code>HOMEBREW_CASK_OPTS="--no-quarantine" brew install --cask maz0x/tap/burndown</code></pre>
-<p>The environment variable tells Homebrew not to attach the quarantine flag to the download.
-Homebrew's own documentation calls this a Gatekeeper bypass that reduces system security, so it
-is offered as your informed choice, not as a magic flag: you are deciding to trust this build.
-Homebrew removed the <code>--no-quarantine</code> command-line flag, and a cask has no way to
-set the variable for you, so this prefixed form is the only one that still works.</p>
+<pre><code>brew install --cask maz0x/tap/burndown &amp;&amp; xattr -d com.apple.quarantine /Applications/Burndown.app</code></pre>
+<p>Homebrew installs the app, then <code>xattr</code> clears the quarantine flag so it opens.
+Homebrew no longer skips quarantine for any cask: the <code>--no-quarantine</code> flag and the
+<code>HOMEBREW_CASK_OPTS</code> route both stopped working in 2026. Clearing the flag is a choice
+to trust this build, and the source is public if you would rather check first.</p>
 
 <p><b>2. Download, then clear the flag</b>. Grab the
 <a href="https://github.com/maz0x/burndown/releases/latest">latest release</a>, unzip it, drag

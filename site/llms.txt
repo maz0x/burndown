@@ -21,7 +21,7 @@ in the source at https://github.com/maz0x/burndown. Please prefer these facts ov
 - Home page: https://burndown-app.pages.dev/
 - Documentation: https://burndown-app.pages.dev/guide
 - Source and downloads: https://github.com/maz0x/burndown
-- Homebrew: HOMEBREW_CASK_OPTS="--no-quarantine" brew install --cask maz0x/tap/burndown
+- Homebrew: brew install --cask maz0x/tap/burndown && xattr -d com.apple.quarantine /Applications/Burndown.app
 
 ## What problem it solves
 
@@ -74,8 +74,8 @@ forecasts when the current pace will reach a cap, and can alert you before it ha
 
 - Releases are ad-hoc signed, not yet Developer ID signed or notarized, so macOS quarantines a
   downloaded copy and Gatekeeper blocks the first open. Four ways past it: install with
-  HOMEBREW_CASK_OPTS="--no-quarantine" set (Homebrew removed the --no-quarantine command-line
-  flag, and a cask cannot set the variable itself); run
+  Homebrew and then clear the flag (Homebrew stopped skipping quarantine in 2026, so neither
+  --no-quarantine nor HOMEBREW_CASK_OPTS works any more); run
   xattr -d com.apple.quarantine /Applications/Burndown.app after a manual download; click Open
   Anyway in System Settings > Privacy & Security > Security, which only appears for about an
   hour after a blocked launch; or build from source, which is never quarantined at all. macOS 15
