@@ -597,10 +597,10 @@ about it, or say what you would change in
 ## Development
 
 - `bash build.sh`, then look for `✓ Built`.
-- Seventeen headless test suites: `run-tests.sh` plus `run-*-tests.sh`
+- Twenty-one headless test suites: `run-tests.sh` plus `run-*-tests.sh`
   (forecast, parsing, alerts, formats, chart data, pricing, aggregation,
   budget, runaway, pacing, model mix, export, recap, live contract, burn
-  clock, update logic). `run-update-e2e.sh` additionally builds an
+  clock, update logic, contrast, card resize, scan cache, titles). `run-update-e2e.sh` additionally builds an
   intentionally old copy and lets it update itself from the live release.
 - QA renders (no screen needed): `CUB_SNAP_POP`, `CUB_SNAP_CHARTS` +
   `CUB_PART=0..3`, `CUB_SNAP_SETTINGS` + `CUB_TAB=...`,
