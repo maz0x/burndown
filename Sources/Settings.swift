@@ -295,8 +295,20 @@ enum LiveColor: String, CaseIterable, Identifiable {
     }
 }
 let kAppName = "Burndown"           // app name (floating window title + About). Tagline: "usage monitor for Claude"
-let kAppVersion = "0.9.8"           // bump on release builds; 1.0 is reserved for Developer ID signing + multi-provider
+let kAppVersion = "0.9.9"           // bump on release builds; 1.0 is reserved for Developer ID signing + multi-provider
 let kMinWindowAlpha = 0.45          // most see-through the windows go at 100% transparency (keeps text legible)
+
+// ── When the card stops having a surface (see AppSettings.surfaceIsVisible) ──
+// Floors on "is anything painted there", not on legibility: the glass-opacity slider's own floor is
+// 55 percent and the window alpha's is kMinWindowAlpha, so every setting reachable from the UI on a
+// non-Clear style is well clear of both. Card chrome that only makes sense drawn ON a surface asks
+// this before drawing, because below these the card is numbers floating on the bare desktop.
+let kSurfaceVisibleGlassOpacity = 20.0    // percent, in glassOpacity's own units
+let kSurfaceVisibleWindowAlpha = 0.5
+// Above this, a Clear card's tint scrim is itself a surface: the Crystal preset paints no material
+// at all and still reads as a card, because 30 percent of the theme colour is sitting over the
+// wallpaper. 25 is under that preset and well over the barely-there settings.
+let kSurfaceVisibleTintIntensity = 25.0   // percent, in glassTintIntensity's own units
 
 // A curated set: every style earns its place, all keep a small footprint (most are
 // tiny / horizontally compact; the spark/equalizer ones stay narrow), none look like
@@ -521,9 +533,64 @@ enum ChartStyle: String, CaseIterable, Identifiable {
 // The popover's stackable modules. The "Claude … usage" header, Session block, monitor
 // Chart, and This-week block can each be reordered and shown/hidden; the app-name footer
 // is always pinned at the bottom (not a CardSection).
+/// How often Burndown looks for a new version.
+///
+/// The interval used to be a hardcoded 24 hours with no way to change it. Note the floor: the timer
+/// that re-tests this runs every 10 minutes, so anything shorter than that is rounded up to it in
+/// practice. `.launch` means "every time the app starts and not otherwise".
+enum UpdateCadence: String, CaseIterable, Identifiable {
+    case launch, daily, weekly, manual
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .launch: return "Every launch"
+        case .daily:  return "Once a day"
+        case .weekly: return "Once a week"
+        case .manual: return "Only when I ask"
+        }
+    }
+    /// Seconds that must pass before another automatic check. `.launch` is 0 (the launch check
+    /// always runs), `.manual` never checks at all and is handled by `automatic`.
+    var interval: TimeInterval {
+        switch self {
+        case .launch: return 0
+        case .daily:  return 24 * 3600
+        case .weekly: return 7 * 24 * 3600
+        case .manual: return .greatestFiniteMagnitude
+        }
+    }
+    var automatic: Bool { self != .manual }
+}
+
+/// What Burndown does once it has found a newer version.
+enum UpdateAction: String, CaseIterable, Identifiable {
+    case notify, install
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .notify:  return "Tell me about it"
+        case .install: return "Install it for me"
+        }
+    }
+    var blurb: String {
+        switch self {
+        case .notify:
+            return "Shows a notification with what changed. Nothing is downloaded until you say so."
+        case .install:
+            return "Downloads and verifies it in the background, then installs at a quiet moment and tells you what changed."
+        }
+    }
+}
+
 enum CardSection: String, CaseIterable, Identifiable {
-    // Default order: the two constraints (session + week) read as a pair, then the chart as evidence.
-    case header, session, week, chart
+    // Default order: the two constraints (session + week) read as a pair, then the chart as
+    // evidence, then whatever is burning right now.
+    //
+    // `chats` is a first-class section as of this change. It used to be drawn INSIDE the chart
+    // section, welded to the bottom of the last chart, so it could only ever appear below every
+    // chart however much you wanted it at the top, and switching the chart section off took it with
+    // it. Adding a case here is what makes it draggable in Settings > Popover like the rest.
+    case header, session, week, chart, chats
     var id: String { rawValue }
     var label: String {
         switch self {
@@ -531,6 +598,7 @@ enum CardSection: String, CaseIterable, Identifiable {
         case .session: return "Session"
         case .chart:   return "Chart"
         case .week:    return "This week"
+        case .chats:   return "Chats burning now"
         }
     }
 }
@@ -657,6 +725,66 @@ final class AppSettings: ObservableObject {
     @Published var sectionOrder: [String] { didSet { d.set(sectionOrder, forKey: "sectionOrder") } }
     @Published var sectionsHidden: [String] { didSet { d.set(sectionsHidden, forKey: "sectionsHidden") } }
     @Published var burnSpan: ChartSpan { didSet { d.set(burnSpan.rawValue, forKey: "burnSpan") } }
+
+    // Per-chart overrides of the two spans above, keyed by ChartKind.rawValue. A chart with no
+    // entry follows the global setting, so these start empty and the Settings pickers keep working
+    // exactly as they did: they are the default, and a chart only stops following once you change
+    // it from the popover. Stored as plain dictionaries, which UserDefaults takes as-is.
+    @Published var chartSpans: [String: String] { didSet { d.set(chartSpans, forKey: "chartSpans") } }
+    @Published var chartDayspans: [String: Int] { didSet { d.set(chartDayspans, forKey: "chartDayspans") } }
+
+    /// The rolling window this chart should draw, its own if it has one, otherwise the global.
+    func span(for kind: ChartKind) -> ChartSpan {
+        chartSpans[kind.rawValue].flatMap(ChartSpan.init(rawValue:)) ?? burnSpan
+    }
+    /// The day count this chart should draw, its own if it has one, otherwise the global.
+    func dayspan(for kind: ChartKind) -> Int { chartDayspans[kind.rawValue] ?? chartDays }
+
+    /// The stretch of time a chart actually plots, in seconds.
+    ///
+    /// A burndown is pinned to its limit window, so with no override it draws the whole 5 hours or
+    /// 7 days rather than the global rolling window: following the global would truncate a
+    /// burndown to the last hour out of the box, which is not a burndown. An override may only
+    /// trim it shorter.
+    func window(for kind: ChartKind) -> TimeInterval {
+        guard let full = kind.pinnedWindow else { return span(for: kind).seconds }
+        guard let own = chartSpans[kind.rawValue].flatMap(ChartSpan.init(rawValue:)) else { return full }
+        return min(full, own.seconds)
+    }
+
+    /// The spans a burndown may be trimmed to: everything shorter than its own window. Anything
+    /// longer would be a window the chart cannot draw, and offering it would be a lie.
+    static func trimOptions(for kind: ChartKind) -> [ChartSpan] {
+        guard let full = kind.pinnedWindow else { return ChartSpan.allCases }
+        return ChartSpan.allCases.filter { !$0.isAllTime && $0.seconds < full }
+    }
+
+    /// Setting a chart back to the global default REMOVES the override rather than storing a copy
+    /// of the current global, so changing the global in Settings still moves it afterwards.
+    func setSpan(_ s: ChartSpan?, for kind: ChartKind) {
+        if let s { chartSpans[kind.rawValue] = s.rawValue } else { chartSpans[kind.rawValue] = nil }
+    }
+    func setDayspan(_ n: Int?, for kind: ChartKind) {
+        if let n { chartDayspans[kind.rawValue] = n } else { chartDayspans[kind.rawValue] = nil }
+    }
+
+    /// The deepest history any chart currently asks for, in days.
+    ///
+    /// The engine only retains `chartDays` of records. A per-chart override can ask for more than
+    /// the global, and without this the chart would just draw a short line with no hint that the
+    /// data behind it had been cut off: the reader cannot tell "nothing happened" from "we did not
+    /// look". The engine's retention is raised to cover the greediest chart.
+    var deepestChartDays: Int {
+        let perChart = chartKinds.map { k -> Int in
+            if k.usesDays { return dayspan(for: k) }
+            // A rolling window is in seconds; round up to whole days of retention.
+            if k.usesWindow { return max(1, Int(ceil(span(for: k).seconds / 86_400))) }
+            return 0
+        }
+        // `.all` reports a sentinel of a hundred years; retention is capped at the global 90-day
+        // maximum so a single "All time" chart cannot ask the scanner for a century of logs.
+        return min(90, max(chartDays, perChart.max() ?? 0))
+    }
     // Overall window transparency (1 = opaque, lower = more see-through) and frosted-glass
     // intensity (0 = solid card, 1 = full blur material). Applied to popover, floating, edge.
     @Published var windowOpacity: Double { didSet { d.set(windowOpacity, forKey: "windowOpacity") } }
@@ -684,8 +812,77 @@ final class AppSettings: ObservableObject {
     // Corner-grip RESIZE (reflow, not zoom): card width in design points (wider = longer bars and
     // chat names, same font size), and extra plot height added to every popover chart by a
     // vertical drag. Both set by the grip; CardResize holds the limits.
-    @Published var cardWidth: Double { didSet { d.set(cardWidth, forKey: "cardWidth") } }
-    @Published var cardChartBoost: Double { didSet { d.set(cardChartBoost, forKey: "cardChartBoost") } }
+    @Published var cardWidth: Double { didSet { if !cardResizeInFlight { d.set(cardWidth, forKey: "cardWidth") } } }
+    @Published var cardChartBoost: Double { didSet { if !cardResizeInFlight { d.set(cardChartBoost, forKey: "cardChartBoost") } } }
+
+    /// True only while the corner grip is being dragged.
+    ///
+    /// A drag produced a mouse-moved event every few milliseconds, and each one wrote BOTH of the
+    /// values above straight to UserDefaults. Disk writes at frame rate, for values that are about
+    /// to be overwritten by the next event, and the only one that ever mattered was the last.
+    /// During a drag the geometry now lives in memory and is written once, on mouse-up.
+    ///
+    /// Deliberately NOT @Published: it is a mode flag read by other code, and publishing it would
+    /// itself invalidate every view observing settings, which is the cost this exists to avoid.
+    var cardResizeInFlight = false
+
+    /// The card's geometry at the instant the grip went down, or nil at rest.
+    ///
+    /// The chart section freezes its layout for the length of the gesture and follows the drag as
+    /// a transform instead (see MonitorChart), so it has to know how far the drag has travelled,
+    /// not just where it is now. Non-@Published for the same reason as the flag above.
+    var cardResizeStart: (width: Double, boost: Double)?
+
+    /// Open the in-flight window and record the geometry the gesture starts from.
+    ///
+    /// The send is not cosmetic. Neither value here is published, so without it the first render
+    /// that knows a drag has begun is the first render that also MOVES, and that frame paid for
+    /// entering the gesture on top of its own work: 90ms, against 18ms for every other moving
+    /// frame. Announcing it at mouse-down, while nothing is moving yet, is free at the only moment
+    /// it can be, and the geometry has not changed so the render it causes is the layout already
+    /// on screen.
+    func beginCardResize() {
+        cardResizeStart = (cardWidth, cardChartBoost)
+        cardResizeInFlight = true
+        objectWillChange.send()
+    }
+
+    /// One real, full-detail relayout at the geometry the grip is holding right now, without
+    /// ending the gesture. Called when the grip has been still for a moment.
+    ///
+    /// Re-anchoring the start to NOW makes the drag's travel zero, and a zero-travel drag is drawn
+    /// with no transform at all (see MonitorChart.stretch), so the charts lay out for real, at the
+    /// size the reader is looking at, and the measurement the NEXT movement stretches from is taken
+    /// from that settled layout. It costs one Swift Charts layout per chart, which is affordable
+    /// for exactly the reason it is allowed to happen: nothing is moving.
+    ///
+    /// Idempotent, because after it runs the travel is zero and running it again changes nothing.
+    /// Returns false when there is no gesture left to settle, so a timer that outlives its drag
+    /// cannot re-anchor anything: the end of the drag always wins.
+    @discardableResult
+    func settleCardResize() -> Bool {
+        guard cardResizeInFlight else { return false }
+        cardResizeStart = (cardWidth, cardChartBoost)
+        objectWillChange.send()   // nothing else here publishes; without this the pause is invisible
+        return true
+    }
+
+    /// Write the card's geometry after a grip drag, and end the in-flight window.
+    ///
+    /// The send is the drag's one repaint. Everything that observes settings is skipped for the
+    /// length of the gesture (see the objectWillChange sink in AppDelegate, which stops repainting
+    /// the menu bar and re-applying the theme while cardResizeInFlight is set), and nothing here
+    /// publishes on its own: both stored values took their final value DURING the drag, and the
+    /// flag is deliberately not @Published. Without this the skipped repaint never happened at
+    /// all, so a theme or accent change that landed mid-drag stayed unpainted in the menu bar
+    /// until some unrelated setting happened to change.
+    func commitCardGeometry() {
+        cardResizeInFlight = false
+        cardResizeStart = nil
+        d.set(cardWidth, forKey: "cardWidth")
+        d.set(cardChartBoost, forKey: "cardChartBoost")
+        objectWillChange.send()
+    }
     @Published var floatingChrome: Bool { didSet { d.set(floatingChrome, forKey: "floatingChrome") } }   // show the floating window title bar
     @Published var glassMaterial: GlassMaterial { didSet { d.set(glassMaterial.rawValue, forKey: "glassMaterial") } }
     // ── Glass / background tuning (all stored in display units; CardSurface converts) ──
@@ -698,6 +895,28 @@ final class AppSettings: ObservableObject {
     @Published var glassBorderWidth: Double { didSet { d.set(glassBorderWidth, forKey: "glassBorderWidth") } }       // 0…6 pt
     @Published var glassCornerRadius: Double { didSet { d.set(glassCornerRadius, forKey: "glassCornerRadius") } }    // 6…22 pt
     @Published var glassShadow: Double { didSet { d.set(glassShadow, forKey: "glassShadow") } }               // 0…100 %
+
+    /// Whether the card paints a surface a reader can actually see.
+    ///
+    /// The Clear style paints no material at all, and the two opacity controls fade whatever is
+    /// painted; past their floors the card is a set of numbers over the live desktop. Chrome that
+    /// only reads as chrome when it sits ON something (the scroll fade) asks this first, so it
+    /// cannot end up painting over bare wallpaper.
+    ///
+    /// The tint scrim counts. A Clear card carrying a strong tint IS a real surface: the shipped
+    /// Crystal preset is Clear at 30 percent tint and reads as a solid card on any wallpaper, so
+    /// treating it as bare desktop dropped the scroll fade and the floating halo from a preset that
+    /// plainly has something to draw them on. Below the threshold the answer is unchanged, and it
+    /// still follows the Style control everywhere a reader would predict it does.
+    ///
+    /// The glassOpacity clause cannot fire from the UI today: the slider's range starts at 55, and
+    /// that floor is the real guarantee. It is kept as a FLOOR against a future slider that opens
+    /// the range lower, so the threshold does not have to be rediscovered then.
+    var surfaceIsVisible: Bool {
+        (glassStyle != .clear || glassTintIntensity >= kSurfaceVisibleTintIntensity)
+            && glassOpacity >= kSurfaceVisibleGlassOpacity
+            && windowOpacity >= kSurfaceVisibleWindowAlpha
+    }
     @Published var numberStyle: NumberStyle { didSet { d.set(numberStyle.rawValue, forKey: "numberStyle") } }
     // Menu-bar rows.
     @Published var menuNumberFormat: MenuNumberFormat { didSet { d.set(menuNumberFormat.rawValue, forKey: "menuNumberFormat") } }
@@ -790,6 +1009,11 @@ final class AppSettings: ObservableObject {
     @Published var alertForecastMin: Double { didSet { d.set(alertForecastMin, forKey: "alertForecastMin") } }   // alert when ≤ this many minutes to the session limit
     /// Daily background update check (the check itself is a version lookup; nothing is sent).
     @Published var autoUpdateCheck: Bool { didSet { d.set(autoUpdateCheck, forKey: "autoUpdateCheck") } }
+    @Published var updateCadence: UpdateCadence { didSet { d.set(updateCadence.rawValue, forKey: "updateCadence") } }
+    @Published var updateAction: UpdateAction { didSet { d.set(updateAction.rawValue, forKey: "updateAction") } }
+    /// The last version we told the user about, so one available update is announced once and not
+    /// on every check for as long as it stays unreleased-to-them.
+    @Published var updateAnnounced: String { didSet { d.set(updateAnnounced, forKey: "updateAnnounced") } }
     @Published var alertSoundName: String { didSet { d.set(alertSoundName, forKey: "alertSoundName") } }          // "" = system default
     // Alert sound choices. "" = the macOS default notification sound; the rest are Burndown's own
     // original chimes (Sounds/, generated by make_sounds.py), bundled in Resources. Fully
@@ -933,6 +1157,8 @@ final class AppSettings: ObservableObject {
         tidePeek = d.object(forKey: "tidePeek") as? Bool ?? false
         tideDisplays = TideDisplays(rawValue: d.string(forKey: "tideDisplays") ?? "") ?? .all
         burnSpan = ChartSpan(rawValue: d.string(forKey: "burnSpan") ?? "") ?? .h1
+        chartSpans = (d.dictionary(forKey: "chartSpans") as? [String: String]) ?? [:]
+        chartDayspans = (d.dictionary(forKey: "chartDayspans") as? [String: Int]) ?? [:]
         windowOpacity = (d.object(forKey: "windowOpacity") as? Double) ?? 1.0   // 1 = opaque (today's look)
         chipLivePreview = (d.object(forKey: "chipLivePreview") as? Bool) ?? false
         dockInside = (d.object(forKey: "dockInside") as? Bool) ?? false
@@ -1023,6 +1249,10 @@ final class AppSettings: ObservableObject {
                             "Submarine": "Ember", "Hero": "Bloom", "Pop": "Drop"]
         let rawSound = d.string(forKey: "alertSoundName") ?? ""
         autoUpdateCheck = (d.object(forKey: "autoUpdateCheck") as? Bool) ?? true
+        // Defaults preserve the old behaviour exactly: check once a day, never install unasked.
+        updateCadence = UpdateCadence(rawValue: d.string(forKey: "updateCadence") ?? "") ?? .daily
+        updateAction = UpdateAction(rawValue: d.string(forKey: "updateAction") ?? "") ?? .notify
+        updateAnnounced = d.string(forKey: "updateAnnounced") ?? ""
         alertSoundName = legacySounds[rawSound] ?? rawSound
         quietHours = d.object(forKey: "quietHours") as? Bool ?? false
         quietFrom = (d.object(forKey: "quietFrom") as? Double) ?? 23
@@ -1043,9 +1273,26 @@ final class AppSettings: ObservableObject {
         for r in valid where !order.contains(r) { order.append(r) }
         sectionOrder = order
         var hidden = (d.array(forKey: "sectionsHidden") as? [String])?.filter { valid.contains($0) } ?? []
-        // migrate the old "Show weekly section" toggle into the modular hidden set
-        if (d.object(forKey: "showWeekly") as? Bool) == false, !hidden.contains("week") { hidden.append("week") }
+        // Migrate the old visibility toggles into the modular hidden set: "Show weekly section",
+        // and "Chats burning now", which became a real section rather than a plain switch. Anyone
+        // who had switched either off keeps it off; the eye in the sections editor is the single
+        // control now, so two switches cannot end up disagreeing.
+        //
+        // Each legacy key is consumed EXACTLY ONCE and then retired. Re-reading it on every launch
+        // meant the section could never be permanently re-enabled: switching the eye back on wrote
+        // a sectionsHidden without it, and the next launch put it straight back.
+        var migrated = false
+        for (legacy, section) in [("showWeekly", "week"), ("showChatsBurning", "chats")] {
+            guard d.object(forKey: legacy) != nil else { continue }
+            if (d.object(forKey: legacy) as? Bool) == false, !hidden.contains(section) { hidden.append(section) }
+            d.removeObject(forKey: legacy)
+            migrated = true
+        }
         sectionsHidden = hidden
+        // Written explicitly: a property observer does not fire on the assignment an initializer
+        // makes, so the migrated set would otherwise live only in memory and be lost on quit,
+        // which is the same "runs again every launch" behaviour by another route.
+        if migrated { d.set(hidden, forKey: "sectionsHidden") }
         // migrate the old "0 = Smart" sentinel → explicit toggle + a sane fixed base
         if (d.object(forKey: "refreshSeconds") as? Int) == 0 { smartRefresh = true; refreshSeconds = 30 }
         // migrate old "menuBarMetric" → menuBarShow

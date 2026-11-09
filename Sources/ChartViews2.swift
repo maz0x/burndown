@@ -24,7 +24,7 @@ struct BurnHistogramChart: View {
         let busiest = bands.filter { $0.v > 0 }.last
         return VStack(alignment: .leading, spacing: 5) {
             if peak == 0 {
-                chartPlaceholder("Warming up, collecting samples", p)
+                chartPlaceholder("Warming up, collecting samples", p, height: ctx.plotH)
             } else {
                 Chart {
                     ForEach(bands) { b in
@@ -55,7 +55,7 @@ struct BurnHistogramChart: View {
                         }
                     }
                 }
-                .chartPlotStyle { $0.background(Color.clear) }
+                .chartPlot()
                 .transaction { $0.animation = nil }
                 .frame(height: ctx.plotH)
                 .hoverCatcher { pt, proxy, geo in
@@ -94,7 +94,7 @@ struct PaceGaugeChart: View {
         let worst = max(rS?.ratio ?? 0, rW?.ratio ?? 0)
         return VStack(alignment: .leading, spacing: 5) {
             if rS == nil && rW == nil {
-                chartPlaceholder("Waiting for a full window", p)
+                chartPlaceholder("Waiting for a full window", p, height: ctx.plotH)
             } else {
                 VStack(alignment: .leading, spacing: 7) {
                     paceStrip("Session", rS, p)
@@ -229,6 +229,10 @@ struct TopChatsChart: View {
     }
     @State private var sel: CatValue?
     @State private var memo = ChartMemo()
+    /// The RAW row name being edited, never the displayed one: the alias is keyed on the raw name
+    /// (see ChatNames.key), and the displayed one is what the alias already replaced.
+    @State private var renaming: String? = nil
+    @State private var renameText = ""
     var body: some View {
         let p = ctx.p
         let now = ctx.tick
@@ -258,7 +262,18 @@ struct TopChatsChart: View {
                     ForEach(rows.prefix(4)) { r in
                         TopChatRow(row: r, peak: peak, p: p, accent: ctx.accent,
                                    name: chatNames.display(r.name), live: isLive(r.name),
-                                   truncation: nameTruncation, selected: sel?.id == r.id)
+                                   truncation: nameTruncation, selected: sel?.id == r.id,
+                                   // Renaming is offered wherever a chat NAME is shown, not only in
+                                   // the burning-now rows: the reader who wants to fix a title is
+                                   // looking at whichever list he happens to be reading, and being
+                                   // told "not here, scroll to the other list" is not an answer.
+                                   // The gallery previews are static and must stay inert, so this
+                                   // rides the same ctx.hover gate the selection does.
+                                   renamable: ctx.hover && !isGeneratedTitle(chatNames.display(r.name)),
+                                   editing: renaming == r.name, renameText: $renameText,
+                                   onBeginRename: { renameText = chatNames.display(r.name); renaming = r.name },
+                                   onCommitRename: { chatNames.setAlias(renameText, for: r.name); renaming = nil },
+                                   onCancelRename: { renaming = nil })
                             .contentShape(Rectangle())
                             // Every other chart gates its hover on ctx.hover; this one did not, so
                             // the Settings gallery's static previews lit up under the pointer.
@@ -313,6 +328,18 @@ private struct TopChatRow: View {
     let live: Bool
     let truncation: Text.TruncationMode
     let selected: Bool
+    /// Offer the pencil at all. False for a generated "Untitled chat" label, whose wording changes
+    /// after midnight so an alias keyed to it would silently detach from its own chat overnight,
+    /// and false in the Settings gallery, whose previews must stay inert.
+    var renamable: Bool = false
+    var editing: Bool = false
+    @Binding var renameText: String
+    var onBeginRename: () -> Void = {}
+    var onCommitRename: () -> Void = {}
+    /// Abandon the edit and put the name back. Escape and focus loss both take this path.
+    var onCancelRename: () -> Void = {}
+    @State private var hover = false
+    @FocusState private var fieldFocused: Bool
     @Environment(\.accessibilityReduceMotion) private var reduce
 
     var body: some View {
@@ -326,11 +353,33 @@ private struct TopChatRow: View {
                     BreathDot(color: p.live, size: 5, lo: 0.4, hi: 1.0, period: 3.0, still: reduce)
                         .accessibilityHidden(true)
                 }
-                Text(name)
-                    .font(.system(size: 11)).foregroundStyle(p.ink)
-                    .lineLimit(1).truncationMode(truncation)
+                if editing {
+                    TextField("", text: $renameText, onCommit: onCommitRename)
+                        .textFieldStyle(.plain).font(.system(size: 11)).foregroundStyle(p.ink)
+                        .focused($fieldFocused)
+                        .onAppear { fieldFocused = true }
+                        // Escape abandons the edit, and so does clicking away. Without either, the
+                        // only way out of the field was to commit: a row opened by a mis-click
+                        // stayed in edit mode with the name replaced by a text box.
+                        .onExitCommand(perform: onCancelRename)
+                        .onChange(of: fieldFocused) { focused in
+                            if !focused, editing { onCancelRename() }
+                        }
+                } else {
+                    Text(name)
+                        .font(.system(size: 11)).foregroundStyle(p.ink)
+                        .lineLimit(1).truncationMode(truncation)
+                    // Right-aligned and RESERVED, like the burning-now rows: the same labelled
+                    // control in the same place, so one affordance reads one way wherever a chat
+                    // name appears, and the name does not reflow under the pointer.
+                    Spacer(minLength: 6)
+                    RenameButton(p: p, action: onBeginRename)
+                        .opacity(hover ? 1 : 0)
+                        .allowsHitTesting(hover && renamable)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
+            .onHover { hover = $0 }
             HStack(spacing: 6) {
                 GeometryReader { g in
                     ZStack(alignment: .leading) {
@@ -380,7 +429,7 @@ struct ShareSplitChart: View {
         }
         return VStack(alignment: .leading, spacing: 5) {
             if shown.isEmpty {
-                chartPlaceholder("No usage in this window", p)
+                chartPlaceholder("No usage in this window", p, height: ctx.plotH)
             } else {
                 // One proportional bar: the whole window is the bar, each slice is a share of it.
                 GeometryReader { g in
@@ -457,7 +506,7 @@ struct WeekdayProfileChart: View {
         let busiest = rows.max { $0.v < $1.v }
         return VStack(alignment: .leading, spacing: 5) {
             if peak == 0 {
-                chartPlaceholder("No usage in the last \(ctx.days) days", p)
+                chartPlaceholder("No usage in the last \(ctx.days) days", p, height: ctx.plotH)
             } else {
                 Chart {
                     ForEach(rows) { r in
@@ -476,7 +525,7 @@ struct WeekdayProfileChart: View {
                         }
                     }
                 }
-                .chartPlotStyle { $0.background(Color.clear) }
+                .chartPlot()
                 .transaction { $0.animation = nil }
                 .frame(height: ctx.plotH)
                 .hoverCatcher { pt, proxy, geo in
@@ -508,7 +557,7 @@ struct DailyTokensChart: View {
         let avg = active.isEmpty ? 0 : active.reduce(0) { $0 + $1.v } / Double(active.count)
         return VStack(alignment: .leading, spacing: 5) {
             if peak == 0 {
-                chartPlaceholder("No usage in the last \(ctx.days) days", p)
+                chartPlaceholder("No usage in the last \(ctx.days) days", p, height: ctx.plotH)
             } else {
                 Chart {
                     ForEach(rows) { r in
@@ -527,7 +576,7 @@ struct DailyTokensChart: View {
                 }
                 .chartYAxis { tokenYAxis(peak, p, style: ctx.style) }
                 .chartXAxis { thinnedCatXAxis(rows.map(\.name), p, maxLabels: 7) }
-                .chartPlotStyle { $0.background(Color.clear) }
+                .chartPlot()
                 .transaction { $0.animation = nil }
                 .frame(height: ctx.plotH)
                 .hoverCatcher { pt, proxy, geo in
@@ -559,7 +608,7 @@ struct SessionBlocksChart: View {
         let avg = shown.isEmpty ? 0 : shown.reduce(0) { $0 + $1.tokens } / Double(shown.count)
         return VStack(alignment: .leading, spacing: 5) {
             if shown.isEmpty {
-                chartPlaceholder("No session blocks in the last \(ctx.days) days", p)
+                chartPlaceholder("No session blocks in the last \(ctx.days) days", p, height: ctx.plotH)
             } else {
                 Chart {
                     // Explicit bounds: block ids form a continuous numeric scale, where BarMark has no
@@ -576,7 +625,7 @@ struct SessionBlocksChart: View {
                 .chartYScale(domain: 0...(peak * 1.1))
                 .chartXAxis(.hidden)
                 .chartYAxis { tokenYAxis(peak, p, style: ctx.style) }
-                .chartPlotStyle { $0.background(Color.clear) }
+                .chartPlot()
                 .transaction { $0.animation = nil }
                 .frame(height: ctx.plotH)
                 .hoverCatcher { pt, proxy, geo in
@@ -637,7 +686,7 @@ struct CompositionChart: View {
         }
         return VStack(alignment: .leading, spacing: 5) {
             if grand == 0 {
-                chartPlaceholder("No usage in this window", p)
+                chartPlaceholder("No usage in this window", p, height: ctx.plotH)
             } else {
                 Chart {
                     ForEach(rects) { r in
@@ -647,7 +696,7 @@ struct CompositionChart: View {
                     }
                     if let d = sel {
                         RuleMark(x: .value("t", d)).foregroundStyle(p.ink.opacity(0.2))
-                            .annotation(position: .top, alignment: .leading, spacing: 2) {
+                            .hoverCallout(fraction: hoverFraction(d, lower: lower, now: now)) {
                                 let txt = selRects.map { "\($0.key) \(fmtTok(Int($0.y1 - $0.y0)))" }.joined(separator: "  ")
                                 chartCallout(txt.isEmpty ? "no usage" : txt, relTimeLabel(d, now: now), p)
                             }
@@ -657,7 +706,7 @@ struct CompositionChart: View {
                 .chartXScale(domain: lower...now)
                 .chartYAxis { tokenYAxis(colTop, p, style: ctx.style) }
                 .chartXAxis { timeXAxis(lower, now, p, style: ctx.style) }
-                .chartPlotStyle { $0.background(Color.clear) }
+                .chartPlot()
                 .transaction { $0.animation = nil }
                 .frame(height: ctx.plotH)
                 .hoverCatcher { pt, proxy, geo in
@@ -704,7 +753,7 @@ struct MonthCostChart: View {
         let top = max(projected, total) * 1.1
         return VStack(alignment: .leading, spacing: 5) {
             if total == 0 {
-                chartPlaceholder("No spend in the last \(ctx.days) days", p)
+                chartPlaceholder("No spend in the last \(ctx.days) days", p, height: ctx.plotH)
             } else {
                 Chart {
                     ForEach(pts) { c in
@@ -724,7 +773,10 @@ struct MonthCostChart: View {
                     }
                     if let s = sel {
                         RuleMark(x: .value("day", s.name)).foregroundStyle(p.ink.opacity(0.25))
-                            .annotation(position: .top, alignment: .leading, spacing: 2) {
+                            // Categorical x axis, so the fallback fraction comes from the day's
+                            // position in the series rather than from a date.
+                            .hoverCallout(fraction: pts.count < 2 ? 0
+                                          : Double(pts.firstIndex { $0.name == s.name } ?? 0) / Double(pts.count - 1)) {
                                 chartCallout(moneyCents(s.v), "by \(s.name)", p)
                             }
                     }
@@ -750,7 +802,7 @@ struct MonthCostChart: View {
                         }
                     }
                 }
-                .chartPlotStyle { $0.background(Color.clear) }
+                .chartPlot()
                 .transaction { $0.animation = nil }
                 .frame(height: ctx.plotH)
                 .hoverCatcher { pt, proxy, geo in

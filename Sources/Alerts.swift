@@ -241,6 +241,32 @@ final class UsageAlerts {
     // that composes into a sentence.
     private func noun(_ name: String) -> String { name == "This week" ? "weekly" : name.lowercased() }
 
+    /// Announce a new version. Its own category, so the buttons say what they do here ("What's
+    /// new", "Install now") rather than borrowing the usage alert's Snooze/Open.
+    ///
+    /// Not routed through the usage-alert dedup window: that is keyed on the title with a ten
+    /// minute memory, which is the wrong shape entirely for "tell them about version X once". The
+    /// caller owns that, with a stored version stamp, so a notification survives a restart without
+    /// being repeated.
+    ///
+    /// Returns whether it actually posted. The caller stamps its once-per-version marker off that
+    /// answer: stamping regardless meant an update found during quiet hours was recorded as
+    /// announced and then never mentioned to anyone.
+    @discardableResult
+    func postUpdateAvailable(version: String, summary: String, settings: AppSettings, now: Date = Date()) -> Bool {
+        // Respects quiet hours like every other notification: an update is never urgent enough to
+        // wake someone. It is not lost, it simply waits for the next check outside quiet hours.
+        guard !quietNow(settings, now) else { return false }
+        let c = UNMutableNotificationContent()
+        c.title = "Burndown \(version) is available"
+        c.body = summary.isEmpty ? "Open Burndown to see what changed." : summary
+        c.categoryIdentifier = UsageAlerts.updateCategory
+        c.sound = nil
+        UNUserNotificationCenter.current().add(
+            UNNotificationRequest(identifier: "burndown-update-\(version)", content: c, trigger: nil))
+        return true
+    }
+
     private func post(_ title: String, _ body: String, _ sound: Bool, force: Bool = false) {
         let now = Date()
         if !force {
@@ -264,4 +290,8 @@ final class UsageAlerts {
     static let category = "BURNDOWN_ALERT"
     static let actionSnooze = "BURNDOWN_SNOOZE"
     static let actionOpen = "BURNDOWN_OPEN"
+    // Updates get their own category so their buttons can say what they actually do.
+    static let updateCategory = "BURNDOWN_UPDATE"
+    static let actionUpdateNotes = "BURNDOWN_UPDATE_NOTES"
+    static let actionUpdateInstall = "BURNDOWN_UPDATE_INSTALL"
 }

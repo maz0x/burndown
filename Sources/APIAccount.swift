@@ -9,19 +9,28 @@ import Foundation
 // path: if no Admin key is configured, nothing here runs.
 //
 // Requirements (surfaced to the user in the Account window):
-//  - An **Admin API key** (`sk-ant-admin01-...`), created at console.anthropic.com by an org
-//    owner. A regular `sk-ant-api...` key CANNOT read usage/cost.
-//  - The Admin API is unavailable for INDIVIDUAL accounts; the key's org must be a Console org.
+//  - An **Admin API key** (`sk-ant-admin01-...`), created at platform.claude.com under Settings,
+//    Admin keys. A regular `sk-ant-api...` key CANNOT read usage/cost (403 permission_error),
+//    and neither can an Organization-scoped personal key on an Individual Org.
+//  - Anthropic serves these reports only to Console ORGANIZATIONS. A one-person "Individual Org"
+//    has no Admin keys page at all; Settings, Organization in the Console offers "Convert to team",
+//    after which the page appears and cost_report works (verified against a live account 2026-11-04).
+//  - cost_report never returns the current UTC day: the last bucket is always yesterday, and a
+//    starting_at of today is a 400 "Invalid date range". Figures are therefore "through the last
+//    complete day", never "today".
 // Docs: platform.claude.com/docs/en/manage-claude/usage-cost-api
 
 /// Live snapshot of the developer API account's spend, in USD.
 struct APISpend: Equatable {
     var configured = false     // an Admin key is saved
     var monthToDate = 0.0      // USD, current calendar month (UTC) to now
-    var today = 0.0            // USD, today (UTC)
+    var lastDay = 0.0          // USD on the most recent day the report covers (normally yesterday, UTC)
+    var lastDayIsToday = false // true only if the report ever includes the current UTC day
+    /// Label for the `lastDay` figure: "today" or "yesterday".
+    var lastDayLabel: String { lastDayIsToday ? "today" : "yesterday" }
     var fetchedAt: Date? = nil
     var error: String? = nil   // human-readable failure (bad key, no org, http error)
-    var daily: [Double] = []   // USD per day, oldest -> newest, this calendar month (C2 sparkline + average)
+    var daily: [Double] = []   // USD per day, oldest -> newest, this calendar month through the last complete day (sparkline + average)
     /// Trailing daily average over the days we have (this month to date).
     var dailyAvg: Double { daily.isEmpty ? 0 : daily.reduce(0, +) / Double(daily.count) }
 }
@@ -73,6 +82,24 @@ enum APIAccount {
         return (month, today, byDay)
     }
 
+    /// cost_report rejects a `starting_at` of the current UTC day (400 "Invalid date range"), so on
+    /// the first of a month the query starts at yesterday and `foldCost`'s caller drops anything
+    /// before `monthStart`. Pure, headless-testable.
+    static func queryStart(monthStart: Date, todayStart: Date) -> Date {
+        monthStart < todayStart ? monthStart : todayStart.addingTimeInterval(-86_400)
+    }
+
+    /// Fold the per-day cents into the sparkline series and the "last day" figure. The report never
+    /// includes the current UTC day in practice, so `lastDayIsToday` is false unless a bucket for
+    /// `todayStart` actually arrived. Pure, headless-testable.
+    static func deriveDaily(_ dayCents: [Date: Double], monthStart: Date, todayStart: Date)
+        -> (daily: [Double], lastDayCents: Double, lastDayIsToday: Bool) {
+        let days = dayCents.keys.filter { $0 >= monthStart }.sorted()
+        let daily = days.map { dayCents[$0]! }
+        guard let last = days.last else { return ([], 0, false) }
+        return (daily, dayCents[last]!, last >= todayStart)
+    }
+
     /// Fetch month-to-date + today USD spend from the Admin Cost Report API. Synchronous;
     /// call OFF the main thread. Handles pagination. Never throws; failures land in `.error`.
     // async (was a per-page DispatchSemaphore.wait): each page request suspends instead of
@@ -80,7 +107,7 @@ enum APIAccount {
     static func fetchSpend(adminKey: String) async -> APISpend {
         var out = APISpend(configured: true)
         guard looksLikeAdminKey(adminKey) else {
-            out.error = "That is not an Admin key. It must start with sk-ant-admin (create one at console.anthropic.com, Settings, Admin keys)."
+            out.error = "That is a regular API key. Spend needs an Admin key (sk-ant-admin01…), created at platform.claude.com under Settings, Admin keys. No Admin keys page there means an Individual Org: convert it under Settings, Organization first."
             return out
         }
         var utc = Calendar(identifier: .gregorian); utc.timeZone = TimeZone(identifier: "UTC")!
@@ -91,11 +118,11 @@ enum APIAccount {
         }
         let todayStart = utc.startOfDay(for: now)
 
-        var page: String? = nil, monthCents = 0.0, todayCents = 0.0, guardN = 0
+        var page: String? = nil, guardN = 0
         var dayCents: [Date: Double] = [:]
         repeat {
             var comp = URLComponents(string: "https://api.anthropic.com/v1/organizations/cost_report")!
-            var items = [URLQueryItem(name: "starting_at", value: iso.string(from: monthStart)),
+            var items = [URLQueryItem(name: "starting_at", value: iso.string(from: Self.queryStart(monthStart: monthStart, todayStart: todayStart))),
                          URLQueryItem(name: "ending_at", value: iso.string(from: now)),
                          URLQueryItem(name: "bucket_width", value: "1d"),
                          URLQueryItem(name: "limit", value: "31")]
@@ -116,16 +143,17 @@ enum APIAccount {
                 out.error = Self.errorText(code: code, body: body)
                 return out
             }
-            let (m, t, byDay) = foldCost(o["data"] as? [[String: Any]] ?? [], iso: iso, todayStart: todayStart)
-            monthCents += m; todayCents += t
-            for (d, c) in byDay { dayCents[d, default: 0] += c }
+            let (_, _, byDay) = foldCost(o["data"] as? [[String: Any]] ?? [], iso: iso, todayStart: todayStart)
+            for (d, c) in byDay where d >= monthStart { dayCents[d, default: 0] += c }
             page = (o["has_more"] as? Bool == true) ? (o["next_page"] as? String) : nil
             guardN += 1
         } while page != nil && guardN < 12
 
-        out.monthToDate = monthCents / 100.0
-        out.today = todayCents / 100.0
-        out.daily = dayCents.keys.sorted().map { dayCents[$0]! / 100.0 }   // oldest -> newest
+        let d = Self.deriveDaily(dayCents, monthStart: monthStart, todayStart: todayStart)
+        out.monthToDate = d.daily.reduce(0, +) / 100.0
+        out.lastDay = d.lastDayCents / 100.0
+        out.lastDayIsToday = d.lastDayIsToday
+        out.daily = d.daily.map { $0 / 100.0 }   // oldest -> newest
         out.fetchedAt = Date()
         out.error = nil
         return out
@@ -135,8 +163,8 @@ enum APIAccount {
         let msg = body.flatMap { try? JSONSerialization.jsonObject(with: $0) as? [String: Any] }
             .flatMap { ($0["error"] as? [String: Any])?["message"] as? String }
         switch code {
-        case 401: return "Key rejected. Make sure it is a valid Admin key (sk-ant-admin) for your organization."
-        case 403: return msg ?? "Not permitted. The Admin API is unavailable for individual accounts; it needs a Console organization."
+        case 401: return "Key rejected. Make sure it is a valid Admin key (sk-ant-admin01…) for your organization, created at platform.claude.com under Settings, Admin keys."
+        case 403: return "Not permitted. The key was accepted but cannot read spend reports. Check that it is an Admin key for this organization and that your role is admin or owner. Anthropic serves these reports only to Console organizations, so an Individual Org must first choose Convert to team under Settings, Organization."
         case 404: return "Endpoint not found. Your account may not have the Usage and Cost API enabled."
         case 429: return "Rate limited by Anthropic. Try again in a minute."
         case 0:   return "Could not reach api.anthropic.com (offline or blocked)."

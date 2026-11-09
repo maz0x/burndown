@@ -64,6 +64,12 @@ struct InsightsView: View {
     /// captured from a real window (it would expose the signed-in email, projects and chat
     /// titles), so the preview path draws its own switch instead.
     private let isPreview: Bool
+    /// QA (CUB_QA_INSIGHTS_HOVER=1, preview path only): pin the hover onto the FIRST row of both
+    /// chat lists. The rename control is reserved on every row and painted only on the hovered
+    /// one, and an offscreen render has no pointer, so without this the affordance can never be
+    /// photographed at all: it landed in both surfaces and was never once seen.
+    private static let qaHoverFirst = ProcessInfo.processInfo.environment["CUB_QA_INSIGHTS_HOVER"] != nil
+    private var forceHover: Bool { isPreview && Self.qaHoverFirst }
 
     init(engine: UsageEngine, settings: AppSettings,
          preview: (records: [UsageRecord], sessions: [SessionUsage])? = nil) {
@@ -77,6 +83,9 @@ struct InsightsView: View {
             _allRecords = State(initialValue: preview.records)
             _allSessions = State(initialValue: preview.sessions)
             _scanned = State(initialValue: true)
+            // The per-project chat rows live behind the Home folder row's disclosure, so the
+            // second rename surface is invisible until it is open.
+            if Self.qaHoverFirst { _homeOpen = State(initialValue: true) }
         }
     }
     @Environment(\.colorScheme) private var scheme
@@ -107,6 +116,22 @@ struct InsightsView: View {
     /// in one row, so it opens into the conversations underneath.
     @State private var homeOpen = false
     @State private var exportToast: String? = nil        // save confirmation, self-dismissing
+    // Renaming, wired the same way the card's TOP CHATS is (ChartViews2's TopChatRow): the RAW
+    // title is the key, never the displayed one, because the alias is what replaced the displayed
+    // one. Insights could only ever READ aliases, so a name fixed here had to be fixed in the card
+    // instead, and the reader looking at a wrong title in Insights was told to go somewhere else.
+    //
+    // Two independent slots, one per surface, so the same conversation appearing in both lists
+    // cannot end up with two live fields fighting over one focus flag.
+    @State private var renamingProjectChat: String? = nil
+    @State private var renamingTopChat: String? = nil
+    @State private var renameText = ""
+    /// Which row the pointer is over, per surface. The rename control's slot is RESERVED on every
+    /// row and only painted on the hovered one, so no row reflows under the pointer.
+    @State private var hoverProjectChat: String? = nil
+    @State private var hoverTopChat: String? = nil
+    @FocusState private var projectFieldFocused: Bool
+    @FocusState private var topFieldFocused: Bool
 
     /// A clock that moves once a minute.
     ///
@@ -194,7 +219,13 @@ struct InsightsView: View {
         let p = Palette.of(scheme)
         gInsightsTextScale = CGFloat(max(0.85, min(1.4, settings.insightsTextScale)))
         return Group {
-            if Self.noScroll { stack(p) } else { ScrollView { stack(p) } }
+            // `isPreview` counts as no-scroll on its own. The preview path IS the offscreen
+            // renderer, and CUB_SNAP_INSIGHTS used to depend on the caller ALSO remembering
+            // CUB_NOSCROLL: without it the shot came back as an empty canvas carrying nothing but
+            // the A- / A+ control, because the overlay is outside the ScrollView and everything
+            // real is inside it. A hook that photographs a blank page unless a second variable is
+            // set is a hook that will photograph a blank page.
+            if Self.noScroll || isPreview { stack(p) } else { ScrollView { stack(p) } }
         }
         // One dial for the whole window's type. The numbers here are read, not glanced at, and
         // the defaults were sized for a 420pt column. The popover has its own zoom; these are
@@ -428,9 +459,9 @@ struct InsightsView: View {
     private func attribution(_ p: Palette) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             sectionTitle("Current session", p,
-                         info: "The five-hour window Claude is measuring you against right now, broken down by model. It starts at your first message after a quiet spell and it is the limit you are most likely to hit in a working day.")
+                         info: "The current five-hour block of work, read from the logs on this Mac and broken down by model. It starts at your first message after a quiet spell. On Pro and Max this is the window the session limit is measured against; on Ultra, which has no session limit, it is simply the block you are working in now.")
             if blockRecs.isEmpty {
-                Text("No active 5-hour block right now.").font(.callout).foregroundStyle(p.sub)
+                Text("No active block of work right now.").font(.callout).foregroundStyle(p.sub)
             } else {
                 Text("By model").font(.caption).foregroundStyle(p.sub)
                 rollupBars(rollupByModelFamily(blockRecs), p)
@@ -527,25 +558,58 @@ struct InsightsView: View {
             Text("No conversations in this window.").font(.caption).foregroundStyle(p.faint)
                 .padding(.leading, indent)
         } else {
-            ForEach(rows, id: \.id) { s in
+            ForEach(Array(rows.enumerated()), id: \.element.id) { i, s in
+                let shown = chatNames.display(s.title)
+                let editing = renamingProjectChat == s.title
+                let hovered = hoverProjectChat == s.title || (forceHover && i == 0)
                 HStack(spacing: 8) {
-                    Text(ChatNames.shared.display(s.title)).font(.system(size: ts(11.5))).foregroundStyle(p.ink)
-                        .frame(width: 110 - indent, alignment: .leading).lineLimit(1).truncationMode(.middle)
-                    GeometryReader { g in
-                        ZStack(alignment: .leading) {
-                            Capsule().fill(p.track)
-                            Capsule().fill(p.weekly.opacity(0.8))
-                                .frame(width: max(2, g.size.width * CGFloat(Double(s.tokens) / Double(maxT))))
-                        }
-                    }.frame(height: 8)
+                    if editing {
+                        // The field takes the name column AND the bar's space. The name column
+                        // alone is under a hundred points, which is not enough of a title to edit.
+                        TextField("", text: $renameText,
+                                  onCommit: { chatNames.setAlias(renameText, for: s.title); renamingProjectChat = nil })
+                            .textFieldStyle(.plain).font(.system(size: ts(11.5))).foregroundStyle(p.ink)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .focused($projectFieldFocused)
+                            .onAppear { projectFieldFocused = true }
+                            .onExitCommand { renamingProjectChat = nil }
+                            .onChange(of: projectFieldFocused) { on in
+                                if !on, renamingProjectChat == s.title { renamingProjectChat = nil }
+                            }
+                    } else {
+                        Text(shown).font(.system(size: ts(11.5))).foregroundStyle(p.ink)
+                            .frame(width: 110 - indent, alignment: .leading).lineLimit(1).truncationMode(.middle)
+                        GeometryReader { g in
+                            ZStack(alignment: .leading) {
+                                Capsule().fill(p.track)
+                                Capsule().fill(p.weekly.opacity(0.8))
+                                    .frame(width: max(2, g.size.width * CGFloat(Double(s.tokens) / Double(maxT))))
+                            }
+                        }.frame(height: 8)
+                    }
                     Text(fmtTok(s.tokens)).font(.system(size: ts(11), design: .monospaced))
                         .foregroundStyle(p.sub).frame(width: ts(78), alignment: .trailing)
                     Text(usd(s.cost)).font(.system(size: ts(11), design: .monospaced))
                         .foregroundStyle(p.sub).frame(width: ts(78), alignment: .trailing)
+                    // The row's own trailing slot, not a squeeze on the name column: at this width
+                    // the name has none to give. Reserved on every row, painted on the hovered one.
+                    RenameButton(p: p, action: { renameText = shown; renamingProjectChat = s.title })
+                        .opacity(hovered ? 1 : 0)
+                        .allowsHitTesting(hovered && !isGeneratedTitle(shown))
                 }
                 .padding(.leading, indent)
+                .contentShape(Rectangle())
+                .onHover { inside in
+                    if inside { hoverProjectChat = s.title }
+                    else if hoverProjectChat == s.title { hoverProjectChat = nil }
+                }
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel("\(ChatNames.shared.display(s.title)): \(fmtTok(s.tokens)) tokens, \(usd(s.cost))")
+                .accessibilityLabel("\(shown): \(fmtTok(s.tokens)) tokens, \(usd(s.cost))")
+                .accessibilityActions {
+                    if !isGeneratedTitle(shown) {
+                        Button("Rename this chat") { renameText = shown; renamingProjectChat = s.title }
+                    }
+                }
             }
         }
     }
@@ -567,10 +631,34 @@ struct InsightsView: View {
             if !scanned { Text("Reading your full history\u{2026}").font(.callout).foregroundStyle(p.sub) }
             else if rows.isEmpty { Text("No chats in this window.").font(.callout).foregroundStyle(p.sub) }
             else {
-                ForEach(Array(rows.enumerated()), id: \.offset) { _, r in
+                ForEach(Array(rows.enumerated()), id: \.offset) { i, r in
+                    let shown = chatNames.display(r.title)
+                    let editing = renamingTopChat == r.title
+                    let hovered = hoverTopChat == r.title || (forceHover && i == 0)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(chatNames.display(r.title)).font(.system(size: ts(12.5), weight: .medium)).foregroundStyle(p.ink)
-                            .lineLimit(1).truncationMode(.tail)
+                        HStack(spacing: ts(6)) {
+                            if editing {
+                                TextField("", text: $renameText,
+                                          onCommit: { chatNames.setAlias(renameText, for: r.title); renamingTopChat = nil })
+                                    .textFieldStyle(.plain)
+                                    .font(.system(size: ts(12.5), weight: .medium)).foregroundStyle(p.ink)
+                                    .focused($topFieldFocused)
+                                    .onAppear { topFieldFocused = true }
+                                    .onExitCommand { renamingTopChat = nil }
+                                    .onChange(of: topFieldFocused) { on in
+                                        if !on, renamingTopChat == r.title { renamingTopChat = nil }
+                                    }
+                            } else {
+                                Text(shown).font(.system(size: ts(12.5), weight: .medium)).foregroundStyle(p.ink)
+                                    .lineLimit(1).truncationMode(.tail)
+                                // Right-aligned in the name line's own trailing slot, reserved so
+                                // the title never reflows under the pointer.
+                                Spacer(minLength: ts(6))
+                                RenameButton(p: p, action: { renameText = shown; renamingTopChat = r.title })
+                                    .opacity(hovered ? 1 : 0)
+                                    .allowsHitTesting(hovered && !isGeneratedTitle(shown))
+                            }
+                        }
                         HStack(spacing: 8) {
                             Text("\(r.project) \u{00B7} \(shortDate(r.date))"
                                  + (r.parts > 1 ? " \u{00B7} \(r.parts) logs" : ""))
@@ -587,8 +675,18 @@ struct InsightsView: View {
                             Text(usd(r.cost)).font(.system(size: ts(11))).foregroundStyle(p.sub).frame(width: ts(52), alignment: .trailing)
                         }
                     }
+                    .contentShape(Rectangle())
+                    .onHover { inside in
+                        if inside { hoverTopChat = r.title }
+                        else if hoverTopChat == r.title { hoverTopChat = nil }
+                    }
                     .accessibilityElement(children: .ignore)
-                    .accessibilityLabel("\(chatNames.display(r.title)): \(fmtTok(r.tokens)) tokens")
+                    .accessibilityLabel("\(shown): \(fmtTok(r.tokens)) tokens")
+                    .accessibilityActions {
+                        if !isGeneratedTitle(shown) {
+                            Button("Rename this chat") { renameText = shown; renamingTopChat = r.title }
+                        }
+                    }
                 }
                 Text("Each row is one conversation, named by its own title. Claude Code starts a new log file when a chat is resumed or compacted, so a long conversation can span several; those are added together here and the count is shown.")
                     .font(.caption2).foregroundStyle(p.faint).fixedSize(horizontal: false, vertical: true)
@@ -668,7 +766,7 @@ struct InsightsView: View {
                         }
                     }
                 }
-                .chartPlotStyle { $0.background(Color.clear) }
+                .chartPlot()
                 .frame(height: 110)
                 .hoverCatcher { pt, proxy, geo in
                     guard let pt, let key: String = proxy.value(atX: pt.x - geo[proxy.plotAreaFrame].minX)

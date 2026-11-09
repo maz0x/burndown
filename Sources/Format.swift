@@ -48,14 +48,24 @@ func percentile(_ values: [Double], _ q: Double) -> Double {
     return s[max(0, min(s.count - 1, Int((Double(s.count - 1) * q).rounded())))]
 }
 
-// A stable "nice" axis top from a ladder (NOT continuous autoscale) so it stays readable
-// and rarely jumps; floored at 60k so a quiet stretch doesn't over-zoom.
+// A stable "nice" axis top (NOT continuous autoscale) so it stays readable and rarely jumps;
+// floored at 60k so a quiet stretch doesn't over-zoom.
+//
+// The ladder is GENERATED, not listed. A hand-written list stopped at 1.8M, so a genuine 2.2M
+// peak had nowhere to go and drew flat against a 600k top while the hover callout read the true
+// number: the chart contradicted itself. Nice mantissas times a power of ten give the same small
+// set of readable tops at every magnitude, with no last rung to fall off.
 func burnCeiling(_ ref: Double) -> Double {
-    let ladder: [Double] = [60_000, 80_000, 100_000, 120_000, 160_000, 200_000, 240_000, 280_000, 320_000,
-                            400_000, 480_000, 600_000, 800_000, 1_000_000, 1_400_000, 1_800_000]
     // ~25% headroom so the tallest peak sits clearly BELOW the top, with empty space above it. That
     // way a peak reads as the real maximum, not a line clipped flat against the ceiling.
-    return ladder.first { $0 >= ref * 1.25 } ?? ladder.last!
+    let target = max(60_000, ref * 1.25)
+    let mantissas: [Double] = [1, 1.2, 1.6, 2, 2.4, 3, 4, 5, 6, 8]
+    var decade = 10_000.0   // 60k, the floor, lives in this decade
+    while decade < 1e12 {
+        for m in mantissas where m * decade >= target { return m * decade }
+        decade *= 10
+    }
+    return target
 }
 
 // "3d 4h" / "4h 30m" / "12m" - time remaining until a window resets. `now` is injectable for tests.

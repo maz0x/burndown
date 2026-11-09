@@ -100,5 +100,8 @@ do {
     expect(eq(same, maxBoost), "the limit is a constant for the whole gesture")
 }
 
+// Both hosts are panels that pin their top-left corner, so a width delta is 1:1 for either of them
+// and there is no per-host gain left to test.
+
 if failures > 0 { print("\(failures) FAILURES"); exit(1) }
 print("ALL PASS")

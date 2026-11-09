@@ -5,6 +5,8 @@
 ### See the limit coming.
 
 <a href="https://github.com/maz0x/burndown/releases/latest"><img src="https://img.shields.io/github/v/release/maz0x/burndown?label=latest&color=c96442" alt="Latest release"></a>
+<a href="https://github.com/maz0x/burndown/releases"><img src="https://img.shields.io/github/downloads/maz0x/burndown/total?label=downloads&color=8a8a8a" alt="Total downloads"></a>
+<a href="https://github.com/maz0x/burndown/stargazers"><img src="https://img.shields.io/github/stars/maz0x/burndown?label=stars&color=8a8a8a" alt="GitHub stars"></a>
 <img src="https://img.shields.io/badge/macOS-13%2B-8a8a8a" alt="macOS 13+">
 <img src="https://img.shields.io/badge/license-Apache%202.0-8a8a8a" alt="Apache 2.0 license">
 <img src="https://img.shields.io/badge/your%20data-stays%20on%20your%20Mac-4a7c59" alt="Your data stays on your Mac">
@@ -16,8 +18,8 @@ reached, come back in three hours. Or you leave an agent running over
 lunch and return to find it spent half your week.
 
 **Burndown is a free Mac menu bar app that sees the limit coming.** It
-watches your Claude plan's 5-hour session, weekly allowance and per-model
-caps, and tells you before you hit one, not after.
+watches your Claude plan's session and weekly allowances and per-model
+caps (weekly only on Ultra), and tells you before you hit one, not after.
 
 - **How much is left**, at a glance in the menu bar, with time to reset.
 - **Which chat is spending it**, by conversation name and by project.
@@ -57,8 +59,10 @@ to help other Claude users find it.
 
 ## The whole picture, one click away
 
-Click the menu bar and the card opens: your 5-hour session and your week
-as big serif percentages with time to reset, every per-model weekly cap,
+Click the menu bar and the card opens: your 5-hour session (on plans that
+have one) and your week as big serif percentages with time to reset, every
+per-model weekly cap, how the week splits between Claude Code, chats and
+Cowork,
 live tokens per minute, and what the same work would have cost at API
 prices. A "chats burning now" list shows each conversation using tokens
 at this moment, busiest first, with its rate over the last minute;
@@ -75,11 +79,15 @@ The Account window rounds it out: your plan, both reset clocks, every
 model with its own cap shown as "% left", and a by-model attribution of
 where the week actually went. One click re-reads your plan, so an upgrade
 shows up immediately. There is also an optional Developer API section:
-give it an Admin key (`sk-ant-admin...`, created at console.anthropic.com)
-and Burndown tracks a separate pay-as-you-go API account alongside the
-subscription, month-to-date and today's spend, as one quiet line at the
-bottom of the card. It is additive only, never touches the subscription
-gauges, and the key stays on this Mac.
+give it an Admin key (`sk-ant-admin01...`, created at platform.claude.com
+under Settings, Admin keys) and Burndown tracks a separate pay-as-you-go
+API account alongside the subscription, month-to-date and the last
+complete day, as one quiet line at the bottom of the card. Anthropic only
+serves those reports to Console organizations: if Settings has no Admin
+keys page, the account is an Individual Org, and Settings, Organization
+offers a Convert to team option that unlocks it. The mode is additive
+only, never touches the subscription gauges, and the key stays on this
+Mac.
 
 <p align="center">
   <img src="site/screenshots/account.png" width="340" alt="The Account window: plan, session and weekly resets, and per-model caps with percent left">
@@ -301,7 +309,8 @@ of the accent, so the hue itself says how close you are to the cap.
   the edge, lockable in place, scalable.
 - **The Ember Line** is a quiet meter along a screen edge, on every
   display if you want: the bright span is what remains of your 5-hour
-  session, and the glowing tip is the burn front, breathing faster as you
+  session (of your week, on an Ultra plan with no session limit), and the
+  glowing tip is the burn front, breathing faster as you
   burn hotter and turning red near the limit. Eight styles, from the full
   Ember Line to a thin filament or a single minimal node, with thickness,
   length, glow, sparks, and a hover readout.
@@ -416,7 +425,9 @@ GET https://api.anthropic.com/api/oauth/usage
   Claude Code already keeps on this Mac, only with your explicit consent,
   and only while its own access token is still valid; Burndown never
   spends the CLI's refresh token, so it cannot invalidate your Claude
-  Code login.
+  Code login. Claude Code 2.1.3xx and later leave that Keychain entry's
+  token fields empty (the real tokens live elsewhere), so on a current
+  Claude Code this option says so and points you at the direct sign-in.
 - The endpoint is undocumented and community-discovered; Anthropic could
   change or restrict it at any time. If that happens the app degrades to
   estimate mode and keeps working. In February 2026 Anthropic asked
@@ -571,10 +582,14 @@ honest, sourced picture is in [docs/TOS_NOTES.md](docs/TOS_NOTES.md); if
 the endpoint ever closes, the app degrades to estimate mode and keeps
 working.
 
-**Does it work on Pro? Max?**
+**Does it work on Pro? Max? Ultra?**
 Burndown does not hardcode plan shapes. It shows whatever limits your
 account reports, including any per-model caps, and the Account window
-has a refresh that picks up a plan change on the spot.
+has a refresh that picks up a plan change on the spot. Pro and Max have
+a 5-hour session and a weekly limit, so the card shows both. A verified
+Ultra account (Max 20x before October 30, 2026) has no session limit, so
+the card shows no session gauge: the week is the big number, the menu
+bar shows the weekly percent, and a line on the card says why.
 
 **Intel Macs?**
 Yes. Releases are universal binaries (Apple Silicon and Intel), macOS 13
@@ -607,6 +622,24 @@ about it, or say what you would change in
   `CUB_SNAP_ACCOUNT`, `CUB_SNAP_WELCOME`, each with optional `CUB_DARK=1`.
   These are internal QA hooks for regenerating the screenshots, not part of
   normal use; the ones that matter to users all start with `BURNDOWN_`.
+
+## How it compares
+
+There are good tools in this space and Burndown does not replace all of
+them. A fair map, so you pick the right one rather than the loudest one:
+
+| If you want | Reach for |
+|---|---|
+| Reports in a terminal, across many coding agents | [ccusage](https://github.com/ccusage/ccusage) is excellent and covers far more than Claude. [Claude-Code-Usage-Monitor](https://github.com/Maciek-roboblog/Claude-Code-Usage-Monitor) adds learned limit prediction. |
+| A signed, notarized menu bar app with server-truth gauges and a predicted cutoff time | [ccseva](https://github.com/Iamshankhadeep/ccseva) is the closest cousin: native Swift, signed, and it forecasts too. Differences that may matter: it is Apple Silicon only, macOS 14+, and its per-project view is cost estimates rather than limit attribution. |
+| A simple always-visible percentage, signed and localized | [Claude Usage Tracker](https://github.com/hamed-elfayome/Claude-Usage-Tracker) and [ClaudeUsageBar](https://github.com/Artzainnn/ClaudeUsageBar) do this well. If a plain meter is all you need, they are a fine choice. |
+| Other providers too: OpenAI, Gemini, xAI and friends | Burndown goes deepest on Claude today, and nothing else. [ClaudeBar](https://github.com/tddworks/ClaudeBar) tracks many providers in one pane. |
+| Depth: which chat is spending the limits, what happens next, and a UI you can shape | **Burndown.** Per-chat attribution by conversation name, two dozen charts with a preview gallery, forecasting and pacing, adaptive runaway detection, budgets, exports, a JSON contract, twenty-plus themes and real glass. Free, open source, entirely local. |
+
+One honest concession: several of these alternatives are Developer ID
+signed and notarized, and Burndown is not yet, so macOS asks once on first
+open. That is a real difference, and it is on the roadmap rather than
+hidden here.
 
 ## Prior art
 

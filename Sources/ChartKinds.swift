@@ -148,6 +148,29 @@ enum ChartKind: String, CaseIterable, Identifiable {
         default: return false
         }
     }
+    /// The whole limit window a burndown draws, for the charts that have one. It is a fixed fact
+    /// about the limit, not a preference, so it can only be TRIMMED shorter for a closer look at
+    /// the recent part of the curve, never followed to the global rolling window.
+    /// Same two spans ChartBodyView hands BurndownChart; both are the 5-hour session and 7-day
+    /// week the whole app is built on (see FIVE_HOURS / WEEK in UsageEngine).
+    var pinnedWindow: TimeInterval? {
+        switch self {
+        case .sessionBurndown: return 5 * 3600
+        case .weekBurndown:    return 7 * 86400
+        default:               return nil
+        }
+    }
+    /// The label the time chip shows when a burndown is drawing its whole window.
+    var pinnedWindowLabel: String? {
+        switch self {
+        case .sessionBurndown: return "5h"
+        case .weekBurndown:    return "7d"
+        default:               return nil
+        }
+    }
+    /// Does this chart have a time axis at all, i.e. does a per-chart time chip mean anything?
+    /// The pace gauge and the model caps are current standings with no axis, so they get none.
+    var usesTimeChip: Bool { usesWindow || usesDays || pinnedWindow != nil }
 }
 
 // MARK: - Shared plumbing
@@ -181,6 +204,21 @@ func plotValue<T: Plottable>(_ proxy: ChartProxy, _ geo: GeometryProxy, _ pt: CG
 /// the scrub behaviour is identical everywhere.
 struct HoverCatcher: ViewModifier {
     let onHover: (CGPoint?, ChartProxy, GeometryProxy) -> Void
+
+    /// QA (CUB_QA_HOVER=<fraction>): drive one hover at that fraction across the PLOT, so a state
+    /// that exists only under the pointer - the hover callout, and whether the plot's clip eats it -
+    /// can be photographed at all.
+    ///
+    /// It has to be here rather than at the window, because nothing outside the view can produce a
+    /// hover: a synthesized mouse-moved posted with `sendEvent` never reaches onContinuousHover
+    /// (AppKit raises tracking-area callbacks from its own event loop, not from a hand-delivered
+    /// event, verified by capture), and a CGEvent at the screen position needs the Accessibility
+    /// permission a headless runner does not have and is dropped in silence without it.
+    ///
+    /// Read once, and it goes through the chart's OWN hover closure, so the state it produces is
+    /// the state a pointer produces and not a second path that only looks like it.
+    private static let forced: Double? = ProcessInfo.processInfo.environment["CUB_QA_HOVER"].flatMap(Double.init)
+
     func body(content: Content) -> some View {
         content.chartOverlay { proxy in
             GeometryReader { geo in
@@ -191,7 +229,30 @@ struct HoverCatcher: ViewModifier {
                         case .ended:          onHover(nil, proxy, geo)
                         }
                     }
+                    .forcedHover(Self.forced, proxy, geo, onHover)
             }
+        }
+    }
+}
+
+private extension View {
+    /// Drive the forced QA hover, or nothing at all when the hook is off.
+    ///
+    /// On a TIMER rather than once on appear, and this is not belt and braces: a chart's hover
+    /// closure captures the sample array the body was built with, and the first body is built
+    /// before the scan has returned anything, so a single early call resolves against an empty
+    /// series and selects nothing. Re-arming per body evaluation always uses the current closure.
+    @ViewBuilder
+    func forcedHover(_ fraction: Double?, _ proxy: ChartProxy, _ geo: GeometryProxy,
+                     _ onHover: @escaping (CGPoint?, ChartProxy, GeometryProxy) -> Void) -> some View {
+        if let fraction {
+            onReceive(Timer.publish(every: 0.4, on: .main, in: .common).autoconnect()) { _ in
+                let plot = geo[proxy.plotAreaFrame]
+                guard plot.width > 1 else { return }
+                onHover(CGPoint(x: plot.minX + plot.width * fraction, y: plot.midY), proxy, geo)
+            }
+        } else {
+            self
         }
     }
 }

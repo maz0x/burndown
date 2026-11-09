@@ -51,7 +51,7 @@ struct WelcomeView: View {
             HStack { Spacer(); Text("Burndown").font(.system(size: 30, weight: .semibold, design: .serif)).foregroundStyle(p.ink); Spacer() }
             HStack { Spacer(); Text("See the limit coming.").font(.system(size: 12.5)).foregroundStyle(p.sub); Spacer() }
                 .padding(.top, 4).padding(.bottom, 22)
-            Text("Claude plans have limits: a 5-hour session and a weekly allowance. Hit one mid-task and you are stopped, sometimes for hours. Burndown is a small flame in your menu bar that burns hotter as you spend, so you always see it coming.")
+            Text("Claude plans have limits: a weekly allowance, and on most plans a 5-hour session too. Hit one mid-task and you are stopped, sometimes for hours. Burndown is a small flame in your menu bar that burns hotter as you spend, so you always see it coming.")
                 .font(.system(size: 12.5)).foregroundStyle(p.ink).lineSpacing(3)
                 .fixedSize(horizontal: false, vertical: true)
         }
@@ -118,7 +118,16 @@ struct WelcomeView: View {
                     engine.fetchLive(force: true) { ok in
                         borrowing = false
                         borrowed = ok
-                        if !ok { borrowError = "Could not read a Claude Code sign-in on this Mac." }
+                        if !ok {
+                            switch UsageEngine.lastBootstrapFailure {
+                            case .emptyToken:
+                                borrowError = "Claude Code no longer stores its sign-in where Burndown can read it. Use Sign in with Claude instead."
+                            case .expired:
+                                borrowError = "Claude Code's sign-in has expired. Open Claude Code to refresh it, or use Sign in with Claude."
+                            case .noCredential, nil:
+                                borrowError = "Could not read a Claude Code sign-in on this Mac. Use Sign in with Claude instead."
+                            }
+                        }
                     }
                 }
             }

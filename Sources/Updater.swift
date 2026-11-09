@@ -122,7 +122,9 @@ enum UpdateLogic {
 @MainActor
 final class Updater: ObservableObject {
     static let shared = Updater()
-    static let repo = "maz0x/burndown"
+    // QA (CUB_UPDATE_REPO=owner/name): point a staging test at a scratch repo, so a release flow can
+    // be rehearsed end to end without publishing to the real one. Unset in every shipped build.
+    static let repo = ProcessInfo.processInfo.environment["CUB_UPDATE_REPO"] ?? "maz0x/burndown"
 
     enum State: Equatable {
         case idle
@@ -236,12 +238,40 @@ final class Updater: ObservableObject {
         }.resume()
     }
 
-    /// Daily background check, if the user left automatic checking on.
-    func checkInBackgroundIfDue(enabled: Bool) {
-        guard enabled, !isDevBuild else { return }
+    /// Background check on the user's chosen cadence.
+    ///
+    /// The interval was a hardcoded 24 hours. Note that the timer driving this only ticks every 10
+    /// minutes, so the effective floor is 10 minutes whatever is chosen; every offered cadence is
+    /// far longer than that. `atLaunch` distinguishes the one-shot check a few seconds after start
+    /// from the recurring one, because "every launch" means exactly that and must not be blocked by
+    /// how recently the last check happened.
+    func checkInBackgroundIfDue(enabled: Bool, cadence: UpdateCadence = .daily, atLaunch: Bool = false) {
+        guard enabled, cadence.automatic, !isDevBuild else { return }
+        if cadence == .launch && !atLaunch { return }
         let last = (d.object(forKey: "lastUpdateCheck") as? Double).map { Date(timeIntervalSince1970: $0) }
-        if let last, Date().timeIntervalSince(last) < 24 * 3600 { return }
+        if let last, Date().timeIntervalSince(last) < cadence.interval { return }
         check(background: true)
+    }
+
+    /// The release currently on offer, if any. Lets the UI show its notes without re-fetching.
+    var availableRelease: UpdateRelease? {
+        if case .available(let r) = state { return r } else { return nil }
+    }
+
+    /// Install without a person present, for the "install it for me" setting.
+    ///
+    /// Deliberately refuses while chats are burning. The install ends in a forced quit and relaunch
+    /// (see `swap`), and taking the app away mid-flight to save someone a click is a worse deal than
+    /// waiting: the caller retries on its own schedule, so "not now" simply means later.
+    ///
+    /// Returns whether the install actually started. A refusal must not strand the release: the
+    /// caller falls through to the announce path, so the person is told about the version even
+    /// though nothing was installed for them.
+    @discardableResult
+    func installAutomatically(busy: Bool) -> Bool {
+        guard case .available = state, !isDevBuild, !busy else { return false }
+        downloadAndInstall()
+        return true
     }
 
     // MARK: Download + install

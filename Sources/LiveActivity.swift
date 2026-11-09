@@ -221,8 +221,11 @@ final class LiveActivity: ObservableObject {
     func seedForPreview(history: [Double], rate: Double, active: Bool) {
         self.history = history; self.rate = rate; self.active = active
         // Exercise the parallel-sessions rows with distinct chat titles (full-name presentation QA).
-        activeStreams = [("Rebuild the marketing site", "Fine Print Doctor", 9_400),
-                         ("Debug the sync worker", "Burndown", 3_200)]
+        // INVENTED names only. These render into published screenshots and into Demo Mode, which
+        // is what a stranger sees first, and the identity guard cannot read a string once it has
+        // become pixels. Two of these used to name the owner's own client projects.
+        activeStreams = [("Rebuild the marketing site", "example-site", 9_400),
+                         ("Debug the sync worker", "sync-worker", 3_200)]
         let now = Date()
         let src = history.isEmpty ? [0.0] : history
         func lerp(_ f: Double) -> Double {       // sample the pattern at 0…1
@@ -276,8 +279,10 @@ final class LiveActivity: ObservableObject {
         if hist.count > Self.HISTORY_LEN { hist.removeFirst(hist.count - Self.HISTORY_LEN) }
         history = hist
         pulse += 1
-        activeStreams = [("Rebuild the marketing site", "Fine Print Doctor", Int(rate * 0.6)),
-                         ("Debug the sync worker", "Burndown", Int(rate * 0.3)),
+        // Invented names, for the same reason as seedForPreview above: Demo Mode is shown to other
+        // people, and a real client's project name has no business in it.
+        activeStreams = [("Rebuild the marketing site", "example-site", Int(rate * 0.6)),
+                         ("Debug the sync worker", "sync-worker", Int(rate * 0.3)),
                          ("Draft the launch email", "Home folder", Int(rate * 0.1))]
         // Feed the burn chart a point every ~4 s (in memory only; persistence is demo-gated).
         if Date().timeIntervalSince(lastDemoBurn) > 4 { lastDemoBurn = Date(); recordBurn() }

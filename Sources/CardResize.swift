@@ -29,6 +29,12 @@ enum CardResize {
 
     /// Horizontal drag: the card's right edge tracks the cursor 1:1. `dx` is in DESIGN points
     /// (the caller divides the cursor delta by textScale, since the zoom multiplies on top).
+    ///
+    /// One rule for both hosts. Both the menu card and the floating card are panels pinned at
+    /// their top-left corner, so every added point lands on the right edge and the raw cursor
+    /// delta is already correct. (The menu card used to be an NSPopover, which held its horizontal
+    /// CENTRE still and split the growth between both edges, and needed the delta doubled to
+    /// compensate.)
     static func width(start: Double, dx: Double) -> Double { clampW(start + dx) }
 
     /// Vertical drag: `dy` (design points) is split across the `charts` visible plots, so the

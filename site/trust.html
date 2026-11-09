@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<title>Burndown trust page: what it reads, what it contacts, how to verify</title>
+<meta name="description" content="The complete inventory of what Burndown reads on your Mac, every network host it can contact in each mode, how update downloads are verified, and how to check all of it yourself from the source or with a network monitor.">
+<link rel="canonical" href="https://burndown-app.pages.dev/trust">
+<meta name="author" content="maz0x">
+
+<meta property="og:type" content="article">
+<meta property="og:url" content="https://burndown-app.pages.dev/trust">
+<meta property="og:title" content="Burndown trust page: what it reads, what it contacts, how to verify">
+<meta property="og:description" content="Every file Burndown reads, every host it can contact, and how to verify both yourself.">
+<meta property="og:image" content="https://burndown-app.pages.dev/social-preview.png">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://burndown-app.pages.dev/social-preview.png">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "Burndown trust page: what it reads, what it contacts, how to verify",
+  "description": "The complete inventory of what Burndown reads on your Mac, every network host it can contact, and how to verify both yourself.",
+  "url": "https://burndown-app.pages.dev/trust",
+  "author": {"@type": "Person", "name": "maz0x", "url": "https://github.com/maz0x"},
+  "about": {"@type": "SoftwareApplication", "name": "Burndown",
+            "operatingSystem": "macOS 13 or later", "applicationCategory": "DeveloperApplication"},
+  "isAccessibleForFree": true
+}
+</script>
+
+<style>
+  :root{
+    --bg:#F5F1EA; --card:#EEEAE3; --line:#DFD9CF;
+    --ink:#292521; --sub:#6E6459; --faint:#9A9084;
+    --clay:#C25A35; --clay-soft:#D97757;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{ --bg:#191715; --card:#221F1C; --line:#312C28;
+           --ink:#EFEAE3; --sub:#A79C90; --faint:#7C7268; --clay:#D97757; }
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:17px/1.7 -apple-system,BlinkMacSystemFont,"SF Pro Text",Inter,system-ui,sans-serif;
+       -webkit-font-smoothing:antialiased}
+  .wrap{max-width:820px;margin:0 auto;padding:0 24px}
+  h1,h2,h3{font-family:"New York","Iowan Old Style",Georgia,serif;font-weight:600;
+           letter-spacing:-0.01em;line-height:1.25}
+  h1{font-size:clamp(38px,6vw,54px);margin:0 0 10px}
+  h2{font-size:30px;margin:52px 0 14px;padding-top:14px;border-top:1px solid var(--line)}
+  h3{font-size:20px;margin:30px 0 8px}
+  p,li{margin:0 0 14px}
+  ul,ol{padding-left:24px}
+  a{color:var(--clay)}
+  a:hover{text-decoration:underline}
+  code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:14.5px;
+       background:var(--card);border:1px solid var(--line);border-radius:5px;padding:1px 6px}
+  pre{background:var(--card);border:1px solid var(--line);border-radius:10px;
+      padding:16px 18px;overflow-x:auto;font-size:14.5px;line-height:1.55}
+  pre code{background:none;border:none;padding:0}
+  nav{position:sticky;top:0;background:color-mix(in srgb,var(--bg) 92%,transparent);
+      backdrop-filter:saturate(180%) blur(12px);border-bottom:1px solid var(--line);z-index:9}
+  nav .wrap{display:flex;align-items:center;gap:20px;height:56px;font-size:15px;max-width:1000px}
+  nav b{font-family:"New York",Georgia,serif;font-size:19px;font-weight:600}
+  nav a{color:var(--sub);text-decoration:none}
+  nav .sp{margin-left:auto}
+  nav .dl{color:#fff;background:var(--clay);padding:7px 15px;border-radius:999px;font-weight:600}
+  header{padding:56px 0 6px}
+  .lede{color:var(--sub);font-size:18.5px;margin-bottom:0}
+  .note{background:var(--card);border-left:3px solid var(--clay);border-radius:0 10px 10px 0;
+        padding:14px 18px;margin:20px 0;font-size:16px;color:var(--sub)}
+  table{width:100%;border-collapse:collapse;margin:20px 0;font-size:15.5px}
+  th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{color:var(--faint);font-size:13.5px;text-transform:uppercase;letter-spacing:.05em}
+  footer{padding:50px 0 76px;margin-top:56px;border-top:1px solid var(--line);
+         color:var(--faint);font-size:14.5px;text-align:center}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <b><a href="/" style="color:inherit">Burndown</a></b>
+    <a href="/">Home</a>
+    <a href="/guide">Guide</a>
+    <a href="https://github.com/maz0x/burndown">Source</a>
+    <span class="sp"></span>
+    <a class="dl" href="https://github.com/maz0x/burndown/releases/latest">Download</a>
+  </div>
+</nav>
+
+<header>
+  <div class="wrap">
+    <h1>What Burndown reads, what it contacts, and how to check</h1>
+    <p class="lede">An app that watches your AI usage should expect suspicion, so this page is the
+    complete inventory: every file it reads, every host it can contact in each mode, how update
+    downloads are verified, and how to confirm all of it yourself rather than take my word.</p>
+  </div>
+</header>
+
+<div class="wrap">
+
+<h2 id="reads">Every file it reads</h2>
+<table>
+  <tr><th>Path</th><th>What it takes from it</th><th>When</th></tr>
+  <tr>
+    <td><code>~/.claude/projects/**/*.jsonl</code></td>
+    <td>Claude Code's session logs. Burndown extracts token counts, timestamps, model names, and
+    chat titles for the gauges, charts, and attribution. The logs also contain your conversation
+    text; Burndown stores none of it, and nothing extracted from these files ever leaves this
+    Mac in any mode.</td>
+    <td>Always (this is estimate mode and attribution)</td>
+  </tr>
+  <tr>
+    <td><code>~/.claude.json</code></td>
+    <td>Only the <code>oauthAccount</code> block: your plan tier for the plan label, and the
+    account email and organization name for display. Nothing else in the file is read.</td>
+    <td>Always, for the plan label</td>
+  </tr>
+  <tr>
+    <td><code>~/.claude/.credentials.json</code>, or Claude Code's Keychain item</td>
+    <td>Claude Code's own sign-in token, used only to call Anthropic's usage endpoint if you opt
+    in to live mode with the existing sign-in. When live mode is off, Burndown checks only that
+    the item exists; it never reads the secret.</td>
+    <td>Live mode only, opt-in</td>
+  </tr>
+</table>
+<p>Burndown's own files (settings, chart data, chat-title aliases) are written to its own config
+directory with mode 600 inside a mode 700 directory, private from the instant each file exists
+(<a href="https://github.com/maz0x/burndown/blob/main/Sources/PrivateFile.swift">Sources/PrivateFile.swift</a>).</p>
+
+<h2 id="network">Every host it can contact</h2>
+<table>
+  <tr><th>Mode</th><th>Hosts</th><th>What is sent</th></tr>
+  <tr>
+    <td><b>Estimate mode</b> (the default)</td>
+    <td>None. Zero network connections.</td>
+    <td>Nothing.</td>
+  </tr>
+  <tr>
+    <td><b>Live mode</b> (opt-in)</td>
+    <td><code>api.anthropic.com</code></td>
+    <td>Your own OAuth token, to read the same usage numbers behind claude.ai's usage page.
+    Nothing else is transmitted. The endpoint is undocumented and itself rate limited, so
+    during heavy bursts the live gauges can lag; Burndown labels stale or estimated values
+    instead of pretending.</td>
+  </tr>
+  <tr>
+    <td><b>Update check</b></td>
+    <td><code>api.github.com</code>, and <code>github.com</code> /
+    <code>*.githubusercontent.com</code> for the download itself</td>
+    <td>A standard HTTP request for the latest release, which necessarily reveals your IP
+    address and app version to GitHub, the same as any update check. You can set the cadence,
+    including Manual, in Settings. The allowlist in
+    <a href="https://github.com/maz0x/burndown/blob/main/Sources/Updater.swift">Sources/Updater.swift</a>
+    refuses every other domain.</td>
+  </tr>
+</table>
+<p>There is no telemetry, no analytics SDK, no crash reporter, and no server of mine anywhere in
+the app. So the claim is not "nothing ever leaves your machine"; it is narrower and checkable:
+in estimate mode nothing leaves, and in every mode the only possible destinations are the three
+hosts above.</p>
+
+<h2 id="updates">How updates are verified</h2>
+<p>The updater refuses to install any release that does not publish a checksum, and verifies the
+downloaded zip's SHA-256 against the published value before swapping anything. Honest limit:
+the checksum is published alongside the release on GitHub, so this protects against corrupted
+or tampered downloads, not against a full compromise of the GitHub account itself. A signed
+update manifest is on the roadmap; until then, the strongest guarantee available is building
+from source, which takes one command and about a minute.</p>
+
+<h2 id="gauges">One honest scope note</h2>
+<p>The limit gauges are account-wide: claude.ai chats and your other devices spend the same
+limits. Burndown's per-chat attribution comes from the Claude Code logs on this Mac, so it
+explains your local share of the spending, not necessarily all of it. The app says this in
+place rather than letting the numbers quietly disagree.</p>
+
+<h2 id="tos">Terms-of-service posture</h2>
+<p>Burndown is a read-only monitor: it never runs inference with your token and never spends
+your subscription; it only asks how much you have used. The sourced, plain-English analysis of
+where that stands lives in
+<a href="https://github.com/maz0x/burndown/blob/main/docs/TOS_NOTES.md">docs/TOS_NOTES.md</a>,
+including what happens if Anthropic closes the endpoint: the app degrades to estimate mode and
+keeps working.</p>
+
+<h2 id="verify">Verify it yourself</h2>
+<p>The fastest way to trust this app is to not trust me:</p>
+<ul>
+  <li><b>Read the code that touches anything sensitive.</b> Four files cover all of it:
+  <a href="https://github.com/maz0x/burndown/blob/main/Sources/UsageEngine.swift">UsageEngine.swift</a>
+  (log parsing and credential reading),
+  <a href="https://github.com/maz0x/burndown/blob/main/Sources/APIAccount.swift">APIAccount.swift</a>
+  (the opt-in PKCE sign-in),
+  <a href="https://github.com/maz0x/burndown/blob/main/Sources/Updater.swift">Updater.swift</a>
+  (the network allowlist and checksum verification), and
+  <a href="https://github.com/maz0x/burndown/blob/main/Sources/PrivateFile.swift">PrivateFile.swift</a>
+  (how its own files are kept private).</li>
+  <li><b>Watch the network.</b> Run the app in estimate mode with Little Snitch, LuLu, or
+  plain <code>nettop -p Burndown</code>: you will see no connections. Turn on live mode and you
+  will see exactly one host; trigger an update check and you will see GitHub. That is the whole
+  list.</li>
+  <li><b>Make the binary question disappear.</b> The release zip is a convenience, not the
+  trust anchor: the app builds from source with one script, no Xcode project and no
+  dependencies, so you can compile exactly what you read.</li>
+</ul>
+<pre><code>git clone https://github.com/maz0x/burndown && cd burndown
+./build.sh
+open Burndown.app</code></pre>
+
+<h2 id="site">This website</h2>
+<p>The site sets no cookies and runs no trackers. Download links pass through a small redirect
+(<code>/go/</code>) that counts, server-side, which page the click came from: the link name, a
+source tag, and a timestamp, nothing else, so I can tell whether anyone is finding the app. If
+that ever changes, this page changes first.</p>
+
+</div>
+
+<footer>
+  <div class="wrap">
+    <p>Made by <a href="https://github.com/maz0x">maz0x</a>. Free, and open source under the
+    <a href="https://github.com/maz0x/burndown/blob/main/LICENSE">Apache License 2.0</a>.
+      <a href="/">Home</a> ·
+      <a href="/guide">Guide</a> ·
+      <a href="/privacy">Privacy</a> ·
+      <a href="https://github.com/maz0x/burndown">Source</a></p>
+    <p>An independent project, not affiliated with, endorsed by, or sponsored by Anthropic.</p>
+  </div>
+</footer>
+
+</body>
+</html>

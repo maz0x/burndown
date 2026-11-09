@@ -497,8 +497,25 @@ enum StyleSheet {
                         ModelUse(label: "Haiku", cost: 48, share: 0.05)]
         s.sessionFresh = 3_000_000; s.sessionCost = 112
         s.weeklyFresh = 29_000_000; s.weeklyCost = 960
-        s.plan = "Max 20×"
+        s.plan = "Max"
         s.liveUpdated = Date()
+        // QA: CUB_PLAN=ultra renders a plan with weekly limits only (verified Ultra, Max 20x until
+        // October 30, 2026): no session window at all, the week as the hero, the Fable scoped cap
+        // and the by-surface split, with the numbers the usage service reported for such an
+        // account on 2026-11-06. The default stays Max, which has both limits and is the layout
+        // every published screenshot shows. CUB_PCT drives the week here.
+        if env["CUB_PLAN"] == "ultra" {
+            s.apiSession = nil; s.sessionLimitAbsent = true
+            s.apiWeekly = WindowState(pct: env["CUB_PCT"].flatMap { Double($0) } ?? (state == "over" ? 1.0 : 0.79),
+                                      resetAt: Date().addingTimeInterval(26 * 3600 + 12 * 60))
+            s.apiOpus = nil; s.apiSonnet = nil
+            s.modelLimits = [ScopedLimit(label: "Fable", pct: 0.63, resetAt: Date().addingTimeInterval(26 * 3600 + 12 * 60), active: false, severity: "normal")]
+            s.weeklyBreakdown = [SurfaceShare(key: "claude_code", label: "Claude Code", pct: 0.91),
+                                 SurfaceShare(key: "chat", label: "Chats", pct: 0),
+                                 SurfaceShare(key: "cowork", label: "Cowork", pct: 0.09),
+                                 SurfaceShare(key: "other", label: "Other", pct: 0)]
+            s.plan = "Ultra"
+        }
         switch state {
         case "est":
             s.apiSession = nil; s.apiWeekly = nil; s.apiOpus = nil; s.apiSonnet = nil
@@ -513,6 +530,7 @@ enum StyleSheet {
             s.apiSession = nil
             s.sessionCap = 1_000_000; s.sessionFresh = Int(pct * 1_000_000)
             s.liveError = "rate limited"; s.liveUpdated = Date().addingTimeInterval(-180)
+            s.liveRetryAt = Date().addingTimeInterval(45)   // so the badge's "trying again" wording renders
         case "stale": s.liveUpdated = Date().addingTimeInterval(-1200)
         case "reauth": s.liveError = "http 401"
         default: break
@@ -552,15 +570,37 @@ enum StyleSheet {
         // Reflow QA: card width and per-chart height boost, the two corner-grip axes.
         if let cwS = ProcessInfo.processInfo.environment["CUB_CARDWIDTH"], let cw = Double(cwS) { settings.cardWidth = cw }
         if let cbS = ProcessInfo.processInfo.environment["CUB_CARDBOOST"], let cb = Double(cbS) { settings.cardChartBoost = cb }
+        // QA: CUB_CHARTSPANS=weekBurndown:h6[,burnLine:h1] sets the per-chart time chip, which is
+        // the only way to render a TRIMMED burndown offscreen. Without it the burndown always
+        // draws its full pinned window, which is exactly the case where it looked fine.
+        if let sp = ProcessInfo.processInfo.environment["CUB_CHARTSPANS"] {
+            for pair in sp.split(separator: ",") {
+                let bits = pair.split(separator: ":")
+                guard bits.count == 2, let k = ChartKind(rawValue: String(bits[0])),
+                      let span = ChartSpan(rawValue: String(bits[1])) else { continue }
+                settings.setSpan(span, for: k)
+            }
+        }
         if ProcessInfo.processInfo.environment["CUB_QUIET"] != nil { settings.quietHours = true; settings.quietFrom = 0; settings.quietTo = 23 }
+        // QA: CUB_EYEBROWS=0 turns the section eyebrows off. The burning-chats heading is the one
+        // that cannot simply vanish with the others (it carries the count and it IS the collapse
+        // control), so it restyles instead, and the only way to see that is a card with a burning
+        // chat in it. seedForPreview below fabricates two, which the live panel never has on demand.
+        if let eb = ProcessInfo.processInfo.environment["CUB_EYEBROWS"] {
+            settings.popoverEyebrows = !(eb == "0" || eb.lowercased() == "false")
+        }
+        // QA: CUB_CHATSOPEN=1 opens that list, so the same shot shows the heading AND the rows it
+        // collapses. The heading is a control, and a control photographed only in one state proves
+        // half of it.
+        if ProcessInfo.processInfo.environment["CUB_CHATSOPEN"] != nil { settings.chatsExpanded = true }
         let scale = max(0.7, min(1.6, settings.textScale))   // the Popover size zoom (slider range)
         // Render DetailCard directly so QA can force any state, over a plain bg (the live app uses glass).
-        let heat = s.over ? 1.0 : max(0, (min(1, s.sessionPct) - 0.85) / 0.15)
+        let heat = s.primaryOver ? 1.0 : max(0, (min(1, s.primaryPct) - 0.85) / 0.15)
         // QA: CUB_API_MOCK=connected|error exercises the developer-API popover line.
         var apiMock = APISpend()
         if let m = ProcessInfo.processInfo.environment["CUB_API_MOCK"], m != "off" {
             apiMock = m == "error" ? APISpend(configured: true, error: "unavailable")
-                                   : APISpend(configured: true, monthToDate: 128.40, today: 12.10, fetchedAt: Date())
+                                   : APISpend(configured: true, monthToDate: 128.40, lastDay: 12.10, fetchedAt: Date())
         }
         let qaRecords = qaChartRecords()
         let view = DetailCard(snapshot: s, settings: settings, live: live, refreshAnchor: Date(), period: 30,
@@ -705,8 +745,6 @@ enum StyleSheet {
                                  chartDays: 14,
                                  modelLimits: [ScopedLimit(label: "Fable", pct: 0.74, resetAt: nil, active: true, severity: "warning"),
                                                ScopedLimit(label: "Opus", pct: 0.18, resetAt: nil, active: false, severity: "normal")],
-                                 showChats: false,
-                                 chatsOpen: .constant(false),
                                  records: qaRecords, chrome: false)
                         .frame(width: 244)
                 }
@@ -731,7 +769,10 @@ enum StyleSheet {
         let accent = NSColor(hex: "D97757") ?? .orange
         let sc = Color(nsColor: usageNSColor(pct: 0.61, over: false, accent: accent, mode: .level))
         let wc = Color(nsColor: secondaryNSColor(accent: accent, mode: .level))
-        let d = WData(s: 0.61, w: 0.38, sc: sc, wc: wc, p: p)
+        // QA: CUB_PLAN=ultra, as for the popover: weekly limits only, the week at 79%, no session.
+        let ultra = ProcessInfo.processInfo.environment["CUB_PLAN"] == "ultra"
+        let d = ultra ? WData(s: 0, w: 0.79, sc: sc, wc: wc, p: p, weekOnly: true)
+                      : WData(s: 0.61, w: 0.38, sc: sc, wc: wc, p: p)
         let r: CGFloat = horizontal ? 11 : 12
         func card(_ st: WidgetStyle) -> some View {
             VStack(spacing: 6) {
@@ -834,13 +875,26 @@ enum StyleSheet {
     static func renderInsights(to path: String, dark: Bool) {
         let settings = qaSettings()
         let engine = UsageEngine()
+        // The whole window is drawn from ONE synthetic record set: the deterministic sample
+        // history, four invented chat titles and four invented project names. Nothing here reads
+        // ~/.claude, and no window is ever put on screen, which is the rule for this surface -
+        // a real Insights window carries actual chat titles, project paths and the account email.
+        //
+        // QA (CUB_QA_INSIGHTS_HOVER=1): the second rename surface lives in the per-project chat
+        // rows, and those only exist under the "Home folder" row. None of the sample projects is
+        // that row, so one of them is relabelled, for this hook only. The published screenshot
+        // set never sets the variable and is untouched.
+        var recs = qaChartRecords()
+        if ProcessInfo.processInfo.environment["CUB_QA_INSIGHTS_HOVER"] != nil {
+            for i in recs.indices where recs[i].project == "writing" { recs[i].project = kHomeProject }
+        }
         // Seed the engine's published state so the window has something real to draw.
-        engine.records = qaChartRecords()
+        engine.records = recs
         engine.activeBlockStart = Date().addingTimeInterval(-2.5 * 3600)
         var snap = UsageSnapshot()
         snap.apiSession = WindowState(pct: 0.46, resetAt: Date().addingTimeInterval(2.5 * 3600))
         snap.apiWeekly = WindowState(pct: 0.38, resetAt: Date().addingTimeInterval(3 * 86400))
-        snap.plan = "Max 20×"
+        snap.plan = "Max"
         snap.sessionCost = 112; snap.weeklyCost = 960
         snap.sessionFresh = 3_000_000; snap.weeklyFresh = 29_000_000
         engine.snapshot = snap
@@ -848,8 +902,8 @@ enum StyleSheet {
         // The attribution rows are DERIVED from the same sample records that drive the recap and
         // the 14-day bars, never hand-written alongside them. A separate hand-written list drifted
         // out of step and published a screenshot where "this week" was larger than "all time" and
-        // the recap named a different top project than the chart under it.
-        let recs = qaChartRecords()
+        // the recap named a different top project than the chart under it. Same array the engine
+        // was seeded with, never a second call: a re-roll would put the two out of step again.
         var perChat: [String: (project: String, tokens: Int, date: Date)] = [:]
         for r in recs {
             let tokens = r.input + r.output + r.cache5m + r.cache1h + r.cacheRead
@@ -896,14 +950,24 @@ enum StyleSheet {
                         ModelUse(label: "Fable", cost: 300, share: 0.30),
                         ModelUse(label: "Sonnet", cost: 230, share: 0.23),
                         ModelUse(label: "Haiku", cost: 50, share: 0.05)]
-        s.plan = "Max 20×"; s.accountEmail = "sam@example.com"; s.accountOrg = "Example Studio"
+        s.plan = "Max"; s.accountEmail = "sam@example.com"; s.accountOrg = "Example Studio"
+        // QA: CUB_PLAN=ultra, as for the popover: weekly limits only, no session reset clock.
+        if ProcessInfo.processInfo.environment["CUB_PLAN"] == "ultra" {
+            s.apiSession = nil; s.sessionLimitAbsent = true
+            s.apiWeekly = WindowState(pct: 0.79, resetAt: Date().addingTimeInterval(26 * 3600 + 12 * 60))
+            s.apiSonnet = nil; s.apiOpus = nil
+            s.modelLimits = [ScopedLimit(label: "Fable", pct: 0.63, resetAt: Date().addingTimeInterval(26 * 3600 + 12 * 60), active: false, severity: "normal")]
+            s.weeklyBreakdown = [SurfaceShare(key: "claude_code", label: "Claude Code", pct: 0.91),
+                                 SurfaceShare(key: "cowork", label: "Cowork", pct: 0.09)]
+            s.plan = "Ultra"
+        }
         s.resetAt = s.apiSession?.resetAt
         let engine = UsageEngine(); engine.snapshot = s
         // QA: CUB_API_MOCK=error shows the developer-API failure state; default is connected.
         if ProcessInfo.processInfo.environment["CUB_API_MOCK"] == "error" {
-            engine.apiSpend = APISpend(configured: true, error: "This account cannot use the usage API. It needs a Console organization, which individual accounts do not have.")
+            engine.apiSpend = APISpend(configured: true, error: "Not permitted. The key was accepted but cannot read spend reports. Check that it is an Admin key for this organization and that your role is admin or owner. Anthropic serves these reports only to Console organizations, so an Individual Org must first choose Convert to team under Settings, Organization.")
         } else {
-            engine.apiSpend = APISpend(configured: true, monthToDate: 128.40, today: 12.10,
+            engine.apiSpend = APISpend(configured: true, monthToDate: 128.40, lastDay: 12.10,
                                        fetchedAt: Date().addingTimeInterval(-120), error: nil,
                                        daily: [3.2, 5.1, 4.0, 7.8, 6.2, 9.1, 4.5, 8.0, 5.5, 11.2, 7.0, 6.1, 9.4, 12.1])
         }
@@ -930,7 +994,13 @@ enum StyleSheet {
         var s = UsageSnapshot()
         s.apiSession = WindowState(pct: 0.46, resetAt: Date().addingTimeInterval(4 * 3600))
         s.apiWeekly = WindowState(pct: 0.13, resetAt: Date().addingTimeInterval(3 * 86400))
-        s.plan = "Max 20×"
+        s.plan = "Max"
+        // QA: CUB_PLAN=ultra, as for the popover: weekly limits only, the week at 79%, no session.
+        if ProcessInfo.processInfo.environment["CUB_PLAN"] == "ultra" {
+            s.apiSession = nil; s.sessionLimitAbsent = true
+            s.apiWeekly = WindowState(pct: 0.79, resetAt: Date().addingTimeInterval(26 * 3600 + 12 * 60))
+            s.plan = "Ultra"
+        }
         let engine = UsageEngine(); engine.snapshot = s
         let settings = qaSettings()
         // QA: CUB_DOCK=top|bottom|left|right selects the dock orientation (default bottom = the bar).

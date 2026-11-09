@@ -42,10 +42,34 @@ final class ChatNames: ObservableObject {
         return original
     }
 
+    /// THE ALIAS KEY, once, for every surface that renames a chat.
+    ///
+    /// Two paths reach the reader with a chat's name and both must land on the SAME entry, or a
+    /// rename made in one place silently applies to nothing in the other:
+    ///   burning-now rows -> LiveActivity.streamName(path) -> UsageEngine.resolvedTitle(sid:url:)
+    ///   top-chats rows   -> UsageRecord.session           -> UsageEngine.resolvedTitle(sid:url:)
+    /// Both are therefore RESOLVED TITLES, not raw session ids, and the two agree. The one case
+    /// where they can diverge is a name that arrives as a bare id anyway (an older cache, a log
+    /// whose title could not be read): `display` already resolves such a key before looking it up,
+    /// so writing had to resolve it too. Without this, an alias stored under an id was found only
+    /// by the surface that happened to hold the id.
+    private func key(_ original: String) -> String {
+        guard looksLikeSessionID(original) else { return original }
+        return SessionTitles.shared.title(for: original) ?? original
+    }
+
     func setAlias(_ alias: String, for original: String) {
+        let k = key(original)
         let a = alias.trimmingCharacters(in: .whitespacesAndNewlines)
-        if a.isEmpty || a == original { aliases.removeValue(forKey: original) } else { aliases[original] = a }
+        if a.isEmpty || a == k { aliases.removeValue(forKey: k) } else { aliases[k] = a }
         save()
     }
-    func reset(_ original: String) { aliases.removeValue(forKey: original); save() }
+    func reset(_ original: String) { aliases.removeValue(forKey: key(original)); save() }
+    /// Has the reader renamed this chat? Asked by every row that offers a Reset, and it has to ask
+    /// under the same keys `display` reads, in the same order: an alias stored against a raw id by
+    /// an older build is found by `display` and would otherwise be reported here as no rename at
+    /// all, hiding the Reset for the one chat that needs it.
+    func isRenamed(_ original: String) -> Bool {
+        aliases[original] != nil || aliases[key(original)] != nil
+    }
 }

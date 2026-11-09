@@ -19,9 +19,12 @@ Everything stays on this Mac. Never synced, never uploaded.
   That optional Admin key is stored on this Mac at
   `~/.config/burndown/api-admin-key.json`, readable only by your user.
 - One exception, and it carries nothing about you or your usage: the updater
-  asks `api.github.com` for the latest version number (once a day if automatic
-  updates are on, otherwise only when you press Check now), and downloads the
-  release file from `github.com` if you choose to install it.
+  asks `api.github.com` for the latest version number on the schedule you
+  choose in Settings, General (every launch, once a day, once a week, or only
+  when you ask; once a day by default), and downloads the release file from
+  `github.com` if you choose to install it. With "Install it for me" selected
+  it downloads, verifies and installs the release on its own, waiting while
+  chats are actively burning.
 - It never logs your token or password. Sign-in happens in your browser with
   Anthropic; Burndown only receives the resulting token.
 
@@ -43,7 +46,8 @@ Everything stays on this Mac. Never synced, never uploaded.
 - A fresh install contacts nothing until you choose to connect.
 - "Use my Claude Code sign-in" reads the credential Claude Code already
   keeps on this Mac, only after you click it, and stops the moment you sign
-  out.
+  out. Current Claude Code versions no longer keep a usable token there, in
+  which case Burndown says so and reads nothing further.
 
 Burndown is an independent project. It is not affiliated with, endorsed by,
 or sponsored by Anthropic.

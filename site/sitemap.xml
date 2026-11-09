@@ -1,11 +1,25 @@
 <?xml version="1.0" encoding="UTF-8"?>
+<!-- The ONE sitemap. There were three (sitemap.xml, sitemap-2026.xml, sitemap.txt), added as
+     cache-busting duplicates while Search Console would not fetch this host's sitemap at all.
+     They listed identical URLs, so they never told Google anything a single file did not, and
+     three stale copies of the same three URLs is three things to forget to update. Deleted at
+     launch; the two dead ones must also be REMOVED in Search Console (see RELEASE.md,
+     "Launch rails"), or it keeps re-fetching URLs this site no longer publishes. -->
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
     <loc>https://burndown-app.pages.dev/</loc>
-    <lastmod>2026-10-30</lastmod>
+    <lastmod>2026-11-08</lastmod>
+  </url>
+  <url>
+    <loc>https://burndown-app.pages.dev/trust</loc>
+    <lastmod>2026-11-08</lastmod>
   </url>
   <url>
     <loc>https://burndown-app.pages.dev/guide</loc>
-    <lastmod>2026-08-02</lastmod>
+    <lastmod>2026-11-08</lastmod>
+  </url>
+  <url>
+    <loc>https://burndown-app.pages.dev/privacy</loc>
+    <lastmod>2026-11-08</lastmod>
   </url>
 </urlset>

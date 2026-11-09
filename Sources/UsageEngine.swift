@@ -17,99 +17,9 @@ private struct Entry {
 
 private struct Block { var start: Date; var lastTs: Date; var fresh: Int = 0; var cost: Double = 0 }
 
-// MARK: - Authoritative window state from the OAuth usage API
-
-struct WindowState: Equatable {
-    var pct: Double        // 0...1
-    var resetAt: Date?
-}
-
-/// A per-model weekly limit from the usage API's new `limits[]` array (kind == "weekly_scoped").
-/// e.g. Fable 5 has its own weekly cap distinct from the all-models weekly cap. `active` marks the
-/// limit that is currently the binding constraint (`is_active`).
-struct ScopedLimit: Equatable, Identifiable {
-    var label: String      // model display name, e.g. "Fable"
-    var pct: Double        // 0...1 utilization
-    var resetAt: Date?
-    var active: Bool
-    var severity: String   // "normal" / "warning" / "critical" ...
-    var id: String { label }
-    var remaining: Double { max(0, 1 - pct) }
-}
-
-/// Where the week's usage actually went, per model FAMILY, from the local logs. Unlike ScopedLimit
-/// (which only exists for models Anthropic has given a separate weekly cap, e.g. Fable), this covers
-/// EVERY model used - Opus, Sonnet, Haiku, Fable - since they all draw from the shared weekly pool.
-/// `share` is this family's fraction of the week's total spend, so the bars read as "how much of my
-/// week went here". Purely local + recomputed each scan, so it needs no cache persistence.
-struct ModelUse: Equatable, Identifiable {
-    var label: String      // family: "Opus" / "Sonnet" / "Haiku" / "Fable"
-    var cost: Double       // this family's estimated weekly spend
-    var share: Double      // 0...1 fraction of the week's total spend
-    var id: String { label }
-}
-
-// MARK: - Snapshot the UI renders (live API fields + local-log supplements)
-
-struct UsageSnapshot {
-    // ── Local-log estimates / token counts (supplementary) ──
-    var sessionFresh: Int = 0
-    /// The floor used until enough real sessions have been observed to learn the true cap. Named,
-    /// because "have we learned anything yet" is a question other code has to be able to ask, and
-    /// comparing against a literal repeated at the asking site is how those two drift apart.
-    static let defaultSessionCap = 1_000_000
-    static let defaultWeeklyCap = 2_000_000
-    var sessionCap: Int = defaultSessionCap
-    var resetAt: Date? = nil
-    var weeklyFresh: Int = 0
-    var weeklyCap: Int = defaultWeeklyCap
-    var weeklyCost: Double = 0
-    var sessionCost: Double = 0
-    var modelUsage: [ModelUse] = []   // per-family share of this week's spend (local; all models)
-    var lastUpdated = Date(timeIntervalSince1970: 0)
-
-    // ── Authoritative live data from api.anthropic.com/api/oauth/usage ──
-    var apiSession: WindowState? = nil
-    var apiWeekly: WindowState? = nil
-    var apiSonnet: WindowState? = nil
-    var apiOpus: WindowState? = nil
-    var modelLimits: [ScopedLimit] = []   // per-model weekly caps from limits[] (e.g. Fable 5)
-    var liveUpdated: Date? = nil
-    var liveError: String? = nil
-    var plan: String? = nil   // "Pro" / "Max" - from the OAuth credential, for the header
-    var accountEmail: String? = nil   // from the OAuth token-exchange `account`
-    var accountOrg: String? = nil
-
-    // ── Local fallbacks ──
-    private var localSessionPct: Double {
-        sessionCap > 0 ? min(1.0, Double(sessionFresh)/Double(sessionCap)) : 0
-    }
-    private var localWeeklyPct: Double {
-        weeklyCap > 0 ? min(1.0, Double(weeklyFresh)/Double(weeklyCap)) : 0
-    }
-
-    // ── Effective values: prefer live, fall back to local estimate ──
-    var isLive: Bool { apiSession != nil }
-    var sessionPct: Double { apiSession?.pct ?? localSessionPct }
-    var sessionResetAt: Date? { apiSession?.resetAt ?? resetAt }
-    var weeklyPct: Double { apiWeekly?.pct ?? localWeeklyPct }
-    var weeklyResetAt: Date? { apiWeekly?.resetAt }
-    var over: Bool { sessionPct >= 1.0 }
-    var weeklyOver: Bool { weeklyPct >= 1.0 }
-
-    mutating func copyLive(from o: UsageSnapshot) {
-        apiSession = o.apiSession; apiWeekly = o.apiWeekly
-        apiSonnet = o.apiSonnet; apiOpus = o.apiOpus; modelLimits = o.modelLimits
-        liveUpdated = o.liveUpdated; liveError = o.liveError; plan = o.plan
-        accountEmail = o.accountEmail; accountOrg = o.accountOrg
-    }
-    mutating func copyLocal(from o: UsageSnapshot) {
-        sessionFresh = o.sessionFresh; sessionCap = o.sessionCap; resetAt = o.resetAt
-        weeklyFresh = o.weeklyFresh; weeklyCap = o.weeklyCap
-        weeklyCost = o.weeklyCost; sessionCost = o.sessionCost
-        modelUsage = o.modelUsage; lastUpdated = o.lastUpdated
-    }
-}
+// The live usage model (WindowState, ScopedLimit, SurfaceShare, ModelUse, UsageSnapshot, APIUsage) and
+// the parsers that fill it live in Sources/UsageParse.swift, Foundation-pure so the headless
+// parse suite compiles the real code.
 
 private let FIVE_HOURS: TimeInterval = 5 * 3600
 private let WEEK: TimeInterval = 7 * 24 * 3600
@@ -167,6 +77,16 @@ final class UsageEngine: ObservableObject {
     private var weeklyCap = 2_000_000
     private var liveBackoffUntil: Date? = nil   // set on 429; skip fetches until then
     private var liveBackoffStep = 0
+    /// When the last 429 arrived. A backoff step remembered from an incident half an hour ago says
+    /// nothing about the service now, so a quiet gap starts the ladder over instead of resuming it
+    /// near the top and making the first fresh 429 cost minutes.
+    private var lastRateLimitAt: Date? = nil
+    /// The automatic retry booked for the moment the backoff expires. Without it the retry waited
+    /// for the next poll TICK to line up with the expiry, so the numbers sat stale for minutes
+    /// after the service was ready again and only a manual click brought them back.
+    private var liveRetryWork: DispatchWorkItem? = nil
+    /// A remembered 429 is only worth resuming while it is recent.
+    private let rateLimitMemory: TimeInterval = 900
     private var lastLiveFetch = Date(timeIntervalSince1970: 0)
     private let minLiveInterval: TimeInterval = 20   // never poll the OAuth endpoint faster than this
 
@@ -182,7 +102,7 @@ final class UsageEngine: ObservableObject {
     // MARK: - Developer API account (optional, additive; never affects the subscription gauges)
 
     /// Refresh developer-API spend from the Admin Cost Report API. Only runs when an Admin key is
-    /// saved. Throttled to 5 min (the data is daily-granularity, ~5 min fresh) unless `force`.
+    /// saved. Throttled to 5 min (the data is daily-granularity and never includes today) unless `force`.
     func refreshAPISpend(force: Bool = false) {
         guard let key = APIAccount.loadKey() else {
             if apiSpend.configured { DispatchQueue.main.async { self.apiSpend = APISpend() } }
@@ -362,6 +282,27 @@ final class UsageEngine: ObservableObject {
     /// a few lines rather than a full parse. This is the live path, so it must never be expensive.
     static func resolvedTitle(sid: String, url: URL) -> String {
         if let known = SessionTitles.shared.title(for: sid) { return known }
+        // A subagent is named after the conversation that spawned it. Reading its OWN head is
+        // pointless: it has no title line, and its opening message is a task prompt, so the four
+        // fallbacks below could only ever land on the placeholder.
+        if isSubagentLog(url) {
+            var parentTitle: String? = nil
+            if let parent = subagentParent(of: url) {
+                // The parent is a normal conversation log, never a subagent, so this recursion is
+                // one level deep by construction.
+                parentTitle = SessionTitles.shared.title(for: parent.sid)
+                    ?? (FileManager.default.fileExists(atPath: parent.log.path)
+                        ? resolvedTitle(sid: parent.sid, url: parent.log) : nil)
+            }
+            let label = subagentLabel(parentTitle: parentTitle)
+            // Only remembered once the parent has a real name. Resolved against a parent that is
+            // itself still untitled, the answer would be the generic "Agent tasks", and caching
+            // that would freeze the row at its least useful wording forever.
+            if let pt = parentTitle, !isGeneratedTitle(pt) {
+                SessionTitles.shared.set(label, for: sid)
+            }
+            return label
+        }
         var customTitle: String?, aiTitle: String?, firstUser: String?
         // Only the head of the file. A title and the opening user message are both written at the
         // start of a conversation, and these logs run to hundreds of megabytes: reading one whole
@@ -446,8 +387,21 @@ final class UsageEngine: ObservableObject {
             let sid = url.deletingPathExtension().lastPathComponent
 
             if let c = cache[path], c.mod == mod, c.size == size {
-                next[path] = c; reused += 1
-                foundTitles[sid] = c.title
+                reused += 1
+                // A cached PLACEHOLDER is not accepted on this path either, and this is the path
+                // that matters: an unchanged file never reaches the parse below, so a title
+                // captured before Claude Code had written one would be served forever. Re-reading
+                // a head costs 256 KB and only happens while the name is still missing; the healed
+                // title is written back so the next launch does not repeat it.
+                if isGeneratedTitle(c.title) {
+                    let fresh = Self.resolvedTitle(sid: sid, url: url)
+                    next[path] = CachedFile(mod: c.mod, size: c.size, offset: c.offset,
+                                            project: c.project, title: fresh, records: c.records)
+                    foundTitles[sid] = fresh
+                } else {
+                    next[path] = c
+                    foundTitles[sid] = c.title
+                }
                 continue
             }
 
@@ -464,7 +418,14 @@ final class UsageEngine: ObservableObject {
             // The project and the title come from the head of the file, so they are only worth
             // reading when this file has never been parsed before.
             let project = prior?.project ?? Self.resolvedProject(url: url, home: home)
-            let title = (canAppend ? prior?.title : nil) ?? Self.resolvedTitle(sid: sid, url: url)
+            // A cached PLACEHOLDER is not accepted. The scan cache keeps the title it captured when
+            // a file was first parsed, and a file that has not changed since is never re-read, so a
+            // chat scanned before Claude Code had written its title kept "Untitled chat, 2:03 PM"
+            // in the cache for good, and the parsed records carried that string with them. Purging
+            // the title index alone would not have reached these. Re-reading a head is cheap
+            // (256 KB) and only happens while the name is still missing.
+            let cachedTitle = (canAppend ? prior?.title : nil).flatMap { isGeneratedTitle($0) ? nil : $0 }
+            let title = cachedTitle ?? Self.resolvedTitle(sid: sid, url: url)
             foundTitles[sid] = title
 
             let (items, consumed) = Self.parseUsageBytes(data, project: project, session: title,
@@ -578,7 +539,7 @@ final class UsageEngine: ObservableObject {
         let url = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".config/burndown/token.json")
         try? FileManager.default.removeItem(at: url)
-        liveBackoffUntil = nil; liveBackoffStep = 0
+        clearLiveBackoff()
         lastLiveFetch = Date(timeIntervalSince1970: 0)
         logPlanFields()                       // refresh the plan name from the credential too
         fetchLive(force: true, completion: completion)
@@ -605,7 +566,7 @@ final class UsageEngine: ObservableObject {
         Self.cliBootstrapAllowed = false
         Self.truncateDebugLog()
         var s = snapshot
-        s.apiSession = nil; s.apiWeekly = nil; s.apiSonnet = nil; s.apiOpus = nil; s.modelLimits = []
+        s.clearLive()
         s.liveUpdated = nil; s.liveError = nil; s.plan = nil
         s.accountEmail = nil; s.accountOrg = nil
         snapshot = s
@@ -658,7 +619,7 @@ final class UsageEngine: ObservableObject {
                 guard let self else { return }
                 if ok {
                     self.pendingVerifier = nil
-                    self.liveBackoffUntil = nil; self.liveBackoffStep = 0
+                    self.clearLiveBackoff()
                     self.lastLiveFetch = Date(timeIntervalSince1970: 0)
                     // Completing sign-in IS opting in to live usage: without this, a fresh install
                     // (usageAPI off) would guard out the first fetch and report a successful
@@ -730,32 +691,31 @@ final class UsageEngine: ObservableObject {
                 var ok = false
                 switch result {
                 case .success(let api):
-                    // Keep the last good reading for any window this response did not carry.
-                    //
-                    // A response is a success when it parses, not when it is complete: the service
-                    // can answer with the five-hour window and omit the per-model ones, and
-                    // assigning the missing pieces straight through replaced real numbers with
-                    // nothing. The reader watches a cap row vanish and reappear for no reason they
-                    // can see. A window that is genuinely gone stays visible until the next full
-                    // answer, which is the better of the two wrong states: stale beats absent, and
-                    // liveUpdated already says how old the reading is.
-                    s.apiSession = api.fiveHour ?? s.apiSession
-                    s.apiWeekly = api.sevenDay ?? s.apiWeekly
-                    s.apiSonnet = api.sevenDaySonnet ?? s.apiSonnet
-                    s.apiOpus = api.sevenDayOpus ?? s.apiOpus
-                    if !api.modelLimits.isEmpty { s.modelLimits = api.modelLimits }
+                    // Keep the last good reading for any window this response did not carry, and
+                    // drop the session outright when the service says the plan has none (see
+                    // UsageSnapshot.absorb for why those are different things).
+                    s.absorb(api)
                     s.liveUpdated = Date()
                     s.liveError = nil
-                    self.liveBackoffStep = 0
-                    self.liveBackoffUntil = nil
+                    s.liveRetryAt = nil
+                    self.clearLiveBackoff()
                     self.writeLiveCache(api)
                     ok = true
                 case .failure(let e):
                     s.liveError = e.text       // keep last-good apiSession/Weekly visible
                     if e.text == "rate limited" {
-                        self.liveBackoffStep = min(self.liveBackoffStep + 1, 4)
-                        let delay = 60.0 * pow(2.0, Double(self.liveBackoffStep - 1))  // 60,120,240,480s
-                        self.liveBackoffUntil = Date().addingTimeInterval(delay)
+                        let now = Date()
+                        // A step is only carried forward while the last 429 is recent. Otherwise
+                        // this is a new incident and it starts at the bottom of the ladder again.
+                        let recent = self.lastRateLimitAt.map { now.timeIntervalSince($0) <= self.rateLimitMemory } ?? false
+                        self.liveBackoffStep = recent ? min(self.liveBackoffStep + 1, 3) : 1
+                        self.lastRateLimitAt = now
+                        let delay = 30.0 * pow(2.0, Double(self.liveBackoffStep - 1))  // 30,60,120s
+                        let until = now.addingTimeInterval(delay)
+                        self.liveBackoffUntil = until
+                        s.liveRetryAt = until
+                        Self.dbg("429 rate limited: step \(self.liveBackoffStep), retrying in \(Int(delay))s")
+                        self.scheduleLiveRetry(after: delay)
                     }
                 }
                 self.snapshot = s
@@ -766,12 +726,34 @@ final class UsageEngine: ObservableObject {
         }
     }
 
-    private struct APIUsage {
-        var fiveHour: WindowState?
-        var sevenDay: WindowState?
-        var sevenDaySonnet: WindowState?
-        var sevenDayOpus: WindowState?
-        var modelLimits: [ScopedLimit] = []
+    /// Drop the backoff and any retry booked against it. Used on success and wherever the
+    /// credential changes underneath us, so a stale timer can never suppress a fresh fetch.
+    private func clearLiveBackoff() {
+        liveBackoffUntil = nil
+        liveBackoffStep = 0
+        liveRetryWork?.cancel()
+        liveRetryWork = nil
+        // The PUBLISHED half of the same fact. Only the success branch used to clear it, so after a
+        // 429 followed by a sign-out or a re-authenticate the badge went on counting down to a
+        // retry that had already been cancelled.
+        if Thread.isMainThread { if snapshot.liveRetryAt != nil { snapshot.liveRetryAt = nil } }
+        else { DispatchQueue.main.async { [weak self] in
+            guard let self, self.snapshot.liveRetryAt != nil else { return }
+            self.snapshot.liveRetryAt = nil
+        } }
+    }
+
+    /// Fetch again the moment the backoff expires, rather than at whichever poll tick happens to
+    /// come next. A newer backoff cancels this one, so only the latest retry is ever in flight.
+    private func scheduleLiveRetry(after delay: TimeInterval) {
+        liveRetryWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            self.liveRetryWork = nil
+            self.fetchLive()
+        }
+        liveRetryWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay + 0.5, execute: work)
     }
 
     private struct LiveError: Error { let text: String }
@@ -826,45 +808,14 @@ final class UsageEngine: ObservableObject {
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
             return .failure(LiveError(text: code == 429 ? "rate limited" : "http \(code)"))
         }
-        func win(_ key: String) -> WindowState? {
-            guard let d = obj[key] as? [String: Any], let u = d["utilization"] as? Double else { return nil }
-            return WindowState(pct: clampPct(u), resetAt: (d["resets_at"] as? String).flatMap(parseISO))
-        }
-        // The new `limits[]` array is the canonical source: session, all-models weekly, and per-model
-        // "weekly_scoped" caps (e.g. Fable 5). The old seven_day_opus/sonnet top-level keys are now
-        // null, so scoped limits MUST come from here.
-        var scoped: [ScopedLimit] = []
-        var sessionFromLimits: WindowState?, weeklyFromLimits: WindowState?
-        if let limits = obj["limits"] as? [[String: Any]] {
-            for l in limits {
-                let pct = clampPct((l["percent"] as? Double) ?? 0)
-                let reset = (l["resets_at"] as? String).flatMap(parseISO)
-                switch l["kind"] as? String {
-                case "session":     sessionFromLimits = WindowState(pct: pct, resetAt: reset)
-                case "weekly_all":  weeklyFromLimits = WindowState(pct: pct, resetAt: reset)
-                case "weekly_scoped":
-                    let name = ((l["scope"] as? [String: Any])?["model"] as? [String: Any])?["display_name"] as? String
-                    if let name, !name.isEmpty {
-                        scoped.append(ScopedLimit(label: name, pct: pct, resetAt: reset,
-                                                  active: (l["is_active"] as? Bool) ?? false,
-                                                  severity: (l["severity"] as? String) ?? "normal"))
-                    }
-                default: break
-                }
-            }
-        }
-        // Prefer the (still-present) top-level windows; fall back to limits[] if Anthropic nulls them too.
-        let api = APIUsage(fiveHour: win("five_hour") ?? sessionFromLimits,
-                           sevenDay: win("seven_day") ?? weeklyFromLimits,
-                           sevenDaySonnet: win("seven_day_sonnet"), sevenDayOpus: win("seven_day_opus"),
-                           modelLimits: scoped.sorted { $0.pct > $1.pct })
         // A 200 whose shape we no longer recognize must NOT zero the live windows and overwrite the
         // good cache: treat "parsed nothing meaningful" as a soft failure so the last
         // good numbers survive an API shape change until a build understands the new shape.
-        guard api.fiveHour != nil || api.sevenDay != nil || !api.modelLimits.isEmpty else {
+        guard let api = parseUsageResponse(obj) else {
             dbg("usage=200 but unrecognized shape; keeping last good data")
             return .failure(LiveError(text: "unexpected response"))
         }
+        if api.sessionLimitAbsent { dbg("usage=no session limit on this plan (five_hour null, no session in limits[])") }
         return .success(api)
     }
 
@@ -946,20 +897,10 @@ final class UsageEngine: ObservableObject {
         return planLabel(tier: tier, type: type, sub: acct["subscriptionType"] as? String)
     }
 
-    /// Map Anthropic tier/type identifiers to a display label: "Max 5×", "Max", "Team", "Pro"…
+    /// The plan's display name for a tier/type pair (the mapping itself is `planLabel` in
+    /// Sources/UsageParse.swift, where the headless suite can check it).
     static func planLabel(tier: String, type: String, sub: String?) -> String? {
-        let t = tier.lowercased(), ty = type.lowercased()
-        // "…max_5x" / "…max_20x" → "Max 5×"
-        if let r = t.range(of: #"max_(\d+)x"#, options: .regularExpression) {
-            let mult = t[r].replacingOccurrences(of: "max_", with: "").replacingOccurrences(of: "x", with: "")
-            return "Max \(mult)×"
-        }
-        if ty.contains("max") || t.contains("max") { return "Max" }
-        if ty.contains("enterprise") { return "Enterprise" }
-        if ty.contains("team") { return "Team" }
-        if ty.contains("pro") || t.contains("pro") { return "Pro" }
-        if let s = sub, !s.isEmpty { return s.capitalized }
-        return nil
+        planDisplayName(tier: tier, type: type, sub: sub)
     }
 
     /// Publish the signed-in identity (email/org) to the snapshot for the Account UI.
@@ -979,6 +920,13 @@ final class UsageEngine: ObservableObject {
     /// and on change. When false, the app NEVER reads ~/.claude/.credentials.json or the CLI's
     /// Keychain item, so sign-out sticks and a fresh install touches nothing without permission.
     static var cliBootstrapAllowed = false
+
+    /// Why the last attempt to borrow Claude Code's credential produced nothing, for the onboarding
+    /// button to explain. Claude Code 2.1.3xx still writes its Keychain item but leaves the token
+    /// fields empty (the real tokens live elsewhere now), so "present but unusable" is the common
+    /// case and deserves its own message rather than "no sign-in on this Mac".
+    enum BootstrapFailure { case noCredential, emptyToken, expired }
+    static var lastBootstrapFailure: BootstrapFailure? = nil
 
 /// One token refresh at a time, and everyone else gets ITS answer.
 ///
@@ -1021,11 +969,17 @@ actor RefreshGate {
             if let got { return got }
         }
         guard cliBootstrapAllowed else { dbg("bootstrap=disabled(no consent)"); return nil }
-        guard let kc = readKeychainCreds() else { dbg("bootstrap=no-creds"); return nil }
+        guard let kc = readKeychainCreds() else {
+            lastBootstrapFailure = lastParseHadEmptyToken ? .emptyToken : .noCredential
+            dbg(lastParseHadEmptyToken ? "bootstrap=empty-token (Claude Code keeps its tokens elsewhere now)"
+                                       : "bootstrap=no-creds")
+            return nil
+        }
         // Use the CLI's credential only while its access token is still valid. Spending the CLI's
         // refresh token would rotate it and could invalidate the user's own Claude Code login, so
         // when it expires we surface the sign-in cue instead of refreshing on its behalf.
-        if kc.expMs > now + 60_000 { saveStored(kc); return kc.access }
+        if kc.expMs > now + 60_000 { lastBootstrapFailure = nil; saveStored(kc); return kc.access }
+        lastBootstrapFailure = .expired
         dbg("bootstrap=cli-token-expired (not spending the CLI refresh token)")
         return nil
     }
@@ -1090,19 +1044,27 @@ actor RefreshGate {
         return parseCreds(data)
     }
 
+    /// Set by `parseCreds` when the credential had an `accessToken` field with nothing in it: the
+    /// shape Claude Code 2.1.3xx writes. Read by `ensureAccessToken` to name the failure.
+    private static var lastParseHadEmptyToken = false
+
     private static func parseCreds(_ data: Data) -> Tok? {
+        lastParseHadEmptyToken = false
         guard let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { dbg("parseCreds=not-json"); return nil }
         let inner = (obj["claudeAiOauth"] as? [String: Any]) ?? obj
-        dbg("parseCreds keys=[\(inner.keys.sorted().joined(separator: ","))] sub=\((inner["subscriptionType"] as? String) ?? "nil") tier=\((inner["rateLimitTier"] as? String) ?? "nil") hasToken=\(inner["accessToken"] != nil)")
-        guard let a = inner["accessToken"] as? String, !a.isEmpty else { return nil }
+        let token = (inner["accessToken"] as? String) ?? ""
+        dbg("parseCreds keys=[\(inner.keys.sorted().joined(separator: ","))] sub=\((inner["subscriptionType"] as? String) ?? "nil") tier=\((inner["rateLimitTier"] as? String) ?? "nil") hasToken=\(inner["accessToken"] != nil) tokenEmpty=\(token.isEmpty)")
+        guard !token.isEmpty else {
+            if inner["accessToken"] != nil { lastParseHadEmptyToken = true }
+            return nil
+        }
+        let a = token
         let exp = (inner["expiresAt"] as? Double) ?? (inner["expiresAt"] as? Int).map(Double.init) ?? 0
         var plan: String? = nil
         if let sub = inner["subscriptionType"] as? String, !sub.isEmpty {
-            plan = sub.capitalized   // "max" → "Max"
-            if let tier = inner["rateLimitTier"] as? String,
-               let r = tier.range(of: #"\d+x"#, options: .regularExpression) {
-                plan! += " " + tier[r].replacingOccurrences(of: "x", with: "×")   // "Max 20×"
-            }
+            // The tier decides between Max and Ultra ("default_claude_max_20x" is Ultra since the
+            // October 30, 2026 rename); the subscription type alone reads as "Max" / "Pro".
+            plan = planDisplayName(tier: (inner["rateLimitTier"] as? String) ?? "", type: "", sub: sub)
         }
         return Tok(access: a, refresh: (inner["refreshToken"] as? String) ?? "", expMs: exp,
                    scopes: (inner["scopes"] as? [String]) ?? [], plan: plan)
@@ -1126,25 +1088,8 @@ actor RefreshGate {
     // MARK: - Live cache (percentages only, for resilience + instant first paint)
 
     private func writeLiveCache(_ api: APIUsage) {
-        func enc(_ w: WindowState?) -> [String: Any]? {
-            guard let w else { return nil }
-            var d: [String: Any] = ["utilization": w.pct * 100]
-            if let r = w.resetAt { d["resets_at"] = ISO8601DateFormatter().string(from: r) }
-            return d
-        }
-        var root: [String: Any] = ["updated": ISO8601DateFormatter().string(from: Date())]
-        if let v = enc(api.fiveHour) { root["five_hour"] = v }
-        if let v = enc(api.sevenDay) { root["seven_day"] = v }
-        if let v = enc(api.sevenDaySonnet) { root["seven_day_sonnet"] = v }
-        if let v = enc(api.sevenDayOpus) { root["seven_day_opus"] = v }
-        // Per-model weekly caps (limits[]) so Fable 5 etc. show instantly on relaunch, not blank.
-        if !api.modelLimits.isEmpty {
-            root["model_limits"] = api.modelLimits.map { m -> [String: Any] in
-                var d: [String: Any] = ["label": m.label, "pct": m.pct, "active": m.active, "severity": m.severity]
-                if let r = m.resetAt { d["resets_at"] = ISO8601DateFormatter().string(from: r) }
-                return d
-            }
-        }
+        var root = encodeLiveCache(api)
+        root["updated"] = ISO8601DateFormatter().string(from: Date())
         // Persist the account identity too (no secrets) so the menu + Account window are instant on
         // relaunch instead of waiting on a network fetch (which caused lag + a growing/relocating window).
         if let pl = snapshot.plan { root["plan"] = pl }
@@ -1189,21 +1134,10 @@ actor RefreshGate {
     private func loadLiveCache() {
         guard let data = try? Data(contentsOf: cacheURL),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
-        func win(_ key: String) -> WindowState? {
-            guard let d = obj[key] as? [String: Any], let u = d["utilization"] as? Double else { return nil }
-            return WindowState(pct: clampPct(u), resetAt: (d["resets_at"] as? String).flatMap(parseISO))
-        }
-        snapshot.apiSession = win("five_hour")
-        snapshot.apiWeekly = win("seven_day")
-        snapshot.apiSonnet = win("seven_day_sonnet")
-        snapshot.apiOpus = win("seven_day_opus")
-        if let ml = obj["model_limits"] as? [[String: Any]] {
-            snapshot.modelLimits = ml.compactMap { d in
-                guard let label = d["label"] as? String, let pct = d["pct"] as? Double else { return nil }
-                return ScopedLimit(label: label, pct: pct, resetAt: (d["resets_at"] as? String).flatMap(parseISO),
-                                   active: (d["active"] as? Bool) ?? false, severity: (d["severity"] as? String) ?? "normal")
-            }
-        }
+        // The cache is read into a fresh snapshot at init, so absorbing it is assigning it, with
+        // one guarantee on top: a cache written from the no-session-limit state comes back as
+        // that state, never as a session window the account does not have.
+        snapshot.absorb(decodeLiveCache(obj))
         if let pl = obj["plan"] as? String { snapshot.plan = pl }
         if let em = obj["email"] as? String { snapshot.accountEmail = em }
         if let og = obj["org"] as? String { snapshot.accountOrg = og }

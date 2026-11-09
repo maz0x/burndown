@@ -9,6 +9,11 @@ import ServiceManagement
 
 let kTideThick: CGFloat = 12   // Ember Line canvas: a ~2.5pt meter line at the edge + room for the burn-front cluster
 
+/// UserDefaults key AppKit persists the floating card's frame under. Named once because a grip
+/// drag turns it off and back on (see AppDelegate.floatingResize), and the two spellings have to
+/// match or the window forgets where it was.
+let kFloatingFrameAutosave = "ClaudeMonitorFloating"
+
 /// A luminous filament hugging a chosen screen edge, spanning the FULL edge. The whole line is
 /// always drawn (a dim warm track) so it reads edge-to-edge; the BRIGHT segment = remaining session
 /// budget and recedes as you drain. Hue warms with burn rate and reddens near the cap. Click-through.
@@ -265,9 +270,9 @@ extension Notification.Name {
     /// The Insights window closed, so it can hand back the full history it was holding.
     static let insightsClosed = Notification.Name("com.maz.burndown.insightsClosed")
     /// An explanation bubble in the card opened (object: true) or closed (object: false).
-    /// The card lives in a TRANSIENT NSPopover, which AppKit closes "when the user interacts with
-    /// a user interface element outside the popover" - and a bubble is its own window, so opening
-    /// one would take the card down with it. The delegate pins the card open while a bubble is up.
+    /// The menu card closes on any click outside itself, and a bubble is its own window, so
+    /// opening one would take the card down with it. The click monitors treat the card as pinned
+    /// while a bubble is up (menuPinnedOpen), and the close path resets the pin.
     static let explainBubble = Notification.Name("com.maz.burndown.explainBubble")
 }
 
@@ -292,7 +297,17 @@ func notifLog(_ s: String) {
     } else { writePrivate(d, to: url) }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPopoverDelegate, UNUserNotificationCenterDelegate {
+/// A panel that is ALLOWED to become key. Borderless windows answer canBecomeKey with false, and
+/// two things break quietly on top of that: becomesKeyOnlyIfNeeded never engages (it is a promise
+/// about WHEN to take key status, which a window that cannot take it never keeps), and SwiftUI's
+/// gesture machinery drops taps delivered to a window that cannot become key, while raw NSView
+/// mouseDown keeps working. The result is a card whose resize grip drags but whose buttons are
+/// dead. Both cards use this; .nonactivatingPanel still keeps a click from stealing app focus.
+final class KeyablePanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUserNotificationCenterDelegate {
     // Show alert banners even when the app is frontmost (e.g. Settings open), so the test alert + live alerts actually appear.
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
                                 withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
@@ -306,15 +321,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         switch response.actionIdentifier {
         case UsageAlerts.actionSnooze:
             alerts.snooze(15)
+        case UsageAlerts.actionUpdateInstall:
+            DispatchQueue.main.async { Updater.shared.downloadAndInstall() }
+        case UsageAlerts.actionUpdateNotes:
+            // Straight to the Updates card in General, where the notes now live. The default
+            // action opens the popover, which is the wrong place for this one.
+            DispatchQueue.main.async { [weak self] in self?.openUpdateSettings() }
         case UsageAlerts.actionOpen, UNNotificationDefaultActionIdentifier:
-            DispatchQueue.main.async { [weak self] in self?.openFromNotification() }
+            // An update notification tapped on its body should also land on the update, not on the
+            // usage card: the notification is what the person is responding to.
+            if response.notification.request.content.categoryIdentifier == UsageAlerts.updateCategory {
+                DispatchQueue.main.async { [weak self] in self?.openUpdateSettings() }
+            } else {
+                DispatchQueue.main.async { [weak self] in self?.openFromNotification() }
+            }
         default: break
         }
         completionHandler()
     }
     private func openFromNotification() {
         NSApp.activate(ignoringOtherApps: true)
-        if let p = popover, !p.isShown { togglePopover() }
+        if menuPanel == nil { togglePopover() }
     }
     let engine = UsageEngine()
     // CUB_SANDBOX boots the app against a throwaway defaults suite instead of the user's own.
@@ -328,22 +355,152 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         // "?? .standard" that used to be here, the one path by which a QA run could have written
         // into the owner's settings, is gone.
         appDefaults.removePersistentDomain(forName: suite)
+        // CUB_DEFAULTS=key=value;key=[a,b,c] seeds the wiped suite BEFORE AppSettings reads it, so a
+        // QA run can wear a REAL profile rather than the defaults plus whatever hooks happen to
+        // exist. That difference is not academic: every card capture in this branch was taken on the
+        // default frosted glass while the owner runs LIQUID, which is a different rendering path
+        // entirely, and the corner bug lived only on his side of it. Seeding beats one hook per
+        // setting because it reaches settings no hook was written for.
+        if let raw = ProcessInfo.processInfo.environment["CUB_DEFAULTS"] {
+            for pair in raw.split(separator: ";") {
+                let bits = pair.split(separator: "=", maxSplits: 1).map(String.init)
+                guard bits.count == 2 else { continue }
+                let (k, v) = (bits[0].trimmingCharacters(in: .whitespaces), bits[1])
+                if v.hasPrefix("["), v.hasSuffix("]") {
+                    let inner = String(v.dropFirst().dropLast())
+                    appDefaults.set(inner.isEmpty ? [] : inner.split(separator: ",").map(String.init), forKey: k)
+                } else if let d = Double(v) {
+                    appDefaults.set(d, forKey: k)
+                } else if v == "true" || v == "false" {
+                    appDefaults.set(v == "true", forKey: k)
+                } else {
+                    appDefaults.set(v, forKey: k)
+                }
+            }
+        }
         let s = AppSettings(defaults: appDefaults)
         if let m = ProcessInfo.processInfo.environment["CUB_CHARTMODE"] {
             let kinds = m.split(separator: ",").compactMap { ChartKind(rawValue: String($0)) }
             if !kinds.isEmpty { s.chartKinds = kinds }
         }
+        // CUB_THEME=light|dark pins the appearance, so a shot of either palette does not depend on
+        // what the machine's own appearance happens to be when the run starts.
+        if let t = ProcessInfo.processInfo.environment["CUB_THEME"].flatMap(AppTheme.init(rawValue:)) {
+            s.theme = t
+        }
+        // Same name and meaning as the offscreen renderer's hook (StyleSheet.qaSettings): the Alerts
+        // pane is mostly hidden until alerts are switched on, and that is how it is documented and
+        // how docs/measure-panes.sh measures it. Without this the live settings window could only be
+        // photographed with alerts on by running against the OWNER's real settings.
+        if ProcessInfo.processInfo.environment["CUB_ALERTS"] != nil { s.alertsEnabled = true }
+        // CUB_SECTIONS=<ordered,list>: the card's visible sections, in order, everything else
+        // hidden. Which section draws LAST decides the card's bottom edge (a chart plate last runs
+        // flush to it, anything else keeps the 16pt margin), and "last" is otherwise at the mercy
+        // of whether a real chat happens to be streaming on this machine while the shot is taken.
+        if let secs = ProcessInfo.processInfo.environment["CUB_SECTIONS"] {
+            let want = secs.split(separator: ",").map(String.init).filter { CardSection(rawValue: $0) != nil }
+            if !want.isEmpty {
+                s.sectionOrder = want + CardSection.allCases.map { $0.rawValue }.filter { !want.contains($0) }
+                s.sectionsHidden = CardSection.allCases.map { $0.rawValue }.filter { !want.contains($0) }
+            }
+        }
+        // The float drag sim needs its subject on screen, and the sandbox wipe above has just
+        // cleared any pre-seeded value, so the flag is the only way to ask for it.
+        if let f = ProcessInfo.processInfo.environment["CUB_QA_FLOATPIN"], f != "menu" {
+            s.floatingShown = true
+        }
+        // Card geometry, so a QA run can photograph the REAL hosts at a chosen size. The same two
+        // names the offscreen popover renderer uses. A card tall enough to overflow its ceiling and
+        // one short enough not to are different code paths (ScrollWhenTall), and both have to be
+        // looked at.
+        if let cw = ProcessInfo.processInfo.environment["CUB_CARDWIDTH"].flatMap(Double.init) { s.cardWidth = cw }
+        if let cb = ProcessInfo.processInfo.environment["CUB_CARDBOOST"].flatMap(Double.init) { s.cardChartBoost = cb }
+        // Same name and same meaning as the offscreen renderer's hook (Snapshot.swift), which the
+        // live panels never saw: the sandbox wipe clears textScale, and every measurement of where
+        // the card's edges land has to be repeatable at a scale other than 1 (rounding at 1.3 is
+        // where an off-by-a-point margin shows itself).
+        if let ts = ProcessInfo.processInfo.environment["CUB_TEXTSCALE"].flatMap(Double.init) { s.textScale = ts }
+        if ProcessInfo.processInfo.environment["CUB_SNAP_HOSTS"] != nil { s.floatingShown = true }
         return s
     }()
     let liveActivity = LiveActivity()
 
     private var statusItem: NSStatusItem!
-    private var popover: NSPopover!
+    // The menu card hangs from the status item in a borderless panel, NOT an NSPopover. A popover
+    // fights interactive resizing: it tracks the cursor as a drag/detach gesture, animates itself
+    // back toward its anchor between events, and re-centres on every content-size change, so the
+    // corner grip could never move the dragged edge 1:1. A panel is pinned by its top-left corner
+    // exactly like the floating card, where the same grip already works. Built fresh on each open
+    // and torn down on close, so a closed card costs nothing.
+    private var menuPanel: NSPanel?
+    /// The corner the menu panel hangs from: fixed for every resize, drag or content change alike.
+    /// Without it an AppKit window grows UP from its bottom-left, i.e. over the menu bar.
+    private var menuTopLeft: NSPoint = .zero
+    /// Set for the duration of a grip drag, so the drag's own starting corner wins over `menuTopLeft`.
+    private var menuResizePin: NSPoint?
+    /// Where the menu card's peak points. Owned here because only this side knows where the panel
+    /// ended up after clamping; the card observes it.
+    let menuAnchor = MenuAnchor()
+    /// Mouse-down watchers that give the panel the popover's transient behavior. Torn down on close.
+    private var menuClickMonitors: [Any] = []
+    /// An explanation bubble is showing, so an outside click must not take the card down with it.
+    private var menuPinnedOpen = false
+    /// QA: keep the card up whatever is clicked. Two hooks need that: CUB_OPEN_POPOVER, which
+    /// profiles the card's steady-state cost, and CUB_SNAP_HOSTS, which photographs it and would
+    /// otherwise have the card close under the shot. Read once: the environment cannot change
+    /// under a running process.
+    private let menuPinAlways = ProcessInfo.processInfo.environment["CUB_OPEN_POPOVER"] != nil
+        || ProcessInfo.processInfo.environment["CUB_SNAP_HOSTS"] != nil
+    /// CUB_OPEN_POPOVER on its own. The measurement hooks that ride on it (the height ceiling, the
+    /// tap test, the resize harness) belong to a profiling run and not to a screenshot run.
+    private let menuProfileRun = ProcessInfo.processInfo.environment["CUB_OPEN_POPOVER"] != nil
     private var settingsWindow: NSWindow!
     private var floatingPanel: NSPanel?
     // While the floating card's corner grip is dragged, hold this top-left corner still so the
     // panel grows DOWN-RIGHT under the cursor (an AppKit window otherwise grows from bottom-left).
     private var floatResizePin: NSPoint?
+
+    /// Begin or end a grip drag on the floating card.
+    ///
+    /// Two things have to happen for the length of the gesture, and both used to be spelled out at
+    /// each caller: pin the top-left corner, and stop AppKit persisting the frame.
+    /// `setFrameAutosaveName` writes the frame to UserDefaults after EVERY resize, and a drag
+    /// resizes the panel on every mouse-moved event, so the floating card was paying for a disk
+    /// write per frame on top of the deferred re-pin's second window move. The name is cleared for
+    /// the gesture and the frame saved once, explicitly, when the grip comes up. Clearing the name
+    /// does not move the window (only setFrameUsingName reads a saved frame back).
+    ///
+    /// The pin is released BEFORE the panel guard on purpose. A grip drag whose panel closed under
+    /// the cursor would otherwise leave floatResizePin set for the rest of the session, and
+    /// windowDidResize re-pins to that stale corner on every later content-driven resize.
+    func floatingResize(_ active: Bool) {
+        if !active { floatResizePin = nil }
+        guard let panel = floatingPanel else { return }
+        if active {
+            floatResizePin = NSPoint(x: panel.frame.minX, y: panel.frame.maxY)
+            _ = panel.setFrameAutosaveName("")
+        } else {
+            _ = panel.setFrameAutosaveName(kFloatingFrameAutosave)
+            panel.saveFrame(usingName: kFloatingFrameAutosave)
+        }
+    }
+    /// Everything the floating card's grip does when it comes UP, in one place.
+    ///
+    /// Named rather than left inline in the host's `onResizing` closure so the QA drag sim can
+    /// exercise the real site. The sim used to reach past it and call commitCardGeometry directly,
+    /// which skipped both the autosave restore and the shadow refresh: the drag-end shadow site is
+    /// the load-bearing one and it was the one site no harness touched.
+    func floatingResizeEnded() {
+        floatingResize(false)
+        // Belt and braces on the in-flight flag, exactly as the menu host already does it. A drag
+        // that ends without its mouse-up (the panel closing under the cursor, a cancelled tracking
+        // loop) would otherwise leave the flag set for the rest of the session, and with it the
+        // card's geometry unwritten and the menu bar frozen.
+        settings.commitCardGeometry()
+        // Once per gesture, not per frame: the flag above is still set until commitCardGeometry
+        // clears it, which is what holds this off during the drag.
+        refreshCardShadows("drag-end")
+    }
     private var edgePanel: NSPanel?          // small widget docked to the Claude Desktop window edge
     let edgeState = EdgeState()               // shared lost/rescan state for the widget
     private var tidePanels: [NSPanel] = []   // screen-edge tide line, one overlay per display
@@ -451,12 +608,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             if esc || cmdW { win.performClose(nil); return nil }
             return e
         }
-        // QA (CUB_OPEN_POPOVER=1): open the popover and PIN it open, so its steady-state cost can be
-        // profiled with `top`/`sample`. Transient behavior would close it the moment focus moved.
-        if ProcessInfo.processInfo.environment["CUB_OPEN_POPOVER"] != nil {
-            popover.behavior = .applicationDefined
+        // QA (CUB_OPEN_POPOVER=1): open the card and PIN it open (menuPinAlways suppresses the
+        // outside-click close), so its steady-state cost can be profiled with `top`/`sample`.
+        if menuProfileRun {
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in self?.togglePopover() }
-            // Prove the height ceiling holds, in the ONLY place it can be proved: the real popover
+            // Prove the height ceiling holds, in the ONLY place it can be proved: the real card
             // with real settings on a real screen. Prints the card's content height beside the
             // ceiling it must respect, so a regression is a failed comparison and not a squint at
             // a screenshot.
@@ -465,31 +621,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 let vis = Double(self.statusItem.button?.window?.screen?.visibleFrame.height
                                  ?? NSScreen.main?.visibleFrame.height ?? 0)
                 let ceiling = CardResize.heightCeiling(visible: vis, scale: self.settings.textScale)
-                let h = Double(self.popover.contentSize.height)
-                print("CUB_POP_HEIGHT=\(Int(h)) CEILING=\(Int(ceiling)) VISIBLE=\(Int(vis)) "
+                // The panel's content is the card PLUS the transparent headroom the peak points
+                // through, and the ceiling is the card's. Comparing the two directly reported OVER
+                // at exactly the boundary the guard exists to police, which is the one reading it
+                // has to get right.
+                let peak = self.menuAnchor.notchX == nil ? 0 : Double(kMenuNotchH) * self.settings.textScale
+                let h = Double(self.menuPanel?.contentView?.frame.height ?? 0) - peak
+                print("CUB_POP_HEIGHT=\(Int(h)) CEILING=\(Int(ceiling)) VISIBLE=\(Int(vis)) PEAK=\(Int(peak)) "
                       + "CHARTS=\(self.settings.chartKinds.count) VERDICT=\(h <= ceiling + 1 ? "within" : "OVER")")
+                // The panel's own rectangle, so a synthesized click can be BOUNDS-CHECKED against
+                // it before it is posted. The card hangs from the status item, so its x moves with
+                // whatever else is in the menu bar: a coordinate found by searching a screenshot
+                // has to be proven to be inside our own window before anything clicks there.
+                if Self.tapLog, let f = self.menuPanel?.frame {
+                    print("CUB_TAP panel=\(Int(f.minX)),\(Int(f.minY)),\(Int(f.width)),\(Int(f.height)) "
+                          + "screenH=\(Int(NSScreen.screens.first?.frame.height ?? 0))")
+                }
                 fflush(stdout)
+                self.runTapTest()
             }
             // QA (CUB_QA_POPRESIZE=<width>x<boost>): prove the live reflow path end to end with no
-            // mouse. Prints the popover's contentSize before and after a runtime width + chart-boost
+            // mouse. Prints the card's content size before and after a runtime width + chart-boost
             // change (the exact settings a grip drag drives) plus the window id, so
             // `screencapture -l` can shoot it.
+            // The frame's minX and maxY are printed on both lines because they are the claim being
+            // tested: the panel hangs from its TOP-LEFT corner, so a width change must move the
+            // RIGHT edge and nothing else. A popover kept its centre still instead, which is what
+            // made the dragged edge lag the cursor by half.
             // ⚠️ cardWidth/cardChartBoost PERSIST: the QA runner must restore the user's values
             // afterwards (`defaults write com.maz.burndown cardWidth <saved>` etc).
             if let qa = ProcessInfo.processInfo.environment["CUB_QA_POPRESIZE"] {
+                // Same guard as the two newer settings-writing hooks. This one predates them and
+                // had none, so a run against the owner's real defaults left the card at whatever
+                // width the simulation stopped at.
+                guard ProcessInfo.processInfo.environment["CUB_SANDBOX"] != nil else {
+                    fatalError("CUB_QA_POPRESIZE writes settings and must be run with CUB_SANDBOX set.")
+                }
                 let parts = qa.split(separator: "x").compactMap { Double($0) }
                 let w = parts.count > 0 ? parts[0] : 380, b = parts.count > 1 ? parts[1] : 0
+                func frameNote(_ f: NSRect?) -> String {
+                    f.map { " winX=\(Int($0.minX)) winY=\(Int($0.minY)) winMaxX=\(Int($0.maxX)) winMaxY=\(Int($0.maxY))" } ?? ""
+                }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
                     guard let self else { return }
-                    let s0 = self.popover.contentSize
-                    print("CUB_POP_BEFORE=\(Int(s0.width))x\(Int(s0.height)) w=\(self.settings.cardWidth) boost=\(self.settings.cardChartBoost)")
-                    self.popover.animates = false
+                    let s0 = self.menuPanel?.contentView?.frame.size ?? .zero
+                    print("CUB_POP_BEFORE=\(Int(s0.width))x\(Int(s0.height)) w=\(self.settings.cardWidth) boost=\(self.settings.cardChartBoost)"
+                          + frameNote(self.menuPanel?.frame))
                     self.settings.cardWidth = CardResize.clampW(w)
                     self.settings.cardChartBoost = CardResize.clampB(b)
                     DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                        let s1 = self.popover.contentSize
-                        print("CUB_POP_AFTER=\(Int(s1.width))x\(Int(s1.height)) w=\(self.settings.cardWidth) boost=\(self.settings.cardChartBoost)")
-                        if let win = self.popover.contentViewController?.view.window {
+                        let s1 = self.menuPanel?.contentView?.frame.size ?? .zero
+                        print("CUB_POP_AFTER=\(Int(s1.width))x\(Int(s1.height)) w=\(self.settings.cardWidth) boost=\(self.settings.cardChartBoost)"
+                              + frameNote(self.menuPanel?.frame))
+                        if let win = self.menuPanel {
                             print("CUB_POP_WINID=\(win.windowNumber) frame=\(Int(win.frame.width))x\(Int(win.frame.height))")
                         }
                         fflush(stdout)   // the QA runner reads these mid-run from a redirected pipe
@@ -502,6 +686,167 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         // Pins the top-left exactly like ResizeGrip.began, then steps cardWidth like drag ticks.
         // This crashed with a re-entrant setFrameOrigin before the windowDidResize defer fix
         // (three identical SIGABRTs on 2026-08-01); it must print survived after.
+        // QA (CUB_QA_DEMODATA=1, sandbox only): stand the SAME deterministic sample data the
+        // offscreen renderers use in front of the live numbers, so a photograph of the REAL card is
+        // publishable.
+        //
+        // The sandbox suite is a throwaway SETTINGS domain; it says nothing about the data. The card
+        // reads `engine.snapshot`, `engine.records` and `liveActivity`, all three of which come from
+        // this machine's own Claude logs and OAuth session, so a capture of the real panel would
+        // publish the operator's usage, chat titles and project names. That is exactly why the
+        // published card art used to be rendered offscreen over a flat colour, and why it could
+        // therefore never show the card's surface, peak, plate or grip. Seeding here is what lets
+        // the documentation photograph the real thing instead.
+        //
+        // Deliberately NOT scoped to one capture hook: it applies to `CUB_SNAP_HOSTS` (cacheDisplay)
+        // and to `CUB_OPEN=popover` (a real `screencapture -l` of the panel, shadow and all) alike.
+        // Re-applied on a tick rather than set once, because the app's own refresh would otherwise
+        // put the real numbers back between the seed and the shot.
+        if ProcessInfo.processInfo.environment["CUB_QA_DEMODATA"] != nil {
+            guard ProcessInfo.processInfo.environment["CUB_SANDBOX"] != nil else {
+                fatalError("CUB_QA_DEMODATA drives the real app's state and must be run with CUB_SANDBOX set.")
+            }
+            let seedDemo: () -> Void = { [weak self] in
+                guard let self else { return }
+                // Stop the refresh loop first. Overwriting the snapshot is not enough on its own:
+                // `liveTick` re-fetches, re-scans AND appends a real burn sample, and a tick landing
+                // between the last seed and the shot put a spike of this machine's real traffic into
+                // the published chart (the bar chart's ceiling moved between otherwise identical
+                // runs, which is how it was caught). Nothing reschedules these once they are dead,
+                // so the card holds the sample data still.
+                self.liveTimer?.invalidate(); self.liveTimer = nil
+                self.fullTimer?.invalidate(); self.fullTimer = nil
+                // LiveActivity runs its OWN log-tailing timer, independent of liveTick, and it is
+                // the one that publishes `rate`, `active` and `activeStreams` (real chat and project
+                // names, read straight off this machine's session files). Left running it beat the
+                // seed to the shot: the burn line read the operator's real tokens per minute, and an
+                // idle moment turned the card's live indicator to "paused".
+                self.liveActivity.stop()
+                var s = UsageSnapshot()
+                s.apiSession = WindowState(pct: 0.46, resetAt: Date().addingTimeInterval(4 * 3600 + 31 * 60))
+                s.apiWeekly = WindowState(pct: 0.13, resetAt: Date().addingTimeInterval(3 * 86400 + 4 * 3600))
+                s.apiOpus = WindowState(pct: 0.31, resetAt: nil)
+                s.apiSonnet = WindowState(pct: 0.22, resetAt: nil)
+                s.modelLimits = [ScopedLimit(label: "Fable", pct: 0.32,
+                                             resetAt: Date().addingTimeInterval(3 * 86400),
+                                             active: true, severity: "normal")]
+                s.modelUsage = [ModelUse(label: "Fable", cost: 384, share: 0.40),
+                                ModelUse(label: "Opus", cost: 288, share: 0.30),
+                                ModelUse(label: "Sonnet", cost: 240, share: 0.25),
+                                ModelUse(label: "Haiku", cost: 48, share: 0.05)]
+                s.sessionFresh = 3_000_000; s.sessionCost = 112
+                s.weeklyFresh = 29_000_000; s.weeklyCost = 960
+                s.plan = "Max"
+                s.liveUpdated = Date()
+                self.engine.snapshot = s
+                self.engine.records = StyleSheet.qaChartRecords()
+                self.engine.apiSpend = APISpend()   // no developer-API line, whatever this Mac has
+                self.engine.ready = true
+                self.liveActivity.seedForPreview(
+                    history: [0.05, 0.12, 0.08, 0.22, 0.18, 0.4, 0.32, 0.55,
+                              0.6, 0.5, 0.78, 0.7, 0.62, 0.84, 0.7, 0.9],
+                    rate: 14_000, active: true)
+            }
+            seedDemo()
+            let tick = Timer(timeInterval: 0.1, repeats: true) { _ in seedDemo() }
+            RunLoop.main.add(tick, forMode: .common)
+        }
+
+        // QA (CUB_SNAP_HOSTS=/dir): photograph BOTH live hosts and quit.
+        //
+        // The offscreen renderers draw DetailCard over a flat colour, deliberately: they exist to
+        // force app STATES. They therefore cannot see anything about the card's real surface, which
+        // is where the glass, the clip shape and the panel live, so every bug in that layer is
+        // invisible to them. This goes through the panels' own view hierarchy instead. cacheDisplay
+        // rather than screencapture, because screencapture returns a black frame whenever the
+        // display happens to be locked, and a black frame is not evidence of anything.
+        if let dir = ProcessInfo.processInfo.environment["CUB_SNAP_HOSTS"] {
+            guard ProcessInfo.processInfo.environment["CUB_SANDBOX"] != nil else {
+                fatalError("CUB_SNAP_HOSTS drives the real windows and must be run with CUB_SANDBOX set.")
+            }
+            // Open the menu card itself. The hook advertises that it photographs BOTH live hosts,
+            // and it had no way to raise one: run on its own it printed `missing=menu` and wrote
+            // only the floating card, so the host with the peak, the anchor and the ceiling was
+            // the one host it never shot. Same 1.5s as the profiling path, and menuPinAlways keeps
+            // it up for the rest of the run.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+                guard let self, self.menuPanel == nil else { return }
+                self.togglePopover()
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4.0) { [weak self] in
+                guard let self else { exit(1) }
+                func shoot(_ panel: NSPanel?, _ name: String) {
+                    guard let v = panel?.contentView,
+                          let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) else {
+                        print("CUB_SNAP_HOSTS missing=\(name)"); return
+                    }
+                    v.cacheDisplay(in: v.bounds, to: rep)
+                    guard let png = rep.representation(using: .png, properties: [:]) else { return }
+                    try? png.write(to: URL(fileURLWithPath: dir).appendingPathComponent("\(name).png"))
+                    print("CUB_SNAP_HOSTS wrote=\(name) size=\(Int(v.bounds.width))x\(Int(v.bounds.height))")
+                }
+                // CUB_NOTCHX=<pt> forces where the peak points, so the clamped case (a wide card
+                // pushed back inside the screen, icon no longer above its middle) can be looked at
+                // without dragging the real status item to the end of the menu bar.
+                if let nx = ProcessInfo.processInfo.environment["CUB_NOTCHX"].flatMap(Double.init) {
+                    self.menuAnchor.notchX = CGFloat(nx)
+                }
+                // A forced hover (CUB_QA_HOVER, see HoverCatcher) lands 0.4s after the chart's first
+                // layout and is driven from inside the view, so the shot waits for it here rather
+                // than photographing the card the instant it is asked to.
+                let hoverDelay = ProcessInfo.processInfo.environment["CUB_QA_HOVER"] == nil ? 0.0 : 1.5
+                DispatchQueue.main.asyncAfter(deadline: .now() + hoverDelay) {
+                    shoot(self.menuPanel, "menu")
+                    shoot(self.floatingPanel, "float")
+                    // The About window too, KEY and active, because the thing worth looking at
+                    // there is whether a control has taken first responder and drawn a focus ring.
+                    // An offscreen ImageRenderer pass cannot answer that: it has no window and no
+                    // responder chain, so it shows no ring whether or not the bug is present.
+                    self.showAbout()
+                    // WAIT for key rather than assume it after a fixed delay. A window that is not
+                    // key draws no focus ring whether or not the bug is present, so a shot taken
+                    // before it became key answers the question with the wrong picture and says
+                    // nothing about which. Polled for about a second, activating once, and the key
+                    // state it actually captured under is printed beside the file.
+                    var tries = 0
+                    func shootAbout() {
+                        if self.aboutWindow?.isKeyWindow != true, tries < 10 {
+                            if tries == 0 {
+                                self.aboutWindow?.makeKeyAndOrderFront(nil)
+                                NSApp.activate(ignoringOtherApps: true)
+                            }
+                            tries += 1
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { shootAbout() }
+                            return
+                        }
+                        if let v = self.aboutWindow?.contentView,
+                           let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) {
+                            v.cacheDisplay(in: v.bounds, to: rep)
+                            if let png = rep.representation(using: .png, properties: [:]) {
+                                try? png.write(to: URL(fileURLWithPath: dir).appendingPathComponent("about.png"))
+                                print("CUB_SNAP_HOSTS wrote=about key=\(self.aboutWindow?.isKeyWindow == true) "
+                                      + "waited=\(tries * 100)ms")
+                            }
+                        }
+                        fflush(stdout)
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { exit(0) }
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { shootAbout() }
+                }
+            }
+        }
+
+        // QA (CUB_QA_SHADOW=1, sandbox only): change one setting that redraws the card's OUTLINE, so
+        // the settings call site can be seen firing. The window shadow is drawn outside the view
+        // tree and no in-process capture contains it, so "the shadow is right" is not a thing a
+        // screenshot can answer; that each call site fires when it should is.
+        if Self.shadowLog, ProcessInfo.processInfo.environment["CUB_SANDBOX"] != nil {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 5.0) { [weak self] in
+                guard let self else { return }
+                self.settings.glassCornerRadius += 1
+            }
+        }
+
         if ProcessInfo.processInfo.environment["CUB_QA_FLOATPIN"] != nil {
             // This hook drives a simulated resize by WRITING settings, so it must never run against
             // the owner's real defaults: it would leave the card at whatever width the simulation
@@ -516,16 +861,144 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                     .appendingPathComponent(".config/burndown/floatpin.state").path
             let mark: (String) -> Void = { try? Data($0.utf8).write(to: URL(fileURLWithPath: markPath)) }
             mark("armed")
-            DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
-                guard let self, let panel = self.floatingPanel else { mark("no-panel"); return }
-                self.floatResizePin = NSPoint(x: panel.frame.minX, y: panel.frame.maxY)
+            // WAIT for the host, do not assume it at a fixed moment. This used to fire once at
+            // T+3s, read the panel, and return silently when it was nil: on the menu host that
+            // raced CUB_OPEN_POPOVER's own opening, so a run that lost the race printed no
+            // CUB_DRAGSIM line at all and simply sat there. That looked like a hang and was
+            // recorded as an unexplained recurring flake for several sessions. It polls now, and
+            // when the host genuinely never appears it says so on stdout rather than only in a
+            // marker file nobody was reading.
+            let onMenu = ProcessInfo.processInfo.environment["CUB_QA_FLOATPIN"] == "menu"
+            func awaitHost(_ tries: Int, _ body: @escaping (NSPanel) -> Void) {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+                    guard let self else { mark("no-panel"); return }
+                    if let p = onMenu ? self.menuPanel : self.floatingPanel { body(p); return }
+                    if tries <= 0 {
+                        mark("no-panel")
+                        print("CUB_DRAGSIM host=\(onMenu ? "menu" : "float") ABORT=host-never-appeared"
+                              + (onMenu ? " (open it with CUB_OPEN_POPOVER=1)" : ""))
+                        fflush(stdout)
+                        return
+                    }
+                    awaitHost(tries - 1, body)
+                }
+            }
+            awaitHost(48) { panel in   // up to 12s, well past the 1.5s the menu host opens at
+                // Enter the gesture through the SAME calls the grip makes, or the sim measures a
+                // path the app does not have: the floating host's frame-autosave suspension lives
+                // in floatingResize, and timing it without that is timing different code.
+                if onMenu { self.menuResizePin = NSPoint(x: panel.frame.minX, y: panel.frame.maxY) }
+                else { self.floatingResize(true) }
+                // Mirror a REAL drag: geometry stays in memory for the gesture (no defaults write
+                // and no menu bar repaint per step) and the charts freeze at the start geometry,
+                // committed once at the end. Same call the grip's `began` makes.
+                self.settings.beginCardResize()
+                let pin = NSPoint(x: panel.frame.minX, y: panel.frame.maxY)
+                // Press, THEN move. A real grip drag gets its `began` on mouse-down and its first
+                // cursor delta some time later, so the render that mouse-down causes is finished
+                // before any movement is asked for. Starting the clock in the same breath as
+                // `began` charged that render to the first moving frame and reported it as drag
+                // lag, which is the harness measuring itself rather than the gesture.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+                guard let self else { return }
+                let t0 = Date()
+                var ticks = 0, worstGap = 0.0, driftX = 0.0, driftY = 0.0
+                // The two worst MOVING gaps and the steps they landed on. Two, because a single
+                // worst number hides everything behind it, and this sim has one frame (the first
+                // movement, which engages the freeze) that is legitimately dearer than the rest.
+                var worstAt = 0, gap2 = 0.0, gap2At = 0
+                var lastFire = Date()
                 var w = CardResize.minWidth
                 var b = 0.0
+                // The deliberate stillness, so a headless run exercises settle-on-pause instead of
+                // only ever measuring continuous movement. Held long enough to clear the 0.2s the
+                // grip waits for, with room for the settle's own relayout to finish inside it.
+                var pauseStart: Date? = nil
+                var pausedFor = 0.0
+                var inPause = false
+                var settleGap = 0.0
+                var settles = 0
+                var settleWork: DispatchWorkItem? = nil
+                var shotPause = false
+                var shotEarly = false
+                // CUB_QA_FLOATPIN_SHOT=/dir writes the card mid-movement, mid-pause and after
+                // release. Through the VIEW, not screencapture: this is a change to how a resize
+                // looks, so it has to be looked at, and screencapture returns a black frame
+                // whenever the display happens to be locked. cacheDisplay does not care.
+                let shotDir = ProcessInfo.processInfo.environment["CUB_QA_FLOATPIN_SHOT"]
+                func shoot(_ name: String) {
+                    guard let dir = shotDir, let v = panel.contentView,
+                          let rep = v.bitmapImageRepForCachingDisplay(in: v.bounds) else { return }
+                    v.cacheDisplay(in: v.bounds, to: rep)
+                    guard let png = rep.representation(using: .png, properties: [:]) else { return }
+                    try? png.write(to: URL(fileURLWithPath: dir).appendingPathComponent("\(name).png"))
+                }
+                // Arm the settle exactly the way MenuCard's grip does, on every step, so the sim
+                // measures the app's own timing rather than a second implementation of it.
+                var armSettle: () -> Void = {}
+                armSettle = { [weak self] in
+                    guard let self else { return }
+                    settleWork?.cancel()
+                    let work = DispatchWorkItem { if self.settings.settleCardResize() { settles += 1 } }
+                    settleWork = work
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
+                }
                 Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] t in
                     guard let self else { t.invalidate(); return }
+                    let nowT = Date()
+                    // Every gap is attributed to the state the PREVIOUS tick left the sim in, so the
+                    // stall that a moving frame caused can never be filed under the pause.
+                    let gap = nowT.timeIntervalSince(lastFire)
+                    if inPause { settleGap = max(settleGap, gap) }
+                    else if gap > worstGap { gap2 = worstGap; gap2At = worstAt; worstGap = gap; worstAt = ticks }
+                    else if gap > gap2 { gap2 = gap; gap2At = ticks }
+                    lastFire = nowT
+                    // Drift of the pinned corner, the thing the re-pin exists to hold still.
+                    driftX = max(driftX, abs(panel.frame.minX - pin.x))
+                    driftY = max(driftY, abs(panel.frame.maxY - pin.y))
+                    if ticks == 20, pauseStart == nil { pauseStart = nowT; inPause = true }
+                    if let ps = pauseStart, nowT.timeIntervalSince(ps) < 0.45 {
+                        pausedFor = nowT.timeIntervalSince(ps)   // dead time, subtracted from elapsed
+                        // Both ends of the pause, at IDENTICAL geometry: early, before the 0.2s
+                        // stillness has elapsed, the card is still the stretched transform; late,
+                        // after the settle's relayout has landed, it is the true layout. Same width,
+                        // same height, so any difference between the two frames is the settle.
+                        if pausedFor > 0.05 && !shotEarly { shotEarly = true; shoot("2a-paused-stretched") }
+                        if pausedFor > 0.40 && !shotPause { shotPause = true; shoot("2b-paused-settled") }
+                        return                                   // hold the geometry: no step, no re-arm
+                    }
+                    inPause = false
+                    ticks += 1
                     w += 3; b += 2
                     if w > 380 {
-                        t.invalidate(); self.floatResizePin = nil
+                        t.invalidate()
+                        settleWork?.cancel()   // a settle must never land after the release
+                        // Release through the app's OWN end-of-gesture path, not a second
+                        // implementation of it, so the drag-end shadow refresh is exercised.
+                        if onMenu {
+                            self.menuResizePin = nil
+                            self.settings.commitCardGeometry()
+                        } else {
+                            self.floatingResizeEnded()
+                        }
+                        // Deliberate dead time is not the card being slow, so it comes out of
+                        // elapsed. It is printed too: a number nobody can check is not evidence.
+                        let ms = (Date().timeIntervalSince(t0) - pausedFor) * 1000
+                        let ideal = Double(ticks) * 1000.0 / 60.0
+                        // The verdict a human cares about: did the 60Hz sim keep 60Hz while it was
+                        // actually moving, and did the pinned corner hold. worstGap is the longest
+                        // stall between two MOVING frames; settleGap is the longest one inside the
+                        // pause, which is where the settle's full-detail relayout lands.
+                        print("CUB_DRAGSIM host=\(onMenu ? "menu" : "float") ticks=\(ticks) "
+                              + "elapsed=\(Int(ms))ms ideal=\(Int(ideal))ms "
+                              + "worstGap=\(Int(worstGap * 1000))ms@\(worstAt) gap2=\(Int(gap2 * 1000))ms@\(gap2At) "
+                              + "settleGap=\(Int(settleGap * 1000))ms "
+                              + "paused=\(Int(pausedFor * 1000))ms "
+                              + "driftX=\(Int(driftX)) driftY=\(Int(driftY))")
+                        print("CUB_SETTLE count=\(settles)")
+                        fflush(stdout)
+                        // After the release the card has had its one full-detail relayout.
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { shoot("4-released") }
                         mark("survived")
                         return
                     }
@@ -533,12 +1006,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                     // (the natH preference -> outer frame path, which a width-only sim missed).
                     self.settings.cardWidth = w
                     self.settings.cardChartBoost = min(CardResize.maxBoost, b)
+                    armSettle()
+                    if ticks == 12 { shoot("1-moving-stretched") }
+                    if ticks == 30 { shoot("3-moving-after-settle") }
+                }
                 }
             }
         }
 
         engine.usageEnabled = settings.usageAPI   // honor the opt-in gate before any live fetch
-        engine.recordDays = settings.chartDays    // record depth follows the Day span setting
+        engine.recordDays = settings.deepestChartDays   // depth follows the greediest chart on the card
         UsageEngine.cliBootstrapAllowed = settings.borrowCLI   // consent gate for the CLI credential
         // Sign-in/out lifecycle: completing OAuth counts as opting in to live usage; signing out
         // revokes both the live opt-in and the CLI-borrow consent, so it sticks.
@@ -566,11 +1043,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         }
 
         // Updates: one quiet check a few seconds after launch (if enabled and due), then the
-        // 10-minute housekeeping timer re-tests the 24h interval. Never on a dev checkout.
+        // 10-minute housekeeping timer re-tests the chosen interval. Never on a dev checkout.
         DispatchQueue.main.asyncAfter(deadline: .now() + 6) { [weak self] in
             guard let self else { return }
-            Updater.shared.checkInBackgroundIfDue(enabled: self.settings.autoUpdateCheck)
+            Updater.shared.checkInBackgroundIfDue(enabled: self.settings.autoUpdateCheck,
+                                                  cadence: self.settings.updateCadence, atLaunch: true)
         }
+        // What to DO about a version once one is found: announce it once, or install it quietly.
+        // Watching the updater's own state rather than hooking the check means this fires however
+        // the update was discovered, including a manual "Check now".
+        Updater.shared.$state
+            .receive(on: RunLoop.main)
+            .sink { [weak self] st in
+                guard let self, case .available(let rel) = st else { return }
+                self.handleAvailableUpdate(rel)
+            }
+            .store(in: &cancellables)
         // First run: the welcome tour introduces the app and hosts the connect choices.
         if !settings.onboarded {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in self?.showWelcome() }
@@ -599,7 +1087,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 }
                 let w = (o == "account") ? self.accountWindow
                       : (o == "insights") ? self.insightsWindow
-                      : (o == "popover") ? self.popover.contentViewController?.view.window
+                      : (o == "popover") ? self.menuPanel
                       : self.settingsWindow
                 // CUB_TALL=<points> grows the window for documentation captures, so a long
                 // settings pane can be photographed whole instead of scrolled.
@@ -647,7 +1135,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         let open = UNNotificationAction(identifier: UsageAlerts.actionOpen, title: "Open Burndown", options: [.foreground])
         let cat = UNNotificationCategory(identifier: UsageAlerts.category, actions: [snooze, open],
                                          intentIdentifiers: [], options: [])
-        UNUserNotificationCenter.current().setNotificationCategories([cat])
+        let notes = UNNotificationAction(identifier: UsageAlerts.actionUpdateNotes, title: "What's new",
+                                         options: [.foreground])
+        let install = UNNotificationAction(identifier: UsageAlerts.actionUpdateInstall, title: "Install now",
+                                           options: [.foreground])
+        let updateCat = UNNotificationCategory(identifier: UsageAlerts.updateCategory, actions: [notes, install],
+                                               intentIdentifiers: [], options: [])
+        // BOTH categories in one call. setNotificationCategories REPLACES the whole set, so
+        // registering the update category on its own would silently unregister Snooze and Open on
+        // every usage alert.
+        UNUserNotificationCenter.current().setNotificationCategories([cat, updateCat])
     }
 
     // MARK: - Edge dock (a small widget glued to a side of the Claude Desktop window)
@@ -841,9 +1338,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         if tidePanels.count != screens.count { rebuildTidePanels(); return }   // display set changed
         let edge = settings.tideEdge
         let s = engine.snapshot
-        let rem = CGFloat(max(0, 1 - s.sessionPct))
+        // The primary gauge: the session, or the week on a plan that has no session limit.
+        let rem = CGFloat(max(0, 1 - s.primaryPct))
         let heat = CGFloat(liveActivity.active ? max(0, min(1, liveActivity.norm)) : 0)
-        let red = CGFloat(s.over ? 1 : max(0, (min(1, s.sessionPct) - 0.85) / 0.15))
+        let red = CGFloat(s.primaryOver ? 1 : max(0, (min(1, s.primaryPct) - 0.85) / 0.15))
         for (i, screen) in screens.enumerated() {
             let panel = tidePanels[i]
             panel.setFrame(tideFrame(edge, screen.frame, length: CGFloat(settings.tideLength)), display: false)
@@ -905,8 +1403,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         }
         guard near else { tidePeekPanel?.orderOut(nil); return }
         let s = engine.snapshot
-        let pct = Int(((1 - min(1, s.sessionPct)) * 100).rounded())
-        let left = s.sessionResetAt.map { weekLeftString($0) } ?? "--"
+        let pct = Int(((1 - min(1, s.primaryPct)) * 100).rounded())
+        let left = s.primaryResetAt.map { weekLeftString($0) } ?? "--"
         showTidePeek("\(pct)% left · \(left)", at: mouse, edge: edge, screen: screen)
     }
 
@@ -1097,7 +1595,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         }
     }
 
+    /// Build and show the floating card's panel.
+    ///
+    /// Idempotent. TWO startup paths reach here: the restore in applicationDidFinishLaunching
+    /// (syncFloating) and the `settings.$floatingShown` sink installed by bind(), which delivers
+    /// the current value as soon as the main runloop turns. A second call built a second panel and
+    /// hosting controller over the first, leaking the original along with its live subscriptions.
+    /// The chrome-toggle path deliberately nils `floatingPanel` before calling, so it still builds.
     private func showFloating() {
+        guard floatingPanel == nil else { floatingPanel?.orderFront(nil); return }
         let host = NSHostingController(rootView: MenuCard(
             engine: engine, settings: settings, live: liveActivity,
             onRefresh: { [weak self] in self?.manualRefresh() },
@@ -1107,12 +1613,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             onSignIn: { [weak self] in self?.showAccount() },
             onOpenLogs: { [weak self] in self?.openLogs() },
             onResizing: { [weak self] active in
-                guard let self, let panel = self.floatingPanel else { return }
-                self.floatResizePin = active ? NSPoint(x: panel.frame.minX, y: panel.frame.maxY) : nil
+                guard let self else { return }
+                if active { self.floatingResize(true) } else { self.floatingResizeEnded() }
             },
+            // Every content-height change reaches the window as a new outline; see
+            // refreshCardShadows for why AppKit will not notice on its own.
+            onHeight: { [weak self] _ in self?.refreshCardShadows("height") },
             hostScreen: floatingPanel?.screen ?? NSScreen.main))
         host.sizingOptions = [.preferredContentSize]   // panel hugs the card
-        let panel = NSPanel(contentViewController: host)
+        // KeyablePanel for the same reason as the menu panel: in the chrome-free (borderless)
+        // configuration a plain NSPanel cannot become key, which silently drops SwiftUI tap
+        // gestures and locks the rename field out of focus. Titled chrome never had the problem,
+        // and answering true costs it nothing.
+        let panel = KeyablePanel(contentViewController: host)
         if settings.floatingChrome {
             panel.styleMask = [.titled, .closable, .utilityWindow, .nonactivatingPanel]
             panel.title = kAppName
@@ -1137,7 +1650,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         // inside -[NSWindow _reallySetFrame:] (the 2026-08-01 grip-drag crash), and it did not
         // change the glass compositing anyway (that difference is behind-window vibrancy).
         panel.delegate = self
-        panel.setFrameAutosaveName("ClaudeMonitorFloating")
+        panel.setFrameAutosaveName(kFloatingFrameAutosave)
         // First open (or off-screen) → tuck under the menu bar, top-right.
         if panel.frame.origin == .zero || !NSScreen.screens.contains(where: { $0.frame.intersects(panel.frame) }) {
             if let vf = NSScreen.main?.visibleFrame {
@@ -1150,6 +1663,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         panel.alphaValue = settings.windowOpacity
         floatingPanel = panel
         panel.orderFront(nil)
+        // The shadow this panel is showing right now was computed before SwiftUI drew anything into
+        // it. `settle` catches the case where the first real layout lands after the window does.
+        refreshCardShadows("show-floating", settle: true)
     }
 
     func windowDidResize(_ notification: Notification) {
@@ -1166,13 +1682,64 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                 panel.setFrameOrigin(NSPoint(x: pin.x, y: pin.y - panel.frame.height))
             }
         }
+        // The menu card hangs from the menu bar, so its top-left is fixed for EVERY resize, not
+        // only a grip drag: switching on another chart would otherwise grow the panel upward, over
+        // the menu bar. Deferred for the same re-entrancy reason as the floating card above.
+        if let w = notification.object as? NSWindow, w === menuPanel {
+            DispatchQueue.main.async { [weak self] in self?.pinMenuPanel() }
+        }
+        // The window shadow, whose outline this resize just invalidated (see refreshCardShadows).
+        if let w = notification.object as? NSWindow, w === floatingPanel || w === menuPanel {
+            refreshCardShadows("resize")
+        }
     }
+
+    /// Recompute both card panels' window shadows so the shadow matches the card on screen NOW.
+    ///
+    /// A TRANSPARENT window's shadow is computed from its content's outline and is then CACHED:
+    /// AppKit never revisits it when the content is resized, restyled or simply drawn for the first
+    /// time. So the card wore the outline of whatever it looked like at that first computation,
+    /// which shows up as a pale rounded ledge around a see-through card, worst along the bottom
+    /// edge where the shadow is widest. Resize was only one of the ways in; first display, a
+    /// content-height change and a change to the glass settings are the others.
+    ///
+    /// Deferred one runloop hop because every caller runs either before the first layout pass or
+    /// inside one, and a shadow computed then is of the outline being replaced. `settle` adds a
+    /// second pass half a second later for the display path, where SwiftUI's first REAL layout can
+    /// land after the window is already on screen.
+    ///
+    /// Cheap enough to call freely, but not per frame: a grip drag changes the height on every
+    /// mouse-moved event, so the in-flight flag holds it off until the drag ends (the mouse-up path
+    /// clears the flag and then asks again, so nothing is left stale).
+    func refreshCardShadows(_ site: String, settle: Bool = false) {
+        guard !settings.cardResizeInFlight else { return }
+        if Self.shadowLog { print("CUB_SHADOW site=\(site) menu=\(menuPanel != nil) float=\(floatingPanel != nil)"); fflush(stdout) }
+        let hit = { [weak self] in
+            guard let self else { return }
+            self.menuPanel?.invalidateShadow()
+            self.floatingPanel?.invalidateShadow()
+        }
+        DispatchQueue.main.async(execute: hit)
+        if settle { DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: hit) }
+    }
+
+    /// The glass settings that decide the card's OUTLINE or how much of it is see-through, as one
+    /// comparable value. The settings sink fires for every setting there is, and only these four can
+    /// leave the cached window shadow describing a card that is no longer on screen.
+    private var cardOutlineSignature: String {
+        "\(settings.glassStyle.rawValue)|\(settings.glassOpacity)|\(settings.glassCornerRadius)|\(settings.windowOpacity)"
+    }
+    /// The signature as of the last time the shadows were refreshed for it. Seeded where the
+    /// settings sink is installed, so the app's own launch values are never mistaken for a change.
+    private var lastCardOutlineSig = ""
 
     func windowWillClose(_ notification: Notification) {
         let w = notification.object as? NSWindow
         if w === floatingPanel {
             floatingPanel = nil
             if settings.floatingShown { settings.floatingShown = false }   // user closed it → remember
+        } else if w === menuPanel {
+            teardownMenuPanel()   // however it closed, the monitors and the pinned flag go with it
         } else if w === settingsWindow {
             NSApp.setActivationPolicy(settings.showDockIcon ? .regular : .accessory)   // menu-bar-only unless the Dock icon is on
         } else if w === welcomeWindow {
@@ -1212,7 +1779,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     // repaints the popover, Settings, the floating monitor, and About.
     private func applyTheme() {
         let a = themeAppearance()
-        popover?.appearance = a
+        menuPanel?.appearance = a
         settingsWindow?.appearance = a
         floatingPanel?.appearance = a
         aboutWindow?.appearance = a
@@ -1254,48 +1821,204 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             }
         }
 
-        popover = NSPopover()
         observeExplainBubble()
-        popover.behavior = .transient
-        popover.appearance = nil   // follow system light/dark
-        popover.delegate = self
-        // The content is built on show and TORN DOWN on close (popoverDidClose). The MenuCard observes
-        // live token flow and runs breathing TimelineViews; left resident, it re-rendered continuously
-        // while HIDDEN - pinning a core during any active burn. A closed popover now costs nothing.
+        // The card's panel is built on show and TORN DOWN on close (closeMenuPanel). The MenuCard
+        // observes live token flow and runs breathing TimelineViews; left resident, it re-rendered
+        // continuously while HIDDEN - pinning a core during any active burn. A closed card costs
+        // nothing, which is why nothing is created here.
     }
 
-    private func makePopoverHost() -> NSViewController {
+    private func makeMenuHost() -> NSViewController {
         let h = NSHostingController(rootView: MenuCard(
             engine: engine, settings: settings, live: liveActivity,
             onRefresh: { [weak self] in self?.manualRefresh() },
             onSignIn: { [weak self] in self?.showAccount() },
             onOpenLogs: { [weak self] in self?.openLogs() },
-            // Grip drag: kill the popover's size animation so the card tracks the cursor 1:1,
-            // restore it on mouse-up. (.preferredContentSize sizing does the actual resizing.)
-            onResizing: { [weak self] active in self?.popover.animates = !active },
+            // Grip drag: hold the panel's TOP-LEFT corner still for the whole gesture, so the width
+            // it gains lands on the right edge and the dragged corner stays under the cursor.
+            // (.preferredContentSize sizing does the actual resizing.)
+            onResizing: { [weak self] active in
+                guard let self else { return }
+                if active {
+                    self.menuResizePin = self.menuPanel.map { NSPoint(x: $0.frame.minX, y: $0.frame.maxY) }
+                } else {
+                    self.menuResizePin = nil
+                }
+                // Belt and braces on the in-flight flag. While it is set, the menu bar stops
+                // repainting on setting changes and the card's geometry stops being written to
+                // disk; if a drag ever ended without its mouse-up (the window closing under the
+                // cursor, a cancelled tracking loop) both would stay switched off for the rest of
+                // the session, silently. Clearing it on every end-of-resize means the flag cannot
+                // outlive the gesture that set it.
+                if !active { self.settings.commitCardGeometry() }
+                // Once per gesture, not per frame: the flag above is still set until
+                // commitCardGeometry clears it, which is what holds this off during the drag.
+                if !active { self.refreshCardShadows("drag-end") }
+            },
+            // Every content-height change reaches the window as a new outline; see
+            // refreshCardShadows for why AppKit will not notice on its own.
+            onHeight: { [weak self] _ in self?.refreshCardShadows("height") },
             // The screen the status item lives on, so the height ceiling is measured against the
             // display the card actually appears on rather than whichever one macOS calls main.
-            hostScreen: statusItem.button?.window?.screen
+            hostScreen: statusItem.button?.window?.screen,
+            anchor: menuAnchor
         ).noFocusRing())
-        h.sizingOptions = [.preferredContentSize]   // popover grows/shrinks to fit the card
+        h.sizingOptions = [.preferredContentSize]   // the panel grows/shrinks to fit the card
         return h
     }
 
-    func popoverDidClose(_ notification: Notification) {
-        popover.contentViewController = nil   // stop the hidden card from rendering
-        // Never leave the card pinned open because a bubble was up when it closed.
-        popover.behavior = .transient
+    /// Hang the card under the menu bar icon: top edge a few points clear of the bar, centred on
+    /// the icon, then pulled back inside the screen so a wide card at the right-hand end of the bar
+    /// does not run off the edge.
+    private func placeMenuPanel() {
+        guard let panel = menuPanel, let anchor = statusItem.button?.window?.frame else { return }
+        let screen = statusItem.button?.window?.screen ?? NSScreen.main
+        var x = anchor.midX - panel.frame.width / 2
+        // Flush under the menu bar. The card used to be hung 6pt clear of it; that 6pt now belongs
+        // to the peak, which lives inside the card's own bounds, so the panel goes right up to the
+        // bar and the card BODY still starts where it always did.
+        let top = anchor.minY   // the status item's window bottom IS the menu bar's bottom
+        if let vf = screen?.visibleFrame {
+            x = min(max(x, vf.minX + 8), max(vf.minX + 8, vf.maxX - panel.frame.width - 8))
+        }
+        menuTopLeft = NSPoint(x: x, y: top)
+        panel.setFrameOrigin(NSPoint(x: x, y: top - panel.frame.height))
+        aimMenuNotch(panelX: x)
     }
 
-    /// Pin the card open while an explanation bubble is showing, then hand it back to AppKit.
-    /// Without this, opening a bubble counts as interacting outside the transient popover and the
-    /// card disappears the moment you click a "?" - which is the whole point of clicking it.
-    /// CUB_OPEN_POPOVER pins the popover deliberately for profiling; leave that alone.
+    /// Point the card's peak at the status icon, in the panel's own coordinates.
+    ///
+    /// Computed HERE, at both places that decide the panel's x, because the panel is only centred
+    /// under the icon until it cannot be: a wide card near the end of the menu bar is clamped back
+    /// inside the screen, and after that the icon is nowhere near the card's middle. A card that
+    /// assumed centre would point its peak at empty menu bar exactly when the offset matters most.
+    private func aimMenuNotch(panelX: CGFloat) {
+        guard let iconMid = statusItem.button?.window?.frame.midX else { return }
+        let x = iconMid - panelX
+        // Only real movement: this runs from pinMenuPanel, which runs on every resize.
+        if let cur = menuAnchor.notchX, abs(cur - x) < 0.5 { return }
+        menuAnchor.notchX = x
+    }
+
+    /// Put the panel's top-left back where it belongs after a resize, whatever drove the resize.
+    private func pinMenuPanel() {
+        guard let panel = menuPanel else { return }
+        let pin = menuResizePin ?? menuTopLeft
+        var x = pin.x
+        if let vf = (panel.screen ?? NSScreen.main)?.visibleFrame {
+            x = min(max(x, vf.minX + 8), max(vf.minX + 8, vf.maxX - panel.frame.width - 8))
+        }
+        panel.setFrameOrigin(NSPoint(x: x, y: pin.y - panel.frame.height))
+        menuTopLeft = NSPoint(x: x, y: pin.y)
+        if menuResizePin != nil { menuResizePin = menuTopLeft }   // the clamp wins for the rest of the drag
+        aimMenuNotch(panelX: x)   // a resize can re-clamp the panel, which moves the icon off centre
+    }
+
+    private func showMenuPanel() {
+        guard let button = statusItem.button else { return }
+        // Activate so Core Animation runs the card at full frame rate (accessory apps get
+        // throttled animations while inactive).
+        NSApp.activate(ignoringOtherApps: true)
+        let panel = KeyablePanel(contentViewController: makeMenuHost())
+        panel.styleMask = [.borderless, .nonactivatingPanel]
+        // Renaming a chat needs key input, and SwiftUI TAP GESTURES need the window to be ABLE to
+        // become key. A borderless NSPanel answers canBecomeKey with false, which quietly breaks
+        // both: becomesKeyOnlyIfNeeded can never engage (the panel it is set on refuses key
+        // status), and SwiftUI's gesture machinery drops clicks in a window that cannot become
+        // key, while raw NSView mouseDown (the resize grip) keeps working. That is exactly the
+        // shape of the reported bug: the grip drags fine, the LIVE badge's tap does nothing.
+        // KeyablePanel answers true; becomesKeyOnlyIfNeeded still keeps a plain click from
+        // stealing focus from the frontmost app.
+        panel.becomesKeyOnlyIfNeeded = true
+        panel.isFloatingPanel = true
+        panel.level = .statusBar
+        panel.hidesOnDeactivate = false
+        panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
+        panel.isReleasedWhenClosed = false
+        // ⚠️ hasShadow stays at its DEFAULT (true) and wantsLayer is never set on the content view.
+        // Both were tried on the floating panel and both coincided with aborts inside
+        // -[NSWindow _reallySetFrame:] during data-driven resizes; see showFloating for the detail.
+        panel.delegate = self
+        panel.appearance = themeAppearance()
+        panel.isOpaque = false                     // let the frosted-glass slider show through
+        panel.backgroundColor = .clear
+        panel.alphaValue = settings.windowOpacity
+        menuPanel = panel
+        placeMenuPanel()
+        panel.orderFrontRegardless()
+        // Same first-display shadow as the floating card. This panel is rebuilt on every open, so
+        // it gets a fresh (and equally premature) shadow every time it is shown.
+        refreshCardShadows("show-menu", settle: true)
+        button.highlight(true)   // the status item stays pressed while the card is up
+        installMenuMonitors()
+    }
+
+    private func closeMenuPanel() {
+        guard let panel = menuPanel else { return }
+        teardownMenuPanel()
+        panel.close()
+        panel.contentViewController = nil   // stop the hidden card from rendering
+    }
+
+    /// Everything that must come apart whether the close was ours or AppKit's.
+    private func teardownMenuPanel() {
+        menuPanel?.delegate = nil
+        menuPanel = nil
+        menuResizePin = nil
+        menuPinnedOpen = false   // a bubble can never leave the card pinned into the next open
+        removeMenuMonitors()
+        statusItem.button?.highlight(false)
+    }
+
+    /// The transient behavior an NSPopover gave for free: a click anywhere else takes the card down.
+    /// A click on the status item is left alone, because statusClick is already the toggle and
+    /// closing here first would make the click reopen the card it just closed.
+    private func installMenuMonitors() {
+        removeMenuMonitors()
+        let outside: (NSEvent) -> Bool = { [weak self] e in
+            guard let self, let panel = self.menuPanel, !self.menuPinnedOpen, !self.menuPinAlways else { return false }
+            if let w = e.window {
+                if w === panel || w === self.statusItem.button?.window { return false }
+                // A window ordered ABOVE the card is something the card itself put there: the time
+                // chip's menu, a right-click menu, an explanation bubble. Clicking one is using the
+                // card, not leaving it. Anything the user actually moved to (another window of
+                // ours, another app) sits at or below the normal level.
+                if w.level.rawValue > panel.level.rawValue { return false }
+            }
+            return true
+        }
+        if let global = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown],
+                                                          handler: { [weak self] e in
+            if outside(e) { self?.closeMenuPanel() }
+        }) { menuClickMonitors.append(global) }
+        if let local = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown],
+                                                        handler: { [weak self] e in
+            if outside(e) { self?.closeMenuPanel() }
+            return e
+        }) { menuClickMonitors.append(local) }
+        // Escape closes it, matching every other window in the app.
+        if let key = NSEvent.addLocalMonitorForEvents(matching: .keyDown, handler: { [weak self] e in
+            guard let self, self.menuPanel != nil, e.keyCode == 53,
+                  !(self.menuPanel?.firstResponder is NSTextView) else { return e }
+            self.closeMenuPanel()
+            return nil
+        }) { menuClickMonitors.append(key) }
+    }
+
+    private func removeMenuMonitors() {
+        menuClickMonitors.forEach { NSEvent.removeMonitor($0) }
+        menuClickMonitors.removeAll()
+    }
+
+    /// Pin the card open while an explanation bubble is showing, then hand the transient behavior
+    /// back. Without this, opening a bubble is a click outside the panel and the card disappears
+    /// the moment you press a "?" - which is the whole point of pressing it.
+    /// CUB_OPEN_POPOVER pins the card deliberately for profiling; leave that alone.
     private func observeExplainBubble() {
-        guard ProcessInfo.processInfo.environment["CUB_OPEN_POPOVER"] == nil else { return }
+        guard !menuPinAlways else { return }
         NotificationCenter.default.addObserver(forName: .explainBubble, object: nil, queue: .main) { [weak self] note in
-            guard let self, let up = note.object as? Bool, self.popover != nil else { return }
-            self.popover.behavior = up ? .applicationDefined : .transient
+            guard let self, let up = note.object as? Bool else { return }
+            self.menuPinnedOpen = up
         }
     }
 
@@ -1613,7 +2336,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         menu.addItem(helpItem)
         menu.addItem(item("About \(kAppName)", #selector(showAbout), "", "info.circle"))
         menu.addItem(item("Quit \(kAppName)", #selector(quitApp), "q", "power"))
-        menu.popUp(positioning: nil, at: NSPoint(x: 0, y: button.bounds.height + 5), in: button)
+        // Open BELOW the menu bar, at the button's bottom edge, the way a native status menu does.
+        //
+        // This used to ask for `bounds.height + 5`. A status bar button is not flipped, so that is
+        // five points ABOVE the top of the menu bar: AppKit cannot put a menu there, so it clamped
+        // the menu down and turned the overflow into a scroll arrow, which sat on top of the first
+        // row. The account line ("Claude Max 20x · email") was hidden behind that chevron until it
+        // was clicked. Reading the origin off the bounds rather than hardcoding zero keeps it right
+        // whichever way the view is flipped.
+        let below = NSPoint(x: 0, y: button.isFlipped ? button.bounds.maxY : button.bounds.minY)
+        menu.popUp(positioning: nil, at: below, in: button)
     }
 
     @objc private func openGuide() {
@@ -1629,7 +2361,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private var aboutWindow: NSWindow?
     private var welcomeWindow: NSWindow?
     private var keyDismissMonitor: Any?   // Escape / Cmd+W closer for the titled aux windows
-    @objc private func showAbout() {
+    @objc func showAbout() {   // non-private: the CUB_SNAP_HOSTS QA hook photographs this window
         if aboutWindow == nil {
             let host = NSHostingController(rootView: AboutView())
             let w = NSWindow(contentViewController: host)
@@ -1675,6 +2407,45 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         openSettings()
     }
 
+    /// A newer version exists. Announce it, or install it, per the user's choice.
+    ///
+    /// Until now the ONLY sign of an available update was one row in the menu bar's right-click
+    /// menu, so a person who never right-clicks was never told at all. This is that missing notice,
+    /// and it is deliberately once per version: `updateAnnounced` is persisted, so restarting the
+    /// app does not re-announce the same release, and it clears itself once that version is running.
+    @MainActor private func handleAvailableUpdate(_ rel: UpdateRelease) {
+        guard !Updater.shared.isDevBuild else { return }
+        // Never mid-flight: the install ends in a forced quit and relaunch. If something is burning
+        // the install is refused, and the release then takes the announce path below rather than
+        // waiting silently for a check that may be a week away on the weekly cadence.
+        if settings.updateAction == .install,
+           Updater.shared.installAutomatically(busy: liveActivity.active) { return }
+        guard settings.updateAnnounced != rel.version else { return }
+        // Stamped only when the notification actually went out. Quiet hours suppress the post, and
+        // stamping first meant the release was marked announced to a person who never saw it.
+        if alerts.postUpdateAvailable(version: rel.version, summary: updateSummary(rel.notes),
+                                      settings: settings) {
+            settings.updateAnnounced = rel.version
+        }
+    }
+
+    /// The first meaningful line of a release's notes, for a notification body.
+    ///
+    /// The notes are Markdown written by whoever cut the release, so headings, blank lines and
+    /// bullet markers are stripped rather than shown raw. Server-supplied text: it is displayed as
+    /// plain characters and nothing in it is ever executed or followed.
+    private func updateSummary(_ notes: String) -> String {
+        for raw in notes.split(separator: "\n", omittingEmptySubsequences: true) {
+            var l = raw.trimmingCharacters(in: .whitespaces)
+            while l.hasPrefix("#") || l.hasPrefix("-") || l.hasPrefix("*") || l.hasPrefix(">") {
+                l.removeFirst(); l = l.trimmingCharacters(in: .whitespaces)
+            }
+            l = l.replacingOccurrences(of: "**", with: "").replacingOccurrences(of: "`", with: "")
+            if l.count >= 12 { return l.count > 160 ? String(l.prefix(160)) + "\u{2026}" : l }
+        }
+        return ""
+    }
+
     @objc private func refreshNow() { manualRefresh(); engine.fullScan() }
     @objc private func quitApp() { NSApp.terminate(nil) }
 
@@ -1707,8 +2478,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             template ? .black : usageNSColor(pct: pct, over: over, accent: accent, mode: mode)
         }
         let sec: NSColor = template ? .black : secondaryNSColor(accent: accent, mode: mode)
+        // A plan with no session limit has one number, the week, and the menu bar shows it
+        // whatever the Session / Weekly / Both setting says: there is no session to show, and
+        // "Both" would print the same number twice.
+        let show: MenuBarShow = s.sessionLimitAbsent ? .weekly : settings.menuBarShow
         var g: GlyphData
-        switch settings.menuBarShow {
+        switch show {
         case .session:
             let (frac, text) = compactTime(s.sessionResetAt, total: 5 * 3600)
             g = GlyphData(pct: s.sessionPct, pctText: pctStr(s.sessionPct), primary: usageCol(s.sessionPct, s.over),
@@ -1725,7 +2500,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
                           secFrac: s.weeklyPct, secText: pctStr(s.weeklyPct), secondary: wcol,
                           pLabel: "S", sLabel: "W")
         }
-        g.hasSecondary = (settings.menuBarShow == .both)
+        g.hasSecondary = (show == .both)
         g.digitWeight = settings.menuBoldDigits ? .semibold : .regular      // Semibold / Regular
         g.smolderIntensity = settings.smolderIntensity
         g.smolderBreathSlow = settings.smolderBreathSlow
@@ -1736,7 +2511,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         if !settings.menuShowPct, settings.menuBarStyle == .flame { g.pctText = "" }   // area 2: flame-only
         // Time to reset (fire family only): append a short mono countdown, capped at 5 chars.
         if settings.menuTimeToReset, [.smolder, .burnfront, .kiln, .flame].contains(settings.menuBarStyle) {
-            let (_, t) = compactTime(s.sessionResetAt, total: 5 * 3600)
+            let (_, t) = compactTime(s.primaryResetAt, total: s.primaryWindow)
             if !t.isEmpty { g.pctText += " " + String(t.prefix(5)) }
         }
         if let r = s.weeklyResetAt { g.weekLeftText = weekLeftString(r) }   // for the weeklyClock style
@@ -1754,8 +2529,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         // accent deepens toward rust as you approach the cap; a cool one jumps to the warm scale
         // (amber -> rust) instead of blending through mud. The COLOUR carries the reading.
         g.accent = settings.beaconUsageColor
-            ? beaconUsageNSColor(pct: settings.menuBarShow == .weekly ? s.weeklyPct : s.sessionPct,
-                                 over: settings.menuBarShow == .weekly ? s.weeklyOver : s.over,
+            ? beaconUsageNSColor(pct: show == .weekly ? s.weeklyPct : s.sessionPct,
+                                 over: show == .weekly ? s.weeklyOver : s.over,
                                  accent: accent)
             : accent
         // The digits take the system's label colour unless the user asked for the themed one.
@@ -1783,7 +2558,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         // Heat: 0 below 85%, ramping to 1 at the cap (over = full). Drives the flame's rage
         // and the Redline state. Keyed to whichever metric the menu bar is showing.
         func heat(_ p: Double, _ over: Bool) -> Double { over ? 1 : max(0, (min(1, p) - 0.85) / 0.15) }
-        switch settings.menuBarShow {
+        switch show {
         case .session: g.redline = heat(s.sessionPct, s.over)
         case .weekly:  g.redline = heat(s.weeklyPct, s.weeklyOver)
         case .both:    g.redline = max(heat(s.sessionPct, s.over), heat(s.weeklyPct, s.weeklyOver))
@@ -1822,23 +2597,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         }
     }
 
+    /// The one entry point for the menu card, from the status item and from every QA hook.
     @objc private func togglePopover() {
-        guard let button = statusItem.button else { return }
-        if popover.isShown { popover.performClose(nil) }
-        else {
-            // Activate so Core Animation runs the popover at full frame rate
-            // (accessory apps get throttled animations when inactive).
-            NSApp.activate(ignoringOtherApps: true)
-            if popover.contentViewController == nil { popover.contentViewController = makePopoverHost() }
-            popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            popover.contentViewController?.view.window?.makeKey()
-            if let win = popover.contentViewController?.view.window {
-                win.contentView?.wantsLayer = true
-                win.contentView?.layer?.shouldRasterize = false
-                win.alphaValue = settings.windowOpacity
-                win.isOpaque = false; win.backgroundColor = .clear   // glass is always on; let the desktop show through
-            }
-        }
+        if menuPanel != nil { closeMenuPanel() } else { showMenuPanel() }
     }
 
     // MARK: - Login item
@@ -1920,7 +2681,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     private func openLogs() {
         let dir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/burndown")
         NSWorkspace.shared.open(dir)
-        popover.performClose(nil)
+        closeMenuPanel()
     }
 
     // Settings → Charts & Data → Reset: clear stored chart history + truncate the diagnostic log.
@@ -1992,13 +2753,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
 
         // Re-render the menu bar when any setting changes. objectWillChange fires
         // BEFORE the value updates, so defer to the next runloop to read the new value.
+        lastCardOutlineSig = cardOutlineSignature
         settings.objectWillChange
             .sink { [weak self] in
                 DispatchQueue.main.async {
                     guard let self else { return }
+                    // A grip drag changes ONLY the card's own geometry, and this sink cannot tell
+                    // that from an accent change, so every mouse-moved event during a resize was
+                    // re-applying the theme across seven windows and rebuilding the menu bar glyph
+                    // from scratch. None of that can be affected by the card's width. Skipping it
+                    // for the length of the drag is most of why resizing used to stutter; the
+                    // mouse-up path below repaints once, so nothing can be left stale.
+                    guard !self.settings.cardResizeInFlight else { return }
                     self.applyTheme()
                     self.ensureAnimating()
                     self.updateStatusItem(self.engine.snapshot)
+                    // Four of those settings redraw the card's own outline or how much of it can be
+                    // seen through, and the window shadow is cached against that outline. Compared
+                    // rather than acted on, because this sink fires for every setting in the app.
+                    let sig = self.cardOutlineSignature
+                    if sig != self.lastCardOutlineSig {
+                        self.lastCardOutlineSig = sig
+                        self.refreshCardShadows("settings")
+                    }
                 }
             }
             .store(in: &cancellables)
@@ -2013,15 +2790,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         settings.$refreshSeconds.receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.rescheduleTimers() }.store(in: &cancellables)
 
-        // Day span drives how deep the record scan reaches; growing it triggers a deep scan so the
-        // longer charts fill in right away instead of waiting for the next 10-minute pass.
+        // How deep the record scan reaches, driven by the GREEDIEST chart on the card rather than
+        // by the global day span alone. A per-chart window can now ask for more history than the
+        // global setting retains, and a chart drawing a 30-day window against 14 days of records
+        // would simply show a short line: indistinguishable, to the reader, from thirty quiet days.
+        // Growing the depth triggers a deep scan so the longer chart fills in right away instead of
+        // waiting for the next 10-minute pass.
+        let applyDepth: () -> Void = { [weak self] in
+            guard let self else { return }
+            let days = self.settings.deepestChartDays
+            let grew = days > self.engine.recordDays
+            self.engine.recordDays = days
+            if grew { self.engine.fullScan() }
+        }
         settings.$chartDays.receive(on: RunLoop.main)
-            .sink { [weak self] days in
-                guard let self else { return }
-                let grew = days > self.engine.recordDays
-                self.engine.recordDays = days
-                if grew { self.engine.fullScan() }
-            }.store(in: &cancellables)
+            .sink { _ in DispatchQueue.main.async(execute: applyDepth) }.store(in: &cancellables)
+        settings.$chartSpans.receive(on: RunLoop.main)
+            .sink { _ in DispatchQueue.main.async(execute: applyDepth) }.store(in: &cancellables)
+        settings.$chartDayspans.receive(on: RunLoop.main)
+            .sink { _ in DispatchQueue.main.async(execute: applyDepth) }.store(in: &cancellables)
+        settings.$chartKinds.receive(on: RunLoop.main)
+            .sink { _ in DispatchQueue.main.async(execute: applyDepth) }.store(in: &cancellables)
 
         settings.$smartRefresh.receive(on: RunLoop.main)
             .sink { [weak self] _ in self?.rescheduleTimers() }.store(in: &cancellables)
@@ -2066,7 +2855,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
     // Apply the overall window-transparency slider to every translucent surface, live.
     private func applyWindowOpacity(_ v: Double) {
         let a = CGFloat(max(0.1, min(1, v)))
-        popover.contentViewController?.view.window?.alphaValue = a
+        menuPanel?.alphaValue = a
         floatingPanel?.alphaValue = a
         edgePanel?.alphaValue = a
     }
@@ -2100,8 +2889,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         animPhase += dt                                             // BurnClock.elapsed: real seconds
         let bs = engine.snapshot
         burnClock.elapsed = animPhase
-        burnClock.retier(usage: bs.sessionPct, over: bs.over, burnRatio: displayNeedle * 2,
-                         threshold: settings.alertSessionAt, tokensFlowing: liveActivity.active)
+        // The burn clock rides the primary gauge: the session, or the week where the plan has
+        // no session limit, against that gauge's own alert threshold.
+        let primaryAt = bs.sessionLimitAbsent ? settings.alertWeeklyAt : settings.alertSessionAt
+        burnClock.retier(usage: bs.primaryPct, over: bs.primaryOver, burnRatio: displayNeedle * 2,
+                         threshold: primaryAt, tokensFlowing: liveActivity.active)
         // Frame-rate-independent easing (matches the old per-frame constants at 30fps).
         let target = liveActivity.active ? liveActivity.norm : 0.0   // needle falls to rest when idle
         displayNeedle += (target - displayNeedle) * (1 - pow(0.82, frames))   // was 0.18/frame
@@ -2118,7 +2910,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
         let every = settings.beaconFollowsBurn ? settings.beaconEvery / (1 + 3 * max(0, min(1, displayNeedle)))
                                                : settings.beaconEvery
         // "Double-wink near the limit": the shape carries the warning, so a glance is enough.
-        let hot = bs.over || bs.sessionPct >= settings.alertSessionAt
+        let hot = bs.primaryOver || bs.primaryPct >= primaryAt
         let curve: BeaconCurve = (settings.beaconAlertBeat && hot) ? .beat : settings.beaconCurve
         beaconEnv = beaconClock.envelope(at: animPhase, every: every, jitter: settings.beaconJitter,
                                          length: settings.beaconLength, curve: curve)
@@ -2217,13 +3009,80 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSPo
             guard let self else { return }
             self.engine.fullScan()
             let auto = self.settings.autoUpdateCheck
-            DispatchQueue.main.async { Updater.shared.checkInBackgroundIfDue(enabled: auto) }
+            let cadence = self.settings.updateCadence
+            DispatchQueue.main.async {
+                Updater.shared.checkInBackgroundIfDue(enabled: auto, cadence: cadence)
+            }
         }
         RunLoop.main.add(full, forMode: .common); fullTimer = full
     }
 
     // LIVE pressed → force a refresh and restart the cycle immediately.
+    /// QA (CUB_QA_TAPLOG=1): narrate the card's own controls firing.
+    ///
+    /// A control whose gesture never arrives and a control whose handler ran but changed nothing
+    /// visible look identical from outside the app, and "the LIVE badge does nothing" was reported
+    /// as the first when it is the second. Reading the code cannot tell them apart either; only a
+    /// real click and a line of output can.
+    static let tapLog = ProcessInfo.processInfo.environment["CUB_QA_TAPLOG"] != nil
+
+    /// QA (CUB_QA_SHADOW=1): narrate every window-shadow recomputation and where it came from.
+    ///
+    /// The window shadow is drawn by the window server OUTSIDE the view tree, so cacheDisplay and
+    /// every other in-process capture render the card without it. A stale shadow is therefore
+    /// invisible to the screenshot harness, and the only thing that can be checked mechanically is
+    /// that each call site fires when it should.
+    static let shadowLog = ProcessInfo.processInfo.environment["CUB_QA_SHADOW"] != nil
+
+    /// QA (CUB_QA_TAPTEST=x,y[;x,y...]): click points in the menu card from INSIDE the app.
+    ///
+    /// The obvious test, a synthesized CGEvent at the control's screen position, needs Accessibility
+    /// permission that a headless QA runner does not have and cannot be given from here: the events
+    /// are dropped silently, so a dead control and a dropped event look identical. This posts the
+    /// mouse-down/up into the panel itself, which still goes through AppKit hit-testing and SwiftUI
+    /// gesture delivery, and prints what hitTest found on the way so the two can be told apart.
+    /// Coordinates are POINTS from the panel's TOP-LEFT; the panel can sit on a second display at a
+    /// negative x, where a screenshot of the main display cannot see it at all.
+    private func runTapTest() {
+        guard let spec = ProcessInfo.processInfo.environment["CUB_QA_TAPTEST"],
+              let panel = menuPanel else { return }
+        // KEY FIRST, and say so. SwiftUI delivers a tap through the responder chain, and a panel
+        // that never became key drops every synthesized down/up on the floor: the harness then
+        // reports "the control did nothing" for a control that was never offered the event, which
+        // is the one answer it must not give. Asserted rather than assumed, so a run that could
+        // not take key is a stated failure and not a silent pass.
+        panel.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        guard panel.isKeyWindow else {
+            print("CUB_TAP taptest=not-key canKey=\(panel.canBecomeKey) "
+                  + "keyWindow=\(NSApp.keyWindow.map { String(describing: type(of: $0)) } ?? "nil")")
+            fflush(stdout)
+            return
+        }
+        for point in spec.split(separator: ";") {
+            let n = point.split(separator: ",").compactMap { Double($0) }
+            guard n.count == 2 else { print("CUB_TAP taptest=bad-spec \(point)"); continue }
+            let loc = NSPoint(x: n[0], y: panel.frame.height - n[1])
+            let hit = panel.contentView?.hitTest(loc)
+            print("CUB_TAP taptest at=\(n[0]),\(n[1]) "
+                  + "hitTest=\(hit.map { String(describing: type(of: $0)) } ?? "nil") "
+                  + "key=\(panel.isKeyWindow) canKey=\(panel.canBecomeKey) "
+                  + "acceptsFirstMouse=\(hit?.acceptsFirstMouse(for: nil) ?? false)")
+            for t in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                guard let e = NSEvent.mouseEvent(with: t, location: loc, modifierFlags: [],
+                                                 timestamp: ProcessInfo.processInfo.systemUptime,
+                                                 windowNumber: panel.windowNumber, context: nil,
+                                                 eventNumber: 0, clickCount: 1,
+                                                 pressure: t == .leftMouseDown ? 1 : 0) else { continue }
+                panel.sendEvent(e)
+            }
+            Thread.sleep(forTimeInterval: 0.15)
+        }
+        fflush(stdout)
+    }
+
     private func manualRefresh() {
+        if Self.tapLog { print("CUB_TAP manualRefresh at=\(Date().timeIntervalSince1970)"); fflush(stdout) }
         engine.fetchLive(force: true)
         engine.quickRefresh()
         liveActivity.recordBurn()                  // a manual refresh adds a Burn point too

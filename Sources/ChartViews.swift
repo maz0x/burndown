@@ -21,6 +21,14 @@ struct ChartCtx {
     // Plot height for every chart body: kChartH base + the corner grip's vertical boost
     // (settings.cardChartBoost). Popover-only; contact sheets and previews keep the base.
     var plotH: CGFloat = kChartH
+    /// True while this chart is drawn as a frozen layout under a transform, rather than laid out.
+    ///
+    /// It does not change what a chart DRAWS; it is why `plotH` is the height the freeze was taken
+    /// at rather than the live one. False during a settle, when the chart lays out for real.
+    /// MonitorChart owns the mechanism and the reasoning; nothing inside a chart body reads this.
+    var frozen: Bool = false
+    /// True for the whole grip gesture, frozen or settling. Only ChartBodyView's Equatable reads it.
+    var resizing: Bool = false
     var style: ChartStyle = .area
     var window: TimeInterval = 3600
     var days: Int = 14
@@ -168,6 +176,28 @@ struct ChartBodyView: View {
     }
 }
 
+/// Mid-gesture, a chart asked to be the same height as last time is the SAME view, so SwiftUI may
+/// skip the body.
+///
+/// A grip drag re-proposes the card's geometry sixty times a second, and one Swift Charts body
+/// costs about 6ms to lay out every time it is asked, whatever it is drawing (measured: cutting a
+/// chart from 140 marks to 4 changed nothing; removing its axes and its hover overlay changed
+/// nothing; replacing the chart with a plain rectangle took the whole card from 47ms a frame to
+/// 17ms). Six charts on the card therefore ran a 60Hz drag at about 20fps. Freezing the layout
+/// alone is not enough: the body re-runs on the new ctx and Charts re-solves anyway. This is the
+/// other half.
+///
+/// plotH is the test rather than `frozen` because plotH is the only thing about a chart that a
+/// drag changes, and gating on `frozen` charged for a relayout that could not produce a different
+/// chart: the frame that re-freezes after a settle proposes the very height the settle just laid
+/// out at, and re-running the body there cost ~25ms of the ~90ms worst frame for nothing. Outside
+/// a gesture nothing compares equal, so every ordinary render is a real one.
+extension ChartBodyView: Equatable {
+    static func == (a: ChartBodyView, b: ChartBodyView) -> Bool {
+        a.kind == b.kind && a.ctx.resizing && b.ctx.resizing && a.ctx.plotH == b.ctx.plotH
+    }
+}
+
 /// True where a LiveCadence indicator sits on top of the stat line, so the line has to leave room
 /// for it. The Settings gallery draws chart bodies WITHOUT one, and reserving 52pt there for
 /// nothing was cutting off the end of every preview's caption.
@@ -205,9 +235,13 @@ struct StatLine: View {
         }
         // The trailing reserve is the live cadence indicator's slot, which the card draws on top
         // of this row. The gallery has no indicator, so it keeps the space.
+        // 74, not 52: the resize grip sits in the same bottom-right corner as the indicator, and
+        // at 52 the two overlapped on every card whose last section is a chart plate. The extra 22
+        // is the grip's own corner, and the indicator is padded off the same 22 (see MonitorChart's
+        // overlay) so the caption, the indicator and the grip each own their own strip.
         // No leading gutter: the in-box left edge is the box's content edge and nothing else,
         // so the stat line starts exactly where the rows and the chart above it start.
-        .padding(.trailing, cadence ? 52 : 8)
+        .padding(.trailing, cadence ? 74 : 8)
     }
 }
 
@@ -218,6 +252,45 @@ let kRowValueWidth: CGFloat = 64
 let kRowBarHeight: CGFloat = 5
 
 /// The mark in a chart legend: a short length of the line it stands for, dashed when the line is.
+/// Lays its subviews out in a row, wrapping to a new line only when the next one will not fit.
+///
+/// The legends used to chunk themselves with a hardcoded "three per row", a number chosen for the
+/// 264pt minimum card and never revisited. Four entries therefore always drew as 3 + 1, taking two
+/// lines to say what fits comfortably on one at any real card width, and a WIDER card did not help
+/// because the number was fixed. This asks each chip how wide it actually is and fills the width it
+/// is given, so the same legend is one line on a wide card and wraps only when it genuinely must.
+struct FlowLayout: Layout {
+    var spacing: CGFloat = 10
+    var rowSpacing: CGFloat = 3
+
+    private func walk(_ subviews: Subviews, maxW: CGFloat,
+                      place: ((LayoutSubview, CGPoint, CGSize) -> Void)?) -> CGSize {
+        var x: CGFloat = 0, y: CGFloat = 0, rowH: CGFloat = 0, widest: CGFloat = 0
+        for s in subviews {
+            let sz = s.sizeThatFits(.unspecified)
+            if x > 0, x + spacing + sz.width > maxW { y += rowH + rowSpacing; x = 0; rowH = 0 }
+            if x > 0 { x += spacing }
+            place?(s, CGPoint(x: x, y: y), sz)
+            x += sz.width
+            rowH = max(rowH, sz.height)
+            widest = max(widest, x)
+        }
+        return CGSize(width: widest, height: y + rowH)
+    }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxW = proposal.width ?? .infinity
+        let s = walk(subviews, maxW: maxW, place: nil)
+        return CGSize(width: min(s.width, maxW), height: s.height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        _ = walk(subviews, maxW: bounds.width) { sub, pt, sz in
+            sub.place(at: CGPoint(x: bounds.minX + pt.x, y: bounds.minY + pt.y), proposal: ProposedViewSize(sz))
+        }
+    }
+}
+
 struct LegendSwatch: View {
     let colour: Color
     let dashed: Bool
@@ -300,10 +373,14 @@ struct BurnRateChart: View {
             }
             return den > 0 ? num / den : win.map(\.v).reduce(0, +) / Double(win.count)
         }()
-        // The domain gets the card-wide 1.1 headroom six other charts already use. The CEILING is
-        // unchanged and still honest; this is only so the newest sample's dot, when it clamps to
-        // that ceiling, is not drawn half outside the plot.
-        let yMax = burnCeiling(percentile(win.map(\.v), 0.97))
+        // The ceiling covers the window's TRUE maximum. It used to be built from the 97th
+        // percentile, which by definition leaves the top 3% of samples above the axis: a sustained
+        // real peak drew as a flat plateau at the top of the plot while the hover callout on that
+        // same plateau read the true, much larger number. Nothing drawn here is clamped any more,
+        // so the line is the data.
+        // The domain gets the card-wide 1.1 headroom six other charts already use, so the newest
+        // sample's dot at the very top is not drawn half outside the plot.
+        let yMax = burnCeiling(win.map(\.v).max() ?? 0)
         let yDomainMax = yMax * 1.1
         // Steps stay raw (inventing slopes between bursts is exactly what the stepped view avoids);
         // the line view smooths, because a hairline through raw spiky data is unreadable.
@@ -311,7 +388,7 @@ struct BurnRateChart: View {
         let disp = stepped ? base : ema(base, 0.4)
         return VStack(alignment: .leading, spacing: 5) {
             if disp.isEmpty {
-                chartPlaceholder("Warming up, collecting samples", p)
+                chartPlaceholder("Warming up, collecting samples", p, height: ctx.plotH)
             } else {
                 Chart {
                     if mean > 1500 {
@@ -319,34 +396,34 @@ struct BurnRateChart: View {
                         // of the plot, which is exactly where the newest point lands, so on a busy
                         // chart it printed itself over the live data. The stat line under the chart
                         // already reads "avg NNN", so nothing is lost by taking it off the plot.
-                        RuleMark(y: .value("avg", min(mean, yMax)))
+                        RuleMark(y: .value("avg", mean))
                             .foregroundStyle(p.sub.opacity(0.5))
                             .lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
                     }
                     ForEach(disp, id: \.t) { s in
                         if ctx.style == .area || ctx.style == .gradient {
-                            AreaMark(x: .value("t", s.t), y: .value("v", min(s.v, yMax)))
+                            AreaMark(x: .value("t", s.t), y: .value("v", s.v))
                                 .foregroundStyle(LinearGradient(colors: [ctx.accent.opacity(0.25), ctx.accent.opacity(0.02)],
                                                                 startPoint: .top, endPoint: .bottom))
                                 .interpolationMethod(stepped ? .stepEnd : .monotone)
                         }
-                        LineMark(x: .value("t", s.t), y: .value("v", min(s.v, yMax)))
+                        LineMark(x: .value("t", s.t), y: .value("v", s.v))
                             .foregroundStyle(ctx.accent)
                             .lineStyle(StrokeStyle(lineWidth: ctx.style == .hairline ? 1 : 1.6, lineJoin: .round))
                             .interpolationMethod(stepped ? .stepEnd : .monotone)
                     }
                     if sel == nil, let last = disp.last {
-                        PointMark(x: .value("t", last.t), y: .value("v", min(last.v, yMax)))
+                        PointMark(x: .value("t", last.t), y: .value("v", last.v))
                             .foregroundStyle(ctx.accent.opacity(0.18)).symbolSize(70)
-                        PointMark(x: .value("t", last.t), y: .value("v", min(last.v, yMax)))
+                        PointMark(x: .value("t", last.t), y: .value("v", last.v))
                             .foregroundStyle(ctx.accent).symbolSize(26)
                     }
                     if let s = sel {
                         RuleMark(x: .value("t", s.t)).foregroundStyle(p.ink.opacity(0.25))
                             .lineStyle(StrokeStyle(lineWidth: 1))
-                        PointMark(x: .value("t", s.t), y: .value("v", min(s.v, yMax)))
+                        PointMark(x: .value("t", s.t), y: .value("v", s.v))
                             .foregroundStyle(ctx.accent).symbolSize(44)
-                            .annotation(position: .top, alignment: s.t > lower.addingTimeInterval(now.timeIntervalSince(lower) / 2) ? .trailing : .leading, spacing: 2) {
+                            .hoverCallout(fraction: hoverFraction(s.t, lower: lower, now: now)) {
                                 let dom = dominantProject(ctx.records, around: s.t, halfWidth: max(150, now.timeIntervalSince(lower) / 60))
                                 chartCallout("\(fmtTok(Int(s.v)))/min", relTimeLabel(s.t, now: now), p, detail: dom.map { "→ \($0.name)" })
                             }
@@ -356,7 +433,7 @@ struct BurnRateChart: View {
                 .chartXScale(domain: lower...now)
                 .chartYAxis { tokenYAxis(yMax, p, style: ctx.style) }
                 .chartXAxis { timeXAxis(lower, now, p, style: ctx.style) }
-                .chartPlotStyle { $0.background(Color.clear) }
+                .chartPlot()
                 .transaction { $0.animation = nil }
                 .frame(height: ctx.plotH)
                 .hoverCatcher { pt, proxy, geo in
@@ -392,7 +469,7 @@ struct VolumeBarsChart: View {
         let per = now.timeIntervalSince(lower) / Double(n)
         return VStack(alignment: .leading, spacing: 5) {
             if peak == 0 {
-                chartPlaceholder("No usage in this window", p)
+                chartPlaceholder("No usage in this window", p, height: ctx.plotH)
             } else {
                 Chart {
                     // RectangleMark, not BarMark: on a continuous Date scale BarMark collapses to zero
@@ -408,7 +485,7 @@ struct VolumeBarsChart: View {
                     if let s = sel {
                         RuleMark(x: .value("t", s.t)).foregroundStyle(p.ink.opacity(0.18))
                             .lineStyle(StrokeStyle(lineWidth: 1))
-                            .annotation(position: .top, alignment: s.t > lower.addingTimeInterval(now.timeIntervalSince(lower) / 2) ? .trailing : .leading, spacing: 2) {
+                            .hoverCallout(fraction: hoverFraction(s.t, lower: lower, now: now)) {
                                 chartCallout(fmtTok(Int(s.v)), relTimeLabel(s.t, now: now), p)
                             }
                     }
@@ -417,7 +494,7 @@ struct VolumeBarsChart: View {
                 .chartXScale(domain: lower...now)
                 .chartYAxis { tokenYAxis(peak, p, style: ctx.style) }
                 .chartXAxis { timeXAxis(lower, now, p, style: ctx.style) }
-                .chartPlotStyle { $0.background(Color.clear) }
+                .chartPlot()
                 .transaction { $0.animation = nil }
                 .frame(height: ctx.plotH)
                 .hoverCatcher { pt, proxy, geo in
@@ -449,7 +526,7 @@ struct CumulativeChart: View {
         let total = pts.last?.v ?? 0
         return VStack(alignment: .leading, spacing: 5) {
             if total == 0 {
-                chartPlaceholder("No usage in this window", p)
+                chartPlaceholder("No usage in this window", p, height: ctx.plotH)
             } else {
                 Chart {
                     ForEach(pts) { b in
@@ -465,7 +542,7 @@ struct CumulativeChart: View {
                         RuleMark(x: .value("t", s.t)).foregroundStyle(p.ink.opacity(0.25))
                         PointMark(x: .value("t", s.t), y: .value("total", s.v))
                             .foregroundStyle(ctx.accent).symbolSize(44)
-                            .annotation(position: .top, alignment: .leading, spacing: 2) {
+                            .hoverCallout(fraction: hoverFraction(s.t, lower: lower, now: now)) {
                                 chartCallout(fmtTok(Int(s.v)), "by \(relTimeLabel(s.t, now: now))", p)
                             }
                     }
@@ -474,7 +551,7 @@ struct CumulativeChart: View {
                 .chartXScale(domain: lower...now)
                 .chartYAxis { tokenYAxis(total, p, style: ctx.style) }
                 .chartXAxis { timeXAxis(lower, now, p, style: ctx.style) }
-                .chartPlotStyle { $0.background(Color.clear) }
+                .chartPlot()
                 .transaction { $0.animation = nil }
                 .frame(height: ctx.plotH)
                 .hoverCatcher { pt, proxy, geo in
@@ -526,12 +603,26 @@ struct BurndownChart: View {
         let p = ctx.p
         guard let reset = resetAt else {
             return AnyView(VStack(alignment: .leading, spacing: 5) {
-                chartPlaceholder("Waiting for the reset time", p)
+                chartPlaceholder("Waiting for the reset time", p, height: ctx.plotH)
                 statLine("--", "no window yet", p)
             })
         }
         let now = Date()
         let start = reset.addingTimeInterval(-window)
+        // The visible left edge. The curve is still computed over the WHOLE window (that is what a
+        // burndown is), but the chip can trim what is plotted so the recent part of a 7-day line is
+        // readable.
+        //
+        // ⚠️ Swift Charts does NOT clip marks to the x domain. chartXScale sets the mapping from
+        // value to position, and a value outside the domain maps to a position outside the plot,
+        // where it is drawn anyway. With the chip at 6h this chart handed it two marks four days
+        // to the left of the domain (the r=1.0 point synthesised at `start`, and the pace
+        // diagonal's left anchor) and both were painted straight across the card, over everything
+        // beside them. Everything handed to the Chart below has to lie inside visStart...reset
+        // already. (The plot is also clipped now, see ChartBodyView, but that is the backstop, not
+        // the fix: a line drawn to the wrong place and then hidden is still the wrong line, and it
+        // would still be wrong the moment the plot grew.)
+        let visStart = max(start, now.addingTimeInterval(-ctx.window))
         let remainingNow = max(0, 1 - currentPct)
         // Within ONE window usage only accumulates, so remaining can only fall, and it can never sit
         // below what the API reports right now. Enforcing both turns a stale sample into a flat stretch
@@ -557,13 +648,35 @@ struct BurndownChart: View {
         // same one in trouble. The warning is already carried three times over: by the dashed
         // forecast segment, the run-out point, and the "Empty ~" caption.
         let curve = tint
-        let idx = Array(pts.indices)
+        // What is actually PLOTTED: the trimmed curve, with a boundary point interpolated at the
+        // visible edge so a trim cuts the line exactly where the plot starts instead of dropping
+        // the segment that crosses it and starting the curve late, mid-air.
+        //
+        // Interpolating between two consecutive points of a non-increasing series gives a value
+        // between them, so "remaining only falls, and never below what the API reports now" holds
+        // for the trimmed series exactly as it does for the full one.
+        let visPts: [(t: Date, r: Double)] = {
+            guard let firstInside = pts.firstIndex(where: { $0.t >= visStart }) else { return [] }
+            let inside = Array(pts[firstInside...])
+            guard firstInside > 0 else { return inside }   // nothing was trimmed, nothing to splice
+            let before = pts[firstInside - 1], after = pts[firstInside]
+            let span = after.t.timeIntervalSince(before.t)
+            guard span > 0 else { return inside }
+            let f = visStart.timeIntervalSince(before.t) / span
+            let edge = (t: visStart, r: before.r + (after.r - before.r) * f)
+            return [edge] + inside
+        }()
+        let idx = Array(visPts.indices)
+        // The even-pace diagonal, trimmed to the same edge. Its left anchor is where a perfectly
+        // even burn would have been AT visStart, not the 100% it started the window at, or the
+        // diagonal would be drawn from a point four days off the left of the plot.
+        let paceLeft = (t: visStart, r: window > 0 ? 1 - visStart.timeIntervalSince(start) / window : 1)
         return AnyView(VStack(alignment: .leading, spacing: 5) {
             Chart {
                 RectangleMark(xStart: .value("t", now), xEnd: .value("t", reset),
                               yStart: .value("y", 0.0), yEnd: .value("y", 1.0))
                     .foregroundStyle(p.ink.opacity(0.03))
-                LineMark(x: .value("t", start), y: .value("pace", 1.0), series: .value("s", "pace"))
+                LineMark(x: .value("t", paceLeft.t), y: .value("pace", paceLeft.r), series: .value("s", "pace"))
                     .foregroundStyle(p.sub.opacity(0.5)).lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
                 LineMark(x: .value("t", reset), y: .value("pace", 0.0), series: .value("s", "pace"))
                     .foregroundStyle(p.sub.opacity(0.5)).lineStyle(StrokeStyle(lineWidth: 1, dash: [4, 3]))
@@ -576,14 +689,14 @@ struct BurndownChart: View {
                 RuleMark(x: .value("t", now)).foregroundStyle(p.ink.opacity(0.18)).lineStyle(StrokeStyle(lineWidth: 1))
                 if ctx.style == .area || ctx.style == .gradient {
                     ForEach(idx, id: \.self) { i in
-                        AreaMark(x: .value("t", pts[i].t), y: .value("left", pts[i].r), series: .value("s", "left"))
+                        AreaMark(x: .value("t", visPts[i].t), y: .value("left", visPts[i].r), series: .value("s", "left"))
                             .foregroundStyle(LinearGradient(colors: [curve.opacity(0.22), curve.opacity(0.02)],
                                                             startPoint: .top, endPoint: .bottom))
                             .interpolationMethod(.monotone)
                     }
                 }
                 ForEach(idx, id: \.self) { i in
-                    LineMark(x: .value("t", pts[i].t), y: .value("left", pts[i].r), series: .value("s", "left"))
+                    LineMark(x: .value("t", visPts[i].t), y: .value("left", visPts[i].r), series: .value("s", "left"))
                         .foregroundStyle(curve).lineStyle(StrokeStyle(lineWidth: ctx.lineW, lineJoin: .round))
                         .interpolationMethod(.monotone)
                 }
@@ -602,26 +715,30 @@ struct BurndownChart: View {
                     RuleMark(x: .value("t", s.t)).foregroundStyle(p.ink.opacity(0.25))
                     PointMark(x: .value("t", s.t), y: .value("left", s.r))
                         .foregroundStyle(curve).symbolSize(44)
-                        .annotation(position: .top, alignment: .leading, spacing: 2) {
+                        // This chart's x domain is the whole burndown window, start to reset.
+                        .hoverCallout(fraction: hoverFraction(s.t, lower: visStart, now: reset)) {
                             chartCallout("\(Int((s.r * 100).rounded()))% left", relTimeLabel(s.t, now: now), p)
                         }
                 }
             }
             .chartYScale(domain: 0...1)
-            .chartXScale(domain: start...reset)
+            .chartXScale(domain: visStart...reset)
             .chartYAxis { percentYAxis(p, style: ctx.style) }
             .chartXAxis {
                 if ctx.style != .minimal {
-                    AxisMarks(values: [start, reset]) { _ in AxisGridLine().foregroundStyle(p.ink.opacity(0.06)) }
+                    AxisMarks(values: [visStart, reset]) { _ in AxisGridLine().foregroundStyle(p.ink.opacity(0.06)) }
                 }
             }
-            .chartPlotStyle { $0.background(Color.clear) }
+            .chartPlot()
             .transaction { $0.animation = nil }
             .frame(height: ctx.plotH)
             .hoverCatcher { pt, proxy, geo in
                 guard ctx.hover else { return }
                 guard let pt, let d: Date = plotValue(proxy, geo, pt, as: Date.self), d <= now else { sel = nil; return }
-                sel = pts.min { abs($0.t.timeIntervalSince(d)) < abs($1.t.timeIntervalSince(d)) }
+                // Only points that are actually plotted: a trim can leave the nearest sample off
+                // the left of the domain, and marking one there draws a callout for a dot the
+                // reader cannot see.
+                sel = visPts.min { abs($0.t.timeIntervalSince(d)) < abs($1.t.timeIntervalSince(d)) }
             }
             .accessibilityElement(children: .ignore)
             .accessibilityLabel("Burndown")
@@ -631,11 +748,14 @@ struct BurndownChart: View {
                 return "\(pctLeft) percent left, on pace to last to the reset"
             }())
             HStack(spacing: 0) {
-                Text(windowEdgeLabel(start, window: window)).font(.system(size: 8.5, design: .monospaced)).foregroundStyle(p.faint)
+                // Both edge labels follow what is VISIBLE, not the whole window: a 7-day burndown
+                // trimmed to the last hour wants clock times at its edges, not two identical dates.
+                let visSpan = reset.timeIntervalSince(visStart)
+                Text(windowEdgeLabel(visStart, window: visSpan)).font(.system(size: 8.5, design: .monospaced)).foregroundStyle(p.faint)
                 Spacer(minLength: 2)
                 Text("now").font(.system(size: 8.5)).foregroundStyle(p.sub)
                 Spacer(minLength: 2)
-                Text(windowEdgeLabel(reset, window: window)).font(.system(size: 8.5, design: .monospaced)).foregroundStyle(p.faint)
+                Text(windowEdgeLabel(reset, window: visSpan)).font(.system(size: 8.5, design: .monospaced)).foregroundStyle(p.faint)
             }
             .padding(.leading, 26).padding(.trailing, 6)
             if let ro = runOut {
@@ -668,29 +788,39 @@ struct UsageLinesChart: View {
         // One line per model, each showing the share of the weekly allowance that model accounted
         // for, so the model lines add up to the Week line. See modelWeekShareSeries in ChartData.swift.
         // Memoised: it walks a week of records, and this body re-runs on every mouse move.
-        // Only on day-scale windows and wider. A week's worth of share drawn across four hours is
-        // a set of flat dashes, and a model with a single sample in that window is one floating
-        // speck. The legend still lists them in its hidden style, so the capability stays visible.
-        let models = ctx.window < 86_400 ? [] : memo.value(ctx.dataKey + "|wk\(ctx.weeklyPct)") {
+        // Model LINES are drawn only on day-scale windows and wider. A week's worth of share drawn
+        // across four hours is a set of flat dashes, and a model with a single sample in that window
+        // is one floating speck.
+        //
+        // The legend, though, lists every model of the week at ALL windows. It used to be built from
+        // this same gated list, so on the DEFAULT one-hour window the models did not merely go
+        // undrawn, they disappeared from the legend entirely: a model you had been watching was
+        // simply absent, with nothing to say why or how to get it back. (The comment here used to
+        // claim the legend kept listing them. It did not.) Gated entries are drawn in the hidden
+        // style and say what they need, and the window control is one click away in the title row.
+        let allModels = memo.value(ctx.dataKey + "|wk\(ctx.weeklyPct)") {
             modelWeekShareSeries(records: ctx.records, weeklyPct: ctx.weeklyPct,
                                  weeklyResetAt: ctx.weeklyResetAt, now: now)
                 .map { (label: $0.label,
                         samples: bucketed($0.samples.filter { $0.t >= lower }, lower: lower, upper: now,
                                           buckets: 120, pickMax: false)) }
         }
+        let modelsGated = ctx.window < 86_400
+        let models = modelsGated ? [] : allModels
         let shown = { (k: String) in !ctx.hiddenSeries.contains(k) }
         let selS = selT.flatMap { nearestSample(s, to: $0) }
         let selW = selT.flatMap { nearestSample(w, to: $0) }
         // Everything the legend can offer, in draw order, with its colour.
         // `derived` marks the model lines: measured readings are solid, the per-model split is
         // worked out from the local logs, and the legend says which is which.
-        let series: [(key: String, colour: Color, derived: Bool)] =
-            [(key: "Session", colour: ctx.accent, derived: false),
-             (key: "Week", colour: ctx.secondary, derived: false)]
-            + models.map { (key: $0.label, colour: modelHue($0.label, p), derived: true) }
+        // `gated` entries are real models of this week whose lines this window is too short to draw.
+        let series: [(key: String, colour: Color, derived: Bool, gated: Bool)] =
+            [(key: "Session", colour: ctx.accent, derived: false, gated: false),
+             (key: "Week", colour: ctx.secondary, derived: false, gated: false)]
+            + allModels.map { (key: $0.label, colour: modelHue($0.label, p), derived: true, gated: modelsGated) }
         return VStack(alignment: .leading, spacing: 5) {
             if s.isEmpty && w.isEmpty {
-                chartPlaceholder("Warming up, collecting samples", p)
+                chartPlaceholder("Warming up, collecting samples", p, height: ctx.plotH)
             } else {
                 Chart {
                     if shown("Session") {
@@ -719,7 +849,7 @@ struct UsageLinesChart: View {
                     }
                     if let t = selT {
                         RuleMark(x: .value("t", t)).foregroundStyle(p.ink.opacity(0.25))
-                            .annotation(position: .top, alignment: .leading, spacing: 2) {
+                            .hoverCallout(fraction: hoverFraction(t, lower: lower, now: now)) {
                                 // The model lines are on this chart, so they belong in its readout.
                                 // Showing only S and W meant hovering a chart with five lines on it
                                 // answered for two of them and left the rest to be guessed at.
@@ -747,7 +877,7 @@ struct UsageLinesChart: View {
                 .chartXScale(domain: lower...now)
                 .chartYAxis { percentYAxis(p, style: ctx.style) }
                 .chartXAxis { timeXAxis(lower, now, p, style: ctx.style) }
-                .chartPlotStyle { $0.background(Color.clear) }
+                .chartPlot()
                 .transaction { $0.animation = nil }
                 .frame(height: ctx.plotH)
                 .hoverCatcher { pt, proxy, geo in
@@ -759,40 +889,40 @@ struct UsageLinesChart: View {
             // The legend doubles as the switch: click a name to drop its line, click again to
             // bring it back. A hidden series fades rather than disappearing, so you can always
             // see what you turned off and how to get it back.
-            // Every model in use gets an entry, so this can reach six. Six across one line runs off
-            // the edge of a 264pt card, so it wraps in threes.
-            VStack(alignment: .leading, spacing: 3) {
-                ForEach(Array(stride(from: 0, to: series.count, by: 3)), id: \.self) { start in
-                    HStack(spacing: 10) {
-                        ForEach(series[start..<min(start + 3, series.count)], id: \.key) { item in
-                            Button { ctx.onToggleSeries(item.key) } label: {
-                                HStack(spacing: 4) {
-                                    // The swatch matches the STROKE, not just the colour. Session
-                                    // and Fable can land on nearly the same hue (Fable's family
-                                    // colour is clay, and clay is also the default accent), as can
-                                    // Week and Opus. Solid versus dashed tells them apart even
-                                    // when the colours do not.
-                                    LegendSwatch(colour: item.colour, dashed: item.derived,
-                                                 on: shown(item.key))
-                                    Text(item.key).font(.system(size: 9.5)).foregroundStyle(p.sub).fixedSize()
-                                }
-                                // The fade stays, but it is no longer the only signal: a hollow
-                                // swatch says "off" where a shade only says "quiet".
-                                .opacity(shown(item.key) ? 1 : 0.45)
-                                // Item 64: these rows hit-test about 12pt tall in a stack 3pt
-                                // apart, so the pointer lands between two toggles as often as on
-                                // one. A contiguous 18pt band per row fixes that without moving
-                                // anything: the padding is inside the button's own label.
-                                .padding(.vertical, 3)
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain).focusable(false)
-                            .accessibilityLabel("\(item.key), \(shown(item.key) ? "shown" : "hidden"). Click to toggle.")
+            // Every model in use gets an entry, so this can reach six. FlowLayout fills whatever
+            // width the card gives it and wraps only when it has to.
+            FlowLayout(spacing: 10, rowSpacing: 3) {
+                ForEach(series, id: \.key) { item in
+                    Button { ctx.onToggleSeries(item.key) } label: {
+                        HStack(spacing: 4) {
+                            // The swatch matches the STROKE, not just the colour. Session
+                            // and Fable can land on nearly the same hue (Fable's family
+                            // colour is clay, and clay is also the default accent), as can
+                            // Week and Opus. Solid versus dashed tells them apart even
+                            // when the colours do not.
+                            LegendSwatch(colour: item.colour, dashed: item.derived,
+                                         on: shown(item.key) && !item.gated)
+                            Text(item.key).font(.system(size: 9.5)).foregroundStyle(p.sub).fixedSize()
                         }
-                        Spacer(minLength: 0)
+                        // The fade stays, but it is no longer the only signal: a hollow
+                        // swatch says "off" where a shade only says "quiet".
+                        .opacity(item.gated ? 0.4 : (shown(item.key) ? 1 : 0.45))
+                        // Item 64: these rows hit-test about 12pt tall in a stack 3pt
+                        // apart, so the pointer lands between two toggles as often as on
+                        // one. A contiguous 18pt band per row fixes that without moving
+                        // anything: the padding is inside the button's own label.
+                        .padding(.vertical, 3)
+                        .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain).focusable(false)
+                    .disabled(item.gated)
+                    .help(item.gated ? "\(item.key) needs a window of a day or longer to draw" : "")
+                    .accessibilityLabel(item.gated
+                        ? "\(item.key), not drawn at this time window. Choose a day or longer to see it."
+                        : "\(item.key), \(shown(item.key) ? "shown" : "hidden"). Click to toggle.")
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .animation(.easeInOut(duration: 0.15), value: ctx.hiddenSeries)
         }
     }
@@ -824,7 +954,7 @@ struct ByModelChart: View {
         let selRects = sel.flatMap { d in rects.filter { $0.t0 <= d && $0.t1 >= d } } ?? []
         return VStack(alignment: .leading, spacing: 5) {
             if total == 0 {
-                chartPlaceholder("No usage in this window", p)
+                chartPlaceholder("No usage in this window", p, height: ctx.plotH)
             } else {
                 Chart {
                     // Explicitly-bounded rectangles: BarMark stacking on a continuous Date scale draws
@@ -836,7 +966,7 @@ struct ByModelChart: View {
                     }
                     if let d = sel {
                         RuleMark(x: .value("t", d)).foregroundStyle(p.ink.opacity(0.2))
-                            .annotation(position: .top, alignment: .leading, spacing: 2) {
+                            .hoverCallout(fraction: hoverFraction(d, lower: lower, now: now)) {
                                 let txt = selRects.sorted { ($0.y1 - $0.y0) > ($1.y1 - $1.y0) }
                                     .map { "\($0.key) \(fmtTok(Int($0.y1 - $0.y0)))" }.joined(separator: "  ")
                                 chartCallout(txt.isEmpty ? "no usage" : txt, relTimeLabel(d, now: now), p)
@@ -847,7 +977,7 @@ struct ByModelChart: View {
                 .chartXScale(domain: lower...now)
                 .chartYAxis { tokenYAxis(colTop, p, style: ctx.style) }
                 .chartXAxis { timeXAxis(lower, now, p, style: ctx.style) }
-                .chartPlotStyle { $0.background(Color.clear) }
+                .chartPlot()
                 .transaction { $0.animation = nil }
                 .frame(height: ctx.plotH)
                 .hoverCatcher { pt, proxy, geo in
@@ -889,14 +1019,14 @@ struct ByProjectChart: View {
         let total = rows.reduce(0) { $0 + $1.v }
         return VStack(alignment: .leading, spacing: 5) {
             if rows.isEmpty {
-                chartPlaceholder("No usage in this window", p)
+                chartPlaceholder("No usage in this window", p, height: ctx.plotH)
             } else {
                 Chart {
                     ForEach(rows) { r in
                         BarMark(x: .value("tokens", r.v), y: .value("project", r.name), height: .ratio(kBarFill))
                             .foregroundStyle(ctx.accent.opacity(sel == nil || sel?.id == r.id ? 0.8 : 0.35))
                             .cornerRadius(2)
-                            .annotation(position: .trailing, spacing: 3) {
+                            .barValueLabel {
                                 Text(fmtTok(Int(r.v))).font(.system(size: 8.5, design: .monospaced))
                                     .foregroundStyle(p.sub).monospacedDigit()
                             }
@@ -912,7 +1042,7 @@ struct ByProjectChart: View {
                         }
                     }
                 }
-                .chartPlotStyle { $0.background(Color.clear) }
+                .chartPlot()
                 .transaction { $0.animation = nil }
                 .frame(height: ctx.plotH)
                 .hoverCatcher { pt, proxy, geo in
@@ -943,7 +1073,7 @@ struct CostPerDayChart: View {
         let total = rows.reduce(0) { $0 + $1.v }
         return VStack(alignment: .leading, spacing: 5) {
             if peak == 0 {
-                chartPlaceholder("No spend in the last \(ctx.days) days", p)
+                chartPlaceholder("No spend in the last \(ctx.days) days", p, height: ctx.plotH)
             } else {
                 Chart {
                     ForEach(rows) { r in
@@ -966,7 +1096,7 @@ struct CostPerDayChart: View {
                     }
                 }
                 .chartXAxis { thinnedCatXAxis(rows.map(\.name), p, maxLabels: 7) }
-                .chartPlotStyle { $0.background(Color.clear) }
+                .chartPlot()
                 .transaction { $0.animation = nil }
                 .frame(height: ctx.plotH)
                 .hoverCatcher { pt, proxy, geo in
@@ -998,7 +1128,7 @@ struct HourProfileChart: View {
         let thisHour = Calendar.current.component(.hour, from: Date())
         return VStack(alignment: .leading, spacing: 5) {
             if peak == 0 {
-                chartPlaceholder("No usage in the last \(ctx.days) days", p)
+                chartPlaceholder("No usage in the last \(ctx.days) days", p, height: ctx.plotH)
             } else {
                 Chart {
                     // Explicit bounds: a numeric x scale gives BarMark no step to infer, so it would
@@ -1024,7 +1154,7 @@ struct HourProfileChart: View {
                         }
                     }
                 }
-                .chartPlotStyle { $0.background(Color.clear) }
+                .chartPlot()
                 .transaction { $0.animation = nil }
                 .frame(height: ctx.plotH)
                 .hoverCatcher { pt, proxy, geo in
@@ -1057,7 +1187,7 @@ struct DayHeatmapChart: View {
         let dayLabels = cells.filter { $0.hour == 0 }.map(\.dayLabel)
         return VStack(alignment: .leading, spacing: 5) {
             if peak == 0 {
-                chartPlaceholder("No usage in the last \(days) days", p)
+                chartPlaceholder("No usage in the last \(days) days", p, height: ctx.plotH)
             } else {
                 GeometryReader { geo in
                     let cols = 24, rows = days
@@ -1137,6 +1267,73 @@ struct DayHeatmapChart: View {
             }
         }
     }
+}
+
+extension ChartContent {
+    /// The hover callout, kept inside the chart's own bounds.
+    ///
+    /// Every chart used to pin its callout's LEADING edge to the hovered point and let it grow
+    /// rightward, so hovering the right-hand half of any chart pushed the box past the card and the
+    /// popover clipped it: the values you hovered to read were the ones you could not see. Two
+    /// charts had a half-measure that flipped sides at the window's midpoint in TIME, which ignores
+    /// how wide the box actually is and so still clipped whenever the box was wide.
+    ///
+    /// macOS 14 resolves this properly: Swift Charts measures the annotation and slides it back
+    /// inside. `fraction` (0 at the window's start, 1 at now) drives the macOS 13 fallback, which is
+    /// the old midpoint flip - imperfect, but the same behaviour that shipped before.
+    /// `.chart` rather than `.plot` deliberately: the axis gutter is inside the card, so letting the
+    /// box use it keeps more of the callout on screen.
+    @ChartContentBuilder
+    func hoverCallout<V: View>(fraction: Double, @ViewBuilder _ content: @escaping () -> V) -> some ChartContent {
+        if #available(macOS 14.0, *) {
+            self.annotation(position: .top, alignment: .leading, spacing: 2,
+                            overflowResolution: .init(x: .fit(to: .chart), y: .fit(to: .chart)),
+                            content: content)
+        } else {
+            self.annotation(position: .top, alignment: fraction > 0.5 ? .trailing : .leading,
+                            spacing: 2, content: content)
+        }
+    }
+
+    /// A bar's value label, kept inside the chart. The longest bar reaches the plot's edge, so its
+    /// trailing label was always the one that got cut off.
+    @ChartContentBuilder
+    func barValueLabel<V: View>(@ViewBuilder _ content: @escaping () -> V) -> some ChartContent {
+        if #available(macOS 14.0, *) {
+            self.annotation(position: .trailing, spacing: 3,
+                            overflowResolution: .init(x: .fit(to: .chart), y: .disabled),
+                            content: content)
+        } else {
+            self.annotation(position: .trailing, spacing: 3, content: content)
+        }
+    }
+}
+
+extension View {
+    /// Every Swift Charts plot in the app: transparent over the card's glass, and CLIPPED to its
+    /// own plot area. Use this instead of writing chartPlotStyle by hand.
+    ///
+    /// The clip is the class-level guard, and it exists because Swift Charts does not clip marks to
+    /// the x or y domain: a value outside the domain maps to a position outside the plot and is
+    /// drawn there regardless. The week burndown trimmed to 6h did exactly that, painting its line
+    /// and its pace diagonal four days' worth of plot width to the left, straight across the card
+    /// (owner's screenshot). That particular bug is fixed at the source in BurndownChart, where it
+    /// belongs; this makes sure the next one is a chart drawn wrong rather than a card drawn over.
+    ///
+    /// It clips MARKS only. Annotations, which is what hoverCallout and barValueLabel are, are laid
+    /// out against the chart rather than the plot and survive: verified by rendering the Breakdown
+    /// contact sheet before and after, where By project's value labels sit past the trailing edge
+    /// of the plot and are pixel-identical. That is why the clip is here and not on the chart's
+    /// frame: on macOS 13 hoverCallout has no overflowResolution and may sit above the chart's top
+    /// edge, so a frame-level clip would eat the callout on the oldest supported system.
+    func chartPlot() -> some View { chartPlotStyle { $0.background(Color.clear).clipped() } }
+}
+
+/// Where a hovered date falls across the window, 0 to 1, for the callout's macOS 13 fallback.
+func hoverFraction(_ t: Date, lower: Date, now: Date) -> Double {
+    let span = now.timeIntervalSince(lower)
+    guard span > 0 else { return 0 }
+    return min(1, max(0, t.timeIntervalSince(lower) / span))
 }
 
 @AxisContentBuilder func timeXAxis(_ lower: Date, _ now: Date, _ p: Palette, style: ChartStyle) -> some AxisContent {

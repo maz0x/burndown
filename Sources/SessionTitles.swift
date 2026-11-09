@@ -29,6 +29,19 @@ final class SessionTitles: ObservableObject {
     @Published private(set) var titles: [String: String] = [:]
     /// The real index. Every read and every write happens under `lock`, on whatever thread.
     private var store: [String: String] = [:]
+    /// Placeholder labels, held in memory with an expiry and NEVER written to disk.
+    ///
+    /// A chat is scanned the moment it starts spending tokens, which is usually BEFORE Claude Code
+    /// has written its title. The placeholder that produced was then stored exactly like a real
+    /// name, and `title(for:)` answers from the index without re-reading the file, so the chat was
+    /// branded "Untitled chat, 2:03 PM" permanently: the title landed in the log seconds later and
+    /// nothing ever looked again. On this Mac that had happened to 1,149 of 1,584 sessions.
+    /// Placeholders now go stale on their own, so the next poll re-reads and picks up the real
+    /// title, and only real titles are persisted.
+    private var provisional: [String: (title: String, until: Date)] = [:]
+    /// How long a placeholder is trusted before the file is worth re-reading. Long enough that the
+    /// live path is not re-reading log heads every tick, short enough that a name appears promptly.
+    private let provisionalTTL: TimeInterval = 45
     private let lock = NSLock()
     private var dirty = false
 
@@ -37,25 +50,49 @@ final class SessionTitles: ObservableObject {
             .appendingPathComponent(".config/burndown/session-titles.json")
     }
 
-    init() { load() }
+    init() { load(); dropPersistedPlaceholders() }
 
-    /// The title for a session id, or nil when it has not been read yet.
+    /// The title for a session id, or nil when it has not been read yet (or is due a re-read).
     func title(for sid: String) -> String? {
         lock.lock(); defer { lock.unlock() }
-        return store[sid]
+        if let real = store[sid] { return real }
+        if let p = provisional[sid], p.until > Date() { return p.title }
+        return nil
     }
 
     /// Publish the current index to SwiftUI. The snapshot is taken by the caller, under the lock.
+    ///
+    /// Only when it actually differs. Assigning an @Published dictionary fires objectWillChange
+    /// whatever the value, and `merge` runs on every full scan, so an unchanged index redrew every
+    /// surface that reads a title once per scan for nothing.
     private func publish(_ snapshot: [String: String]) {
-        if Thread.isMainThread { titles = snapshot }
-        else { DispatchQueue.main.async { self.titles = snapshot } }
+        if Thread.isMainThread {
+            if titles != snapshot { titles = snapshot }
+        } else {
+            DispatchQueue.main.async { if self.titles != snapshot { self.titles = snapshot } }
+        }
     }
 
     /// Record a title. Called from the parse queue, so the publish is hopped to the main thread.
+    ///
+    /// A GENERATED placeholder is held provisionally instead of being written: see `provisional`.
     func set(_ title: String, for sid: String) {
+        guard !title.isEmpty else { return }
+        if isGeneratedTitle(title) {
+            lock.lock()
+            provisional[sid] = (title, Date().addingTimeInterval(provisionalTTL))
+            // Published too, so a card on screen shows SOMETHING for a chat that has no name yet
+            // rather than a gap; it is simply never saved, and it expires.
+            var snapshot = store
+            for (k, v) in provisional where v.until > Date() && snapshot[k] == nil { snapshot[k] = v.title }
+            lock.unlock()
+            publish(snapshot)
+            return
+        }
         lock.lock()
-        guard store[sid] != title, !title.isEmpty else { lock.unlock(); return }
+        guard store[sid] != title else { lock.unlock(); return }
         store[sid] = title
+        provisional[sid] = nil          // a real name supersedes the placeholder
         dirty = true
         let snapshot = store
         lock.unlock()
@@ -67,13 +104,37 @@ final class SessionTitles: ObservableObject {
     func merge(_ found: [String: String]) {
         lock.lock()
         var changed = false
-        for (sid, t) in found where !t.isEmpty && store[sid] != t { store[sid] = t; changed = true }
+        let now = Date()
+        for (sid, t) in found where !t.isEmpty {
+            // Same rule as set(): placeholders are provisional, never persisted.
+            if isGeneratedTitle(t) {
+                if store[sid] == nil { provisional[sid] = (t, now.addingTimeInterval(provisionalTTL)) }
+                continue
+            }
+            if store[sid] != t { store[sid] = t; provisional[sid] = nil; changed = true }
+        }
         if changed { dirty = true }
+        var snapshot = store
+        for (k, v) in provisional where v.until > now && snapshot[k] == nil { snapshot[k] = v.title }
+        lock.unlock()
+        publish(snapshot)
+        guard changed else { return }
+        save()
+    }
+
+    /// Drop placeholders that leaked into an older index file.
+    ///
+    /// Before placeholders were made provisional they were saved like real names, so an existing
+    /// install carries thousands of permanent "Untitled chat" entries that would otherwise never be
+    /// re-read. Clearing them once on load lets every one of those chats pick up its real title.
+    private func dropPersistedPlaceholders() {
+        lock.lock()
+        let before = store.count
+        store = store.filter { !isGeneratedTitle($0.value) }
+        if store.count != before { dirty = true }
         let snapshot = store
         lock.unlock()
-        guard changed else { return }
-        publish(snapshot)
-        save()
+        if before != snapshot.count { publish(snapshot); save() }
     }
 
     private func load() {
@@ -154,6 +215,39 @@ func cleanChatTitle(_ raw: String?) -> String? {
 /// generated label without being the same conversation, so merging on it would add together work
 /// that has nothing to do with each other.
 func isGeneratedTitle(_ t: String) -> Bool { t.hasPrefix("Untitled chat") }
+
+/// Is this log a SUBAGENT's rather than a conversation's?
+///
+/// Claude Code writes each subagent it spawns to
+/// `…/projects/<project>/<parent-session-uuid>/subagents/agent-<id>.jsonl`. They are real token
+/// spenders, so they belong in the numbers, but they are not chats: nobody typed their opening
+/// message, so it is a task prompt or a file path, which the title cleaner correctly refuses. The
+/// result was a row reading "Untitled chat, 2:03 PM" for work the reader never started by hand and
+/// cannot place. On this Mac they are 1,455 of 1,584 tracked sessions.
+func isSubagentLog(_ url: URL) -> Bool {
+    url.lastPathComponent.hasPrefix("agent-")
+        || url.deletingLastPathComponent().lastPathComponent == "subagents"
+}
+
+/// The parent conversation's session id and log file for a subagent log, if it looks like one.
+func subagentParent(of url: URL) -> (sid: String, log: URL)? {
+    let subagentsDir = url.deletingLastPathComponent()
+    guard subagentsDir.lastPathComponent == "subagents" else { return nil }
+    let parentDir = subagentsDir.deletingLastPathComponent()
+    let sid = parentDir.lastPathComponent
+    guard looksLikeSessionID(sid) else { return nil }
+    return (sid, parentDir.deletingLastPathComponent().appendingPathComponent(sid + ".jsonl"))
+}
+
+/// What to call a subagent's work, given its parent conversation's name.
+///
+/// Named after the parent on purpose. Several agents of one chat then share a label and roll up into
+/// a single row, which is how a person thinks about it ("the agents that chat ran"), instead of
+/// three anonymous rows competing with the chat that spawned them.
+func subagentLabel(parentTitle: String?) -> String {
+    guard let t = parentTitle, !t.isEmpty, !isGeneratedTitle(t) else { return "Agent tasks" }
+    return "Agent \u{00B7} " + t
+}
 
 /// What to show for a chat with no title at all.
 ///

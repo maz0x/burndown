@@ -50,7 +50,10 @@ enum ScanCache {
     ///   version 1 cache would have kept serving the old label forever.
     /// - 3: records carry a dedup key. A version 2 cache has no way to tell one message from a
     ///   copy of itself, so it is discarded rather than counted twice.
-    static let version: UInt32 = 3
+    /// - 4: `title` changed meaning. It is now never a placeholder, so a version 3 cache would keep
+    ///   serving "Untitled chat, 2:03 PM" for every file it captured before Claude Code had written
+    ///   the real title, and an unchanged file is never re-read.
+    static let version: UInt32 = 4
     private static let magic: UInt32 = 0x42445343   // "BDSC"
 
     /// FNV-1a, 64-bit. Swift's own `hashValue` is seeded per process, so a cache written by one

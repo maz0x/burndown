@@ -77,8 +77,20 @@ print("burnCeiling:")
 check(burnCeiling(0) == 60_000, "0 -> 60k floor")
 check(burnCeiling(40_000) == 60_000, "40k (x1.25=50k) -> 60k")
 check(burnCeiling(60_000) == 80_000, "60k (x1.25=75k) -> 80k")
-check(burnCeiling(200_000) == 280_000, "200k (x1.25=250k) -> 280k")
-check(burnCeiling(5_000_000) == 1_800_000, "huge -> ladder top 1.8M")
+check(burnCeiling(200_000) == 300_000, "200k (x1.25=250k) -> 300k")
+// The ladder used to be a hand-written list ending at 1.8M, so a real 2.2M peak drew flat against
+// a top far below it. There is no last rung any more.
+check(burnCeiling(2_200_000) >= 2_200_000 * 1.25, "2.2M gets a top with real headroom above it")
+check(burnCeiling(5_000_000) == 8_000_000, "5M (x1.25=6.25M) -> 8M, not a ladder top")
+check(burnCeiling(40_000_000) >= 40_000_000, "and it keeps going up a decade at a time")
+// The two invariants every caller relies on, over the whole range.
+var ref = 1.0
+while ref < 1e10 {
+    let c = burnCeiling(ref)
+    check(c >= ref, "ceiling(\(Int(ref))) is never below the value it must contain")
+    check(c >= 60_000, "ceiling(\(Int(ref))) never drops through the 60k floor")
+    ref *= 1.7
+}
 
 print("ringText / weekRingText / weekLeftString (now injected):")
 let t0 = Date(timeIntervalSince1970: 1_000_000)

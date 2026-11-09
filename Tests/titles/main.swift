@@ -57,5 +57,36 @@ check(cleanChatTitle("<command-name>commit</command-name>") == "commit", "and a 
 check(cleanChatTitle("<command-name></command-name>") == nil, "an empty pair yields no title rather than a blank one")
 _ = cleanChatTitle("</command-name><command-name>")   // reaching this line at all is the test
 
+// MARK: - Subagent logs are named after the conversation that spawned them
+//
+// Claude Code writes each subagent to <project>/<parent-uuid>/subagents/agent-<id>.jsonl. Their
+// opening message is a task prompt, so the title cleaner refuses it and every one of them used to
+// render as "Untitled chat, 2:03 PM": on a real machine, 1,455 of 1,584 tracked sessions.
+print("\nsubagent logs:")
+let parentUUID = "93ec1bda-c591-4a35-a098-4583df822894"
+let agentURL = URL(fileURLWithPath:
+    "/Users/x/.claude/projects/-Users-x/\(parentUUID)/subagents/agent-a59a9244009ffd085.jsonl")
+let chatURL = URL(fileURLWithPath: "/Users/x/.claude/projects/-Users-x/\(parentUUID).jsonl")
+
+check(isSubagentLog(agentURL), "an agent-*.jsonl under subagents/ is recognised as a subagent")
+check(!isSubagentLog(chatURL), "an ordinary conversation log is NOT treated as a subagent")
+
+let parent = subagentParent(of: agentURL)
+check(parent?.sid == parentUUID, "the parent session id is the folder the subagents/ dir sits in")
+check(parent?.log.lastPathComponent == "\(parentUUID).jsonl", "and its log sits beside that folder")
+check(subagentParent(of: chatURL) == nil, "a conversation log has no subagent parent")
+
+// A path shaped like a subagent but whose parent folder is not a session id must not invent one.
+check(subagentParent(of: URL(fileURLWithPath: "/tmp/notauuid/subagents/agent-1.jsonl")) == nil,
+      "a subagents/ folder under a non-uuid parent yields no parent rather than a bogus id")
+
+check(subagentLabel(parentTitle: "Fix UI overflow issues") == "Agent \u{00B7} Fix UI overflow issues",
+      "a named parent gives the agent a recognisable label")
+check(subagentLabel(parentTitle: nil) == "Agent tasks", "an unknown parent still says what the work IS")
+check(subagentLabel(parentTitle: "Untitled chat \u{00B7} 2:03 PM") == "Agent tasks",
+      "a parent that is itself a placeholder is not passed through as if it were a name")
+check(!isGeneratedTitle(subagentLabel(parentTitle: "Fix UI overflow issues")),
+      "an agent label is a real label, so rows sharing it are allowed to roll up together")
+
 print(failures == 0 ? "\nALL PASS" : "\n\(failures) FAILURE(S)")
 exit(failures == 0 ? 0 : 1)

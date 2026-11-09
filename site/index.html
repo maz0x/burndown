@@ -38,7 +38,7 @@
   "url": "https://burndown-app.pages.dev/",
   "downloadUrl": "https://github.com/maz0x/burndown/releases/latest",
   "installUrl": "https://github.com/maz0x/burndown/releases/latest",
-  "softwareVersion": "0.9.8",
+  "softwareVersion": "0.9.9",
   "license": "https://www.apache.org/licenses/LICENSE-2.0",
   "isAccessibleForFree": true,
   "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"},
@@ -73,7 +73,7 @@
     {"@type":"Question","name":"Does it work on Claude Pro, or only Max?","acceptedAnswer":{"@type":"Answer","text":"Both. Burndown does not hardcode plan shapes. It shows whatever limits your account reports, including any per-model caps, and the Account window can re-read your plan on the spot after an upgrade."}},
     {"@type":"Question","name":"I only use Claude in the browser or the desktop app. Does it still work?","acceptedAnswer":{"@type":"Answer","text":"Live mode, yes. Your limits are account-wide server-side numbers, so percentages, resets, forecasts and alerts all work no matter where you use Claude. Estimate mode and the attribution features are built from the logs Claude Code writes, so those cover Claude Code sessions."}},
     {"@type":"Question","name":"Does it run on Intel Macs?","acceptedAnswer":{"@type":"Answer","text":"Yes. Releases are universal binaries covering Apple Silicon and Intel, and macOS 13 or later is required."}},
-    {"@type":"Question","name":"How do updates work?","acceptedAnswer":{"@type":"Answer","text":"Burndown checks GitHub once a day for a newer version and tells you in the menu when one exists. One click installs it: the download is checked against its published SHA-256 checksum and its code signature is checked for integrity, the app is replaced in place, and it restarts. Both catch a corrupted download; neither proves origin the way notarization would, because the signature is still ad hoc. You can turn the daily check off."}}
+    {"@type":"Question","name":"How do updates work?","acceptedAnswer":{"@type":"Answer","text":"Burndown checks GitHub for a newer version on the schedule you choose in Settings, General: every launch, once a day (the default), once a week, or only when you ask. It tells you in the menu when one exists. One click installs it: the download is checked against its published SHA-256 checksum and its code signature is checked for integrity, the app is replaced in place, and it restarts. Both catch a corrupted download; neither proves origin the way notarization would, because the signature is still ad hoc. Set \"When one is found\" to \"Install it for me\" and Burndown does the download, the checks and the install on its own, waiting while chats are actively burning."}}
   ]
 }
 </script>
@@ -212,7 +212,7 @@
     <p class="tag">See the limit coming.</p>
     <p class="lede">
       Never get cut off mid-task by a Claude limit again. Burndown sits in your Mac menu bar and
-      shows how much of your session and your week is left, which conversation is spending it,
+      shows how much of your week is left (and of your 5-hour session, on plans that have one), which conversation is spending it,
       and when your current pace runs out of road, then warns you while there is still time to
       wrap up.
     </p>
@@ -273,8 +273,9 @@
       <div class="card illus">
         <img src="screenshots/f-card.png" width="330" alt="The Burndown card: 46 percent of the five hour session used, with the time left to reset">
         <h3>The whole card</h3>
-        <p>Session and weekly percentages with reset clocks, every per-model weekly cap, live
-        tokens per minute, and what the same work would have cost at API list prices.</p>
+        <p>Session and weekly percentages with reset clocks (weekly only on Ultra, which has
+        no session limit), every per-model weekly cap, live tokens per minute, and what the
+        same work would have cost at API list prices.</p>
       </div>
       <div class="card illus">
         <img src="screenshots/f-chats.png" width="330" alt="The Insights window listing the biggest chats all time, each with its tokens and estimated cost">
@@ -444,6 +445,13 @@
         adds machine-learning limit prediction.</td>
       </tr>
       <tr>
+        <td>A signed, notarized menu bar app with server-truth gauges and a predicted cutoff</td>
+        <td><a href="https://github.com/Iamshankhadeep/ccseva">ccseva</a> is the closest cousin:
+        native Swift, signed, and it forecasts too. It is Apple Silicon only and macOS 14+, and
+        its per-project view is cost estimates rather than limit attribution, which is where the
+        two part ways.</td>
+      </tr>
+      <tr>
         <td>A simple always-visible percentage, signed and localized</td>
         <td>Several native menu bar apps do this well, including
         <a href="https://github.com/hamed-elfayome/Claude-Usage-Tracker">Claude Usage Tracker</a>
@@ -473,8 +481,8 @@
     </p>
     <p style="margin-top:14px;color:var(--sub);font-size:15.5px">
       One thing to know before you download: Burndown is not yet Developer ID signed, so macOS
-      asks once on first open. Some alternatives are signed. That is a real difference and it is
-      on the roadmap rather than hidden here.
+      asks once on first open. Several alternatives are signed and notarized. That is a real
+      difference and it is on the roadmap rather than hidden here.
     </p>
   </div>
 </section>
@@ -490,7 +498,7 @@
         Burndown to Applications. Because the build is ad-hoc signed, macOS blocks the first
         open of a downloaded copy: run <code>xattr -d com.apple.quarantine
         /Applications/Burndown.app</code>, or click Open Anyway in System Settings, Privacy
-        &amp; Security. <a href="/guide#install">All four routes are in the guide.</a></p>
+        &amp; Security. <a href="/guide#install">All three routes are in the guide.</a></p>
       </li>
       <li>
         <h4>Say hello</h4>
@@ -552,8 +560,9 @@
       </div>
     </div>
     <p style="margin-top:26px;color:var(--sub);font-size:15.5px">
-      Full detail in the <a href="https://github.com/maz0x/burndown/blob/main/docs/PRIVACY.md">privacy
-      policy</a>, and the mechanism live mode uses, along with its risks, is documented in
+      Full detail in the <a href="/privacy">privacy
+      policy</a> and on the <a href="/trust">trust page</a>, which lists every file the app
+      reads and every host it can contact; the mechanism live mode uses, along with its risks, is documented in
       <a href="https://github.com/maz0x/burndown/blob/main/docs/TOS_NOTES.md">TOS_NOTES</a>.
       Nothing is hidden: the endpoint is undocumented and could change, and if it does the app
       falls back to estimates and keeps working.
@@ -592,7 +601,7 @@
     <details><summary>Why does macOS warn me the first time I open it?</summary>
       <p>Releases are ad-hoc signed because the project does not yet have a paid Apple Developer
       ID certificate, so macOS quarantines a downloaded copy and Gatekeeper blocks the first
-      open. Four ways past it, in order of least friction:</p>
+      open. Three ways past it, in order of least friction:</p>
       <ul>
         <li>Install with Homebrew, then clear the flag in the same line:
         <code>brew install --cask maz0x/tap/burndown &amp;&amp; xattr -d com.apple.quarantine /Applications/Burndown.app</code>.</li>
@@ -633,11 +642,14 @@
       later is required.</p></details>
 
     <details><summary>How do updates work?</summary>
-      <p>Burndown checks GitHub once a day for a newer version and tells you in the menu when one
-      exists. One click installs it: the download is checked against its published SHA-256
-      checksum and its code signature is checked for integrity, the app is replaced in place, and
-      it restarts. Both catch a corrupted download; neither proves origin the way notarization
-      would, because the signature is still ad hoc. You can turn the daily check off.</p></details>
+      <p>Burndown checks GitHub for a newer version on the schedule you choose in Settings,
+      General: every launch, once a day (the default), once a week, or only when you ask. It
+      tells you in the menu when one exists. One click installs it: the download is checked
+      against its published SHA-256 checksum and its code signature is checked for integrity, the
+      app is replaced in place, and it restarts. Both catch a corrupted download; neither proves
+      origin the way notarization would, because the signature is still ad hoc. Set "When one is
+      found" to "Install it for me" and Burndown does the download, the checks and the install on
+      its own, waiting while chats are actively burning.</p></details>
   </div>
 </section>
 
@@ -677,7 +689,8 @@
     <p>Made by <a href="https://github.com/maz0x">maz0x</a>. Free, and open source under the
     <a href="https://github.com/maz0x/burndown/blob/main/LICENSE">Apache License 2.0</a>.
       <a href="/guide">Guide</a> ·
-      <a href="https://github.com/maz0x/burndown/blob/main/docs/PRIVACY.md">Privacy</a> ·
+      <a href="/trust">Trust</a> ·
+      <a href="/privacy">Privacy</a> ·
       <a href="https://github.com/maz0x/burndown">Source</a> ·
       <a href="https://github.com/maz0x/burndown/discussions">Discussions</a></p>
     <p>An independent project, not affiliated with, endorsed by, or sponsored by Anthropic.

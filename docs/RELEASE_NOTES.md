@@ -1,5 +1,122 @@
 # What's new in Burndown
 
+## 0.9.9
+
+The whole card was reworked around three complaints that turned out to be load-bearing: resizing
+fought the cursor, charts could draw outside their own boxes, and half the app's chats were called
+"Untitled chat".
+
+### Resizing that follows your hand
+
+- **The card now resizes at full speed and tracks the cursor exactly.** The menu card used to live
+  in a macOS popover, which re-centers itself, slides along with a drag, and animates back to its
+  anchor, all at once. It now lives in a plain panel pinned at its top-left corner, so the corner
+  grip moves the edge you are holding and nothing else. Measured before and after: a drag that ran
+  at about 11 frames a second now runs at 60.
+- **While you drag, charts stretch; when you pause or let go, they redraw sharp.** Redrawing six
+  charts sixty times a second is beyond the chart engine, so during movement the card stretches
+  them like a photo, and the moment your hand stops, even mid-drag, it lays them out for real at
+  the current size. You can hold the grip, sweep, pause to inspect, and keep going.
+- **The little pointer is back.** The menu card grew a peak on its top edge, cut into the glass
+  itself, aimed at the Burndown icon even when the card is pushed sideways by a screen edge. The
+  floating card has none, so the two no longer look like twins.
+- **The floating card stopped wearing an old shadow.** A transparent window's shadow is only
+  recomputed when the app asks, and nothing asked, so a long-lived floating card dragged around
+  the shadow of an older, taller self: a pale ledge under its corners. It now refreshes whenever
+  the card is shown, changes size, or changes its transparency settings.
+
+### Charts that stay inside their boxes
+
+- **No chart can draw outside its own plot any more.** The chart engine does not clip lines to the
+  time range you ask for, so a trimmed week burndown drew its older half across the card and out of
+  the window. Every one of the app's chart plots is now clipped, a test fails the build if a new
+  chart forgets, and the burndown charts hand the plot only what is visible, entering at the right
+  height at the left edge.
+- **Peaks are no longer beheaded.** The burn rate chart picked its ceiling from the 97th percentile
+  of readings and its menu of ceilings stopped at 1.8M, so a real 2.2M/min peak drew as a flat
+  plateau at 600k while the hover readout told the truth. The ceiling now always covers the real
+  maximum, with no upper limit.
+- **Hover readouts stay readable.** The floating value box used to run off the right edge of the
+  card exactly when you hovered the newest data. It now stays inside the plot on every chart.
+- **Each chart gets its own time window.** A quiet control on each chart's title row picks that
+  chart's window, from 30 minutes to everything, including trimming the burndown charts to their
+  recent stretch. Charts follow the global Settings choice until you change one, and can be handed
+  back with "Follow settings".
+- **Models stopped vanishing from the Session + week legend.** Any window under a day used to drop
+  the per-model lines and their legend entries with them, so on the default one-hour window your
+  main model was simply absent. The entries now stay, dimmed, and say what they need.
+
+### Chats with names
+
+- **"Untitled chat" is mostly gone.** Two causes, both fixed. A chat is scanned the moment it
+  starts spending, usually before Claude Code writes its title, and that placeholder was stored
+  as if it were the real name and never looked at again, in two separate caches. Placeholders are
+  now provisional everywhere and the real title replaces them when it lands. And the many logs
+  written by Claude Code's own subagents have no title by nature; they are now named after the
+  conversation that spawned them, as "Agent" plus its title, and roll up together.
+- **Rename any chat where you see it.** A clear Rename button appears when you hover a chat row,
+  in Top chats, in the burning-now list, and in Insights, all writing to the same store. It used
+  to be a tiny unlabeled pencil in one list only.
+
+### Live numbers that explain themselves
+
+- **Clicking LIVE always answers.** The badge's dot pulses on your click again, and if Claude's
+  service asks the app to slow down, the badge now says Limited and its tooltip says when it will
+  retry, instead of silently counting the age of the numbers upward. The pause is capped at two
+  minutes and retries itself the moment it ends; it used to reach eight silent minutes.
+- **Buttons in the card work reliably.** The new panel window type quietly refused clicks to
+  buttons while letting drags through, the worst kind of half-broken. Fixed at the window level.
+
+### Updates, grown up
+
+- **Choose how often Burndown checks**: every launch, once a day, once a week, or only when you
+  ask.
+- **Choose what happens when one is found**: a notification with What's new and Install now
+  buttons, or fully automatic download and install, which waits politely while chats are burning.
+- **Release notes are finally shown.** The app always downloaded them with every check and showed
+  them to no one. They now render in Settings under What's new.
+- Update notifications respect quiet hours and re-announce once the quiet ends.
+
+### Plans with weekly limits only
+
+- **Ultra accounts no longer show a phantom session.** On October 30 Anthropic renamed Max 20x to
+  Ultra and removed the five-hour limit for verified Ultra accounts; only the weekly limit and the
+  separate weekly Fable cap remain. Claude's usage service now reports no session window for those
+  accounts, and Burndown used to keep showing the last one it had ever seen, frozen at whatever it
+  read, including "over limit" while Claude worked fine. The app now understands "this plan has no
+  session limit" as a state of its own: the week becomes the main ring and menu bar number, the
+  session gauge and its "5-hour" wording disappear, the "over" pill can only come from a real
+  limit, and the cache can never bring an old session back. Pro, Max and Team keep today's layout.
+- **Where the week went.** For those accounts the week section gains one quiet row showing how
+  much of the week went to Claude Code, Chats and Cowork, the same split claude.ai shows.
+- **Plan names follow Anthropic's.** Max 20x reads Ultra and Max 5x reads Max, in the menu bar
+  title, the Account window and the edge-dock widget, which also drops its Session slot on
+  weekly-only plans across every style and orientation.
+
+### Sign-in and the Developer API, told straight
+
+- **"Use my Claude Code sign-in" says why it fails.** Current Claude Code versions still write
+  their Keychain entry but leave the token fields empty, so the borrowed sign-in silently landed
+  on estimates while claiming no Claude Code sign-in existed. It now names the cause and points at
+  Sign in with Claude, which keeps working.
+- **The Developer API panel stops sending people to a page they don't have.** Anthropic serves
+  spend reports only to Console organizations; a one-person Individual Org has no Admin keys page
+  at all, and even an organization-scoped personal key is refused. The panel, the key message and
+  the error texts now explain that Settings, Organization in the Console offers a conversion, and
+  that an Admin key can manage the whole org, so give it an expiry.
+- **The Developer API figure is honest about its date.** Anthropic's cost report never includes
+  the current day, so the old "today" number was always zero. It now shows the last complete day,
+  labelled as yesterday, and the first-of-month request no longer fails.
+
+### Smaller things worth knowing
+
+- "Chats burning now" is a real section you can drag anywhere in the popover's order.
+- The chart panel runs flush to the card's bottom edge, one surface, one corner.
+- The LIVE badge's tooltip wraps instead of running off both edges of the card.
+- The right-click menu no longer opens with its first row hidden behind a scroll arrow.
+- The About window stopped drawing a focus ring around the version number.
+- The website gained a proper privacy page, the same document the app shows.
+
 ## 0.9.8
 
 - **Burndown no longer sits on a CPU core in the background.** If you have a lot of Claude Code

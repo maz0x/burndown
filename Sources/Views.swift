@@ -44,9 +44,9 @@ func qaSettingsPaneHeight(_ t: SettingsTab) -> CGFloat {
     // The old menu bar number was 274pt short of its own open drawers, so that screenshot had been
     // going out with its bottom cut off.
     switch t {
-    case .general:    return 705
+    case .general:    return 799
     case .menuBar:    return open ? 1260 : 686
-    case .popover:    return open ? 1483 : 1319
+    case .popover:    return open ? 1464 : 1300
     case .data:       return 3594
     case .companions: return 436      // nothing to expand until a companion is switched on
     case .appearance: return open ? 1336 : 797
@@ -329,43 +329,50 @@ func modelHue(_ family: String, _ p: Palette) -> Color {
 // BY MODEL = where the week actually went: ONE segmented bar (not a stack of per-model progress bars,
 // which duplicated the Fable cap bar) split by each model's share, with a compact 2-column legend
 // beneath so up to four models fit the narrow popover without the labels wrapping.
+// The same restraint for the surfaces the service splits a week by. Claude Code is the slate
+// of the weekly bars it sits under; the chat surface takes the accent; the rest stay muted.
+func surfaceHue(_ surface: String, _ p: Palette) -> Color {
+    switch surface {
+    case "Claude Code": return kSlate
+    case "Chats":       return Color(hex: kAccentHex)
+    case "Cowork":      return Color(red: 0.46, green: 0.58, blue: 0.52)
+    default:            return Color(red: 0.66, green: 0.56, blue: 0.44)
+    }
+}
+
 struct ByModelSplit: View {
     let usage: [ModelUse]; let p: Palette
+    /// Which colour a segment takes. Models by default; the BY SURFACE split passes its own.
+    var hue: (String, Palette) -> Color = modelHue
     var body: some View {
         let legend = Array(usage.prefix(4))
-        // Three across, not two. Two per row put a lone third model on a line of its own and cost
-        // a whole row of the card's height for one word.
-        let perRow = legend.count <= 3 ? 3 : 2
-        let rows = stride(from: 0, to: legend.count, by: perRow)
-            .map { Array(legend[$0 ..< min($0 + perRow, legend.count)]) }
         VStack(alignment: .leading, spacing: 8) {
             GeometryReader { g in
                 let gap: CGFloat = 1.5
                 let avail = max(0, g.size.width - gap * CGFloat(max(0, usage.count - 1)))
                 HStack(spacing: gap) {
                     ForEach(usage) { u in
-                        modelHue(u.label, p).frame(width: avail * min(1, max(0, u.share)))
+                        hue(u.label, p).frame(width: avail * min(1, max(0, u.share)))
                     }
                 }
             }
             .frame(height: 7).clipShape(Capsule())
-            VStack(alignment: .leading, spacing: 5) {
-                ForEach(rows.indices, id: \.self) { ri in
-                    HStack(spacing: 0) {
-                        ForEach(rows[ri]) { u in
-                            HStack(spacing: 5) {
-                                Circle().fill(modelHue(u.label, p)).frame(width: 6, height: 6)
-                                Text(u.label).font(.system(size: 10.5)).foregroundStyle(p.sub).fixedSize()
-                                Text(u.share < 0.005 ? "<1%" : "\(Int((u.share * 100).rounded()))%")
-                                    .font(.system(size: 10.5, design: .monospaced)).foregroundStyle(p.faint)
-                                    .monospacedDigit().fixedSize()
-                            }
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        }
-                        Spacer(minLength: 0)
+            // Packed, not laid out in fixed columns. A fixed "three across, else two" split the four
+            // models onto two rows whatever the card's width, so a wide card still spent a second
+            // row of height on labels that had room to sit on one. FlowLayout wraps only when the
+            // names genuinely do not fit.
+            FlowLayout(spacing: 12, rowSpacing: 5) {
+                ForEach(legend) { u in
+                    HStack(spacing: 5) {
+                        Circle().fill(hue(u.label, p)).frame(width: 6, height: 6)
+                        Text(u.label).font(.system(size: 10.5)).foregroundStyle(p.sub).fixedSize()
+                        Text(u.share < 0.005 ? "<1%" : "\(Int((u.share * 100).rounded()))%")
+                            .font(.system(size: 10.5, design: .monospaced)).foregroundStyle(p.faint)
+                            .monospacedDigit().fixedSize()
                     }
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
@@ -425,6 +432,46 @@ func heroPercent(_ pct: Double) -> String {
     return "\(Int(v.rounded()))"
 }
 
+/// The sections a card will actually draw, in order.
+///
+/// A section that would draw nothing is dropped here rather than left in to render empty: the
+/// separator between sections is decided by position in this list, so an always-present-but-empty
+/// section would leave a hairline with nothing under it. That is why "chats" is filtered on whether
+/// anything is actually burning, not just on its setting.
+func drawnCardSections(settings: AppSettings, live: LiveActivity, sessionLimitAbsent: Bool = false) -> [CardSection] {
+    var secs = settings.visibleSections().filter {
+        ($0 != .chart || settings.showBurnChart)
+        && ($0 != .chats || !live.activeStreams.isEmpty)
+    }
+    // A plan with no session limit (verified Ultra) draws no session gauge, and the week takes
+    // the slot the session held, so the one constraint the plan has reads where the primary
+    // gauge always did. A week the user had already placed above the session stays put. The
+    // session burndown chart has nothing to draw either, and a chart section it was the whole
+    // of goes with it, so no empty plate is left behind.
+    if sessionLimitAbsent {
+        if let i = secs.firstIndex(of: .session) {
+            secs.remove(at: i)
+            if let w = secs.firstIndex(of: .week), w >= i { secs.remove(at: w); secs.insert(.week, at: min(i, secs.count)) }
+        }
+        if settings.chartKinds.allSatisfy({ $0 == .sessionBurndown }) { secs.removeAll { $0 == .chart } }
+    }
+    return secs
+}
+
+/// True when the chart plate is the last thing the whole card draws, so it goes flush to the bottom
+/// edge (zero bottom padding, square bottom corners) instead of sitting on a margin.
+///
+/// "Last section" is not enough on its own: the developer API line draws AFTER the section loop and
+/// under its own hairline, so with a key connected the plate is not last even when the chart section
+/// is. Signed-out and skeleton cards draw no plate at all and want the full 16.
+///
+/// Free-standing because two views must agree on the answer from the same inputs: DetailCard drops
+/// its bottom margin on it, and the host card puts the resize grip inside the plate's corner on it.
+func chartPlateIsLast(settings: AppSettings, live: LiveActivity,
+                      signedIn: Bool, loading: Bool, apiSpend: APISpend, sessionLimitAbsent: Bool = false) -> Bool {
+    signedIn && !loading && drawnCardSections(settings: settings, live: live, sessionLimitAbsent: sessionLimitAbsent).last == .chart
+        && !(settings.showDeveloperApiLine && apiSpend.configured && apiSpend.error == nil)
+}
 
 struct DetailCard: View {
     var snapshot: UsageSnapshot
@@ -541,6 +588,17 @@ struct DetailCard: View {
         return parts.joined(separator: " · ")
     }
 
+    /// The sections that will actually draw, in order. Shared with the card's own padding below,
+    /// which has to know what its LAST element is (see drawnCardSections).
+    private var drawnSections: [CardSection] { drawnCardSections(settings: settings, live: live, sessionLimitAbsent: snapshot.sessionLimitAbsent) }
+
+    /// Whether the chart plate runs flush to the card's bottom edge (see chartPlateIsLast).
+    private var plateIsLast: Bool {
+        chartPlateIsLast(settings: settings, live: live,
+                         signedIn: signedIn, loading: loading, apiSpend: apiSpend,
+                         sessionLimitAbsent: snapshot.sessionLimitAbsent)
+    }
+
     var body: some View {
         let p = Palette.of(scheme)
         let userAccent = NSColor(hex: settings.accentHex) ?? NSColor(srgbRed: 0.85, green: 0.47, blue: 0.34, alpha: 1)
@@ -561,7 +619,23 @@ struct DetailCard: View {
             case .off:    return p.sub
             }
         }()
+        // Re-auth: signed in but the token was rejected (no usable token / 401 / invalid).
+        let reauth: Bool = {
+            guard signedIn, let e = snapshot.liveError?.lowercased() else { return false }
+            return e.contains("no token") || e.contains("401") || e.contains("auth") || e.contains("invalid")
+        }()
         let liveState: LiveState = {
+            // A REJECTED CREDENTIAL outranks everything, the booked retry included. Both can be
+            // true at once - a 429 arrives, then the token is revoked - and counting down to a
+            // retry that can only fail again tells the reader to wait when what they have to do is
+            // sign in again.
+            if reauth { return .offline }
+            // A KNOWN backoff outranks having numbers on screen. Claude's service rate-limits a
+            // burst of manual refreshes, and the old order treated "we still hold a reading" as
+            // live: the badge kept saying LIVE while its tooltip counted the age upward, so
+            // clicking it again and again looked like the click did nothing at all. The reading is
+            // still shown (stale beats absent), but the badge now says why it is not moving.
+            if let retry = snapshot.liveRetryAt, retry > Date() { return .rateLimited }
             if !snapshot.isLive {
                 if let e = snapshot.liveError, !e.isEmpty {
                     let le = e.lowercased()
@@ -571,11 +645,6 @@ struct DetailCard: View {
             }
             if let u = snapshot.liveUpdated, Date().timeIntervalSince(u) > max(150, period * 4) { return .stale }
             return .live
-        }()
-        // Re-auth: signed in but the token was rejected (no usable token / 401 / invalid).
-        let reauth: Bool = {
-            guard signedIn, let e = snapshot.liveError?.lowercased() else { return false }
-            return e.contains("no token") || e.contains("401") || e.contains("auth") || e.contains("invalid")
         }()
         let title = snapshot.plan.map { "Claude \($0)" } ?? kAppName
 
@@ -589,7 +658,15 @@ struct DetailCard: View {
                          liveAccent: liveAccent, liveDot: liveDot, liveState: liveState, reauth: reauth)
             }
         }
-        .padding(16)
+        .padding(.horizontal, 16).padding(.top, 16)
+        // Zero, not a margin, when the chart plate is the last thing the card draws: the plate runs
+        // FLUSH to the card's bottom edge and the card's own clip supplies the rounding there.
+        // Any bottom margin at all leaves the plate's rounded corner nested inside the card's
+        // rounded corner with a band of pale glass wrapping between the two, which reads as a
+        // double corner rather than a margin, and it was worse the smaller the band got. Flush
+        // means one corner, and the grip sits on the plate instead of floating in the band.
+        // The plate squares its own bottom corners in this configuration (see PlateShape).
+        .padding(.bottom, plateIsLast ? 0 : 16)
         // The card's one width constraint. 264 is the design width; the corner grip widens it and
         // every row reflows (bars, names, charts all fill their container - nothing else is fixed).
         .frame(width: CardResize.clampW(settings.cardWidth), alignment: .leading)
@@ -600,7 +677,11 @@ struct DetailCard: View {
     private func liveCard(p: Palette, title: String, sColor: Color, wColor: Color, ringC: Color,
                           liveAccent: Color, liveDot: Color, liveState: LiveState, reauth: Bool) -> some View {
         // The chart element folds the whole chart section away, dropping its divider too.
-        let sections = settings.visibleSections().filter { $0 != .chart || settings.showBurnChart }
+        // A section that is going to draw nothing is dropped BEFORE the loop, not left in to render
+        // empty: the separator between sections is decided by position in this list, so an
+        // always-present-but-empty section would leave a hairline with nothing under it. That is why
+        // "chats" is filtered on whether anything is actually burning, not just on its setting.
+        let sections = drawnSections
         VStack(alignment: .leading, spacing: 0) {
             if reauth { reauthBanner(p).padding(.bottom, 13) }
             ForEach(Array(sections.enumerated()), id: \.element) { idx, sec in
@@ -626,7 +707,10 @@ struct DetailCard: View {
                         (Text(title).font(.system(size: 15.5, weight: .bold)).foregroundColor(p.ink)
                          + Text(" usage").font(.system(size: 14, weight: .medium)).foregroundColor(p.faint))
                             .tracking(-0.1)
-                            .lineLimit(1).minimumScaleFactor(0.8).layoutPriority(1)
+                            // 0.7, not 0.8: beside the OVER LIMIT badge "Claude Ultra usage" lost
+                            // its last word to an ellipsis at the default card width, and the plan
+                            // name is the part that must survive.
+                            .lineLimit(1).minimumScaleFactor(0.7).layoutPriority(1)
                         Spacer(minLength: 6)
                         // Quiet-hours moon: a crescent leading the badge, text in the
                         // tooltip so the header title keeps its room; distinct from the connection state
@@ -637,8 +721,9 @@ struct DetailCard: View {
                                 .help("Alerts quiet until \(settings.quietUntilString)")
                                 .accessibilityLabel("Alerts quiet until \(settings.quietUntilString)")
                         }
-                        StatusBadge(state: liveState, over: snapshot.over, reauth: reauth, liveColor: liveDot, p: p,
-                                    updated: snapshot.liveUpdated, period: period, anchor: refreshAnchor, heartbeat: heartbeat, onTap: onRefresh,
+                        StatusBadge(state: liveState, over: snapshot.primaryOver, reauth: reauth, liveColor: liveDot, p: p,
+                                    updated: snapshot.liveUpdated, retryAt: snapshot.liveRetryAt,
+                                    period: period, anchor: refreshAnchor, heartbeat: heartbeat, onTap: onRefresh,
                                     tipAbove: (sections.firstIndex(of: .header) ?? 0) * 2 >= sections.count)
                             .fixedSize()
                     }
@@ -647,9 +732,15 @@ struct DetailCard: View {
                 case .session:
                     sessionSection(p: p, sColor: sColor, ringC: ringC, liveState: liveState)
                 case .chart:
-                    chartSection(p: p, liveAccent: liveAccent, ringC: ringC)
+                    chartSection(p: p, liveAccent: liveAccent, ringC: ringC, flush: plateIsLast)
                 case .week:
                     weekSection(p: p, wColor: wColor, ringC: ringC)
+                case .chats:
+                    BurningChatsSection(live: live, p: p, accent: liveAccent,
+                                        explain: settings.popoverExplain,
+                                        truncation: settings.chatTruncation,
+                                        eyebrows: settings.popoverEyebrows,
+                                        chatsOpen: $settings.chatsExpanded)
                 }
             }
             // Developer API spend: one opt-in line at the very bottom, only when a key is
@@ -670,12 +761,12 @@ struct DetailCard: View {
             Text("DEVELOPER API").font(.system(size: 9.5, weight: .semibold)).tracking(1.0).foregroundStyle(p.sub).fixedSize()
             Circle().fill(p.live).frame(width: 5, height: 5)
             Spacer(minLength: 6)
-            Text("$\(Int(apiSpend.monthToDate.rounded())) mo · $\(Int(apiSpend.today.rounded())) today")
+            Text("$\(Int(apiSpend.monthToDate.rounded())) mo · $\(Int(apiSpend.lastDay.rounded())) \(apiSpend.lastDayLabel)")
                 .font(.system(size: 11, design: .monospaced)).foregroundStyle(p.sub)
                 .lineLimit(1).minimumScaleFactor(0.8)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Developer API spend, \(Int(apiSpend.monthToDate.rounded())) dollars this month, \(Int(apiSpend.today.rounded())) dollars today")
+        .accessibilityLabel("Developer API spend, \(Int(apiSpend.monthToDate.rounded())) dollars this month, \(Int(apiSpend.lastDay.rounded())) dollars \(apiSpend.lastDayLabel)")
     }
 
     private func sessionSection(p: Palette, sColor: Color, ringC: Color, liveState: LiveState) -> some View {
@@ -775,8 +866,12 @@ struct DetailCard: View {
     }
 
     // The chart in its own quiet card: a 4% ink tint, not elevation (no inner shadow).
-    private func chartSection(p: Palette, liveAccent: Color, ringC: Color) -> some View {
-        MonitorChart(live: live, kinds: settings.chartKinds, sessionPct: snapshot.sessionPct,
+    // `flush` is set when this plate is the last thing the card draws (see plateIsLast): the card
+    // then gives it zero bottom padding and the plate meets the card's own edge.
+    private func chartSection(p: Palette, liveAccent: Color, ringC: Color, flush: Bool) -> some View {
+        // No session limit: the session burndown has nothing to draw, so it is left out here.
+        let kinds = snapshot.sessionLimitAbsent ? settings.chartKinds.filter { $0 != .sessionBurndown } : settings.chartKinds
+        return MonitorChart(live: live, kinds: kinds, sessionPct: snapshot.sessionPct,
                      weeklyPct: snapshot.weeklyPct, accent: liveAccent, secondary: ringC, p: p,
                      anchor: refreshAnchor, period: period, burnSpan: settings.burnSpan,
                      chartStyle: settings.chartStyle, showCadence: settings.showCountdownRing,
@@ -784,7 +879,6 @@ struct DetailCard: View {
                      chartDays: settings.chartDays, modelLimits: snapshot.modelLimits,
                      chartHover: settings.chartHover,
                      plotH: kChartH + CardResize.clampB(settings.cardChartBoost),
-                     showChats: settings.showChatsBurning, chatsOpen: $settings.chatsExpanded,
                      truncation: settings.chatTruncation, records: records, explain: settings.popoverExplain,
                      hiddenSeries: Set(settings.hiddenUsageSeries),
                      onToggleSeries: { key in
@@ -793,7 +887,8 @@ struct DetailCard: View {
                          } else {
                              settings.hiddenUsageSeries.append(key)
                          }
-                     })
+                     },
+                     settings: settings, compact: settings.popoverCompact)
             // The width the charts get is the card's 16pt padding PLUS this box's own inset, and
             // cutting the inset alone just moved the charts up against the box edge. So the box
             // reaches OUT instead: -9 against the card's 16 leaves a 7pt margin outside it, while
@@ -803,9 +898,23 @@ struct DetailCard: View {
             // 16pt grid. It was an inset of 10, which landed everything inside the box one point
             // off the column every other section sits on: invisible alone, and the reason the box
             // never quite lined up with the rows above it.
-            .padding(.horizontal, 9).padding(.vertical, 11)
-            .background(RoundedRectangle(cornerRadius: 12).fill(p.raisedBg))
-            .padding(.horizontal, -9)
+            // The inset stays at its full value at the bottom in the flush case too: only the
+            // plate SURFACE reaches the card edge, never the charts drawn on it.
+            // Compact tightens the inset with everything else, because on a chart-heavy card this
+            // band is paid twice over, once at each end of the tallest section in the card.
+            .padding(.horizontal, 9).padding(.vertical, settings.popoverCompact ? 9 : 11)
+            // The fill FOLLOWS THE SURFACE. p.raisedBg is opaque, so on a Clear or heavily faded
+            // card the plate was the one solid rectangle on an otherwise see-through card: it read
+            // as a panel dropped on top rather than as the 4% ink tint the design calls for. With
+            // no surface behind it the plate becomes exactly that tint and nothing more.
+            // The radius is derived rather than fixed: at the card's own 6..22 range a hardcoded 12
+            // made the plate's top corners ROUNDER than the card containing them below a radius of
+            // 14. Two off the card's own value, clamped, and at the default 14 it still yields 12.
+            .background(PlateShape(radius: min(12, max(6, settings.glassCornerRadius - 2)),
+                                   squareBottom: flush)
+                .fill(settings.surfaceIsVisible ? AnyShapeStyle(p.raisedBg)
+                                                : AnyShapeStyle(p.ink.opacity(0.04))))
+            .padding(.horizontal, -kPlateOutset)
     }
 
     private func weekSection(p: Palette, wColor: Color, ringC: Color) -> some View {
@@ -815,27 +924,43 @@ struct DetailCard: View {
         //                  a cap can be the binding constraint; then a COLLAPSED "by model" share split.
         // The share split is one segmented bar (not per-model progress bars), so a model never shows two
         // separate bars, and the spark no longer sits marooned between a cap row and the share list.
-        let resetCaption = settings.showWeekResets ? snapshot.weeklyResetAt.map { weekLeftString($0) + " left" } : nil
+        // A plan with no session limit (verified Ultra) has one constraint, and it is this one.
+        // The week then takes the session's place as the card's hero: the 60pt numeral, the reset
+        // ring and the full-height bar, so the one number that matters reads at the size the
+        // session did. A plan with both limits keeps the quieter 30pt week exactly as it was.
+        let hero = snapshot.sessionLimitAbsent
+        // The hero's ring already counts down to the reset, so the caption that says the same
+        // thing in the eyebrow row is only drawn when the ring is not.
+        let captionShown = settings.showWeekResets && !(hero && settings.showTimeRing)
+        let resetCaption = captionShown ? snapshot.weeklyResetAt.map { weekLeftString($0) + " left" } : nil
         let caps = snapshot.modelLimits
         let usage = snapshot.modelUsage
+        // With eyebrows off the header row has nothing left to hold but the reset caption, and a
+        // caption alone on a full-width row floats above a percentage it does not obviously belong
+        // to. The row goes entirely and the caption hangs off the trailing edge of the percent row
+        // below, which already ends in a bar with room to give.
+        let hungCaption = settings.popoverEyebrows ? nil : resetCaption
         return VStack(alignment: .leading, spacing: 0) {
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                if settings.popoverEyebrows {
+            if settings.popoverEyebrows {
+                HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text("THIS WEEK").font(.system(size: 11, weight: .semibold)).tracking(1.4).foregroundStyle(p.sub)
-                    InfoDot(text: "Your weekly allowance across every model."
+                    InfoDot(text: (hero ? "This plan has a weekly limit and no five-hour session, so this is the one number to watch: how much of the week is used, and the time until it resets."
+                                        : "Your weekly allowance across every model.")
                             // The second sentence promises rows that only exist when the
                             // service reports per-model caps, so it is only said then.
                             + (snapshot.modelLimits.isEmpty ? ""
                                : " Some models also carry their own weekly cap, listed below."),
                             p: p, accent: Color(hex: settings.accentHex), on: settings.popoverExplain)
-                }
-                Spacer(minLength: 8)
-                if let rc = resetCaption {
-                    Text(rc).font(.system(size: 12, design: .monospaced)).foregroundStyle(p.sub).lineLimit(1)
-                }
-            }.padding(.bottom, settings.popoverCompact ? 6 : 8)
+                    Spacer(minLength: 8)
+                    if let rc = resetCaption {
+                        Text(rc).font(.system(size: 12, design: .monospaced)).foregroundStyle(p.sub).lineLimit(1)
+                    }
+                }.padding(.bottom, settings.popoverCompact ? 6 : 8)
+            }
             // ── ALL MODELS: the weekly pool everything counts against ──
-            if settings.showWeekPercent {
+            if hero {
+                weekHero(p: p, wColor: wColor, ringC: ringC, hungCaption: hungCaption)
+            } else if settings.showWeekPercent {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     HStack(alignment: .firstTextBaseline, spacing: 1) {
                         let weekText = heroPercent(snapshot.weeklyPct)
@@ -848,13 +973,27 @@ struct DetailCard: View {
                         Text("%").font(.system(size: 15, weight: .regular, design: .serif)).foregroundStyle(p.sub)
                     }
                     HBar(pct: snapshot.weeklyPct, color: wColor, track: p.track, height: 5, a11yLabel: "Weekly usage, all models").padding(.bottom, 6)
+                    if let rc = hungCaption {
+                        Text(rc).font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(p.sub).lineLimit(1).fixedSize()
+                    }
                 }
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("This week, all models")
-                .accessibilityValue("\(heroPercent(snapshot.weeklyPct)) percent used")
+                .accessibilityValue("\(heroPercent(snapshot.weeklyPct)) percent used"
+                                    + (hungCaption.map { ", \($0)" } ?? ""))
             } else {
-                HBar(pct: snapshot.weeklyPct, color: wColor, track: p.track, height: 5, a11yLabel: "Weekly usage").padding(.top, 4)
+                HStack(alignment: .center, spacing: 8) {
+                    HBar(pct: snapshot.weeklyPct, color: wColor, track: p.track, height: 5, a11yLabel: "Weekly usage")
+                    if let rc = hungCaption {
+                        Text(rc).font(.system(size: 12, design: .monospaced))
+                            .foregroundStyle(p.sub).lineLimit(1).fixedSize()
+                    }
+                }.padding(.top, 4)
             }
+            // Where the week went, by surface, when the service reports it. Directly under the
+            // total it splits, before the history and the per-model rows.
+            if !snapshot.weeklyBreakdown.isEmpty { surfaceRow(p) }
             // 7-day history belongs with the all-models total, right beneath it.
             if settings.showLast7Days, dailySpark.contains(where: { $0 > 0 }) {
                 // Label LEADING, data trailing, like every other row in the card. This one was the
@@ -936,6 +1075,77 @@ struct DetailCard: View {
 
     private func capRow(_ m: ScopedLimit, _ p: Palette, _ wColor: Color) -> some View {
         CapLimitRow(m: m, p: p, barColor: wColor)
+    }
+
+    // The week as the card's hero, for a plan with no session limit. Same bones as the session
+    // block it stands in for (numeral, ring, one quiet line, the 7pt bar), fed by the week.
+    @ViewBuilder
+    private func weekHero(p: Palette, wColor: Color, ringC: Color, hungCaption: String?) -> some View {
+        if snapshot.weeklyOver { OverPill(color: p.overLimit).padding(.bottom, 7) }
+        HStack(alignment: .top, spacing: 10) {
+            HStack(alignment: .firstTextBaseline, spacing: 1) {
+                // Ink at rest, warming to the week's hue from the alert threshold up, flat
+                // overLimit past 100%: the same rule the session numeral follows.
+                let warmth = snapshot.weeklyOver ? 1.0 : max(0, min(1, (snapshot.weeklyPct - (settings.alertWeeklyAt - 0.15)) / 0.15))
+                let heroBase = Color(nsColor: NSColor(p.ink).blended(to: NSColor(wColor), CGFloat(warmth)))
+                let weekText = heroPercent(snapshot.weeklyPct)
+                Text(weekText)
+                    .font(.system(size: 60, weight: .semibold, design: .serif)).tracking(-0.5)
+                    .foregroundStyle(snapshot.weeklyOver ? AnyShapeStyle(p.overLimit)
+                        : warmth > 0.02 ? AnyShapeStyle(LinearGradient(colors: [heroBase.brighten(0.10 * warmth), heroBase], startPoint: .top, endPoint: .bottom))
+                        : AnyShapeStyle(p.ink))
+                    .monospacedDigit()
+                    .numberAnim(reduce || weekText == "<1" ? .none : settings.numberStyle,
+                                Int((snapshot.weeklyPct * 100).rounded()))
+                Text("%").font(.system(size: 28, weight: .regular, design: .serif)).foregroundStyle(p.sub)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("This week, all models")
+            .accessibilityValue({
+                var t = snapshot.weeklyOver ? "limit reached" : "\(heroPercent(snapshot.weeklyPct)) percent used"
+                if let r = snapshot.weeklyResetAt { t += ", \(weekLeftString(r)) until reset" }
+                return t + ". No session limit on this plan"
+            }())
+            .accessibilityAddTraits(.updatesFrequently)
+            Spacer(minLength: 0)
+            if settings.showTimeRing {
+                // A week drains by the minute, not the second.
+                TimelineView(.periodic(from: .now, by: 60)) { ctx in
+                    let rt = weekRingText(snapshot.weeklyResetAt, now: ctx.date)
+                    TimeRing(frac: rt.0, big: rt.1, small: rt.2, track: p.track, ink: p.ink, faint: p.faint, ring: ringC, size: 62)
+                        .accessibilityLabel("Week resets in \(rt.1) \(rt.2)")
+                }
+            }
+        }.padding(.top, 2)
+        // The one quiet line under the number: why there is no session gauge, or claude.ai's own
+        // pace sentence once the service sends one. With the eyebrows off the reset caption has
+        // nowhere else to hang, so it rides on the end of this line.
+        Text([snapshot.weeklyPace ?? "No session limit on this plan", hungCaption].compactMap { $0 }.joined(separator: " · "))
+            .font(.system(size: 11.5)).foregroundStyle(p.faint).padding(.top, 8).lineLimit(1)
+        HBar(pct: snapshot.weeklyPct, color: wColor, track: p.track, height: 7,
+             redline: snapshot.weeklyOver ? 1 : max(0, (min(1, snapshot.weeklyPct) - 0.85) / 0.15),
+             overLimit: p.overLimit, a11yLabel: "Weekly usage, all models").padding(.top, 13)
+    }
+
+    // The week by surface (Claude Code / Chats / Cowork / Other), as the usage service reports
+    // it: one segmented bar and a packed legend, the same shape as BY MODEL so the two splits
+    // read as siblings. Shares of the week's usage, so a surface that used nothing is not drawn.
+    private func surfaceRow(_ p: Palette) -> some View {
+        let rows = snapshot.weeklyBreakdown.filter { $0.pct > 0 }
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Text("BY SURFACE").font(.system(size: 9.5, weight: .semibold)).tracking(1.0)
+                    .foregroundStyle(p.sub).fixedSize()
+                InfoDot(text: "Where this week's usage came from: Claude Code, chats on claude.ai, Cowork, or anything else, each as a share of the week.",
+                        p: p, accent: Color(hex: settings.accentHex), on: settings.popoverExplain)
+            }
+            ByModelSplit(usage: rows.map { ModelUse(label: $0.label, cost: 0, share: $0.pct) }, p: p,
+                         hue: { surfaceHue($0, $1) })
+        }
+        .padding(.top, 10)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("This week by surface")
+        .accessibilityValue(rows.map { "\($0.label) \(Int(($0.pct * 100).rounded())) percent" }.joined(separator: ", "))
     }
 
     // Re-auth banner: the token expired; tap to sign in again.
@@ -1038,6 +1248,8 @@ struct StatusBadge: View {
     var liveColor: Color
     var p: Palette
     var updated: Date?
+    /// When the app will try again after being rate limited, so the tooltip can say so.
+    var retryAt: Date?
     var period: Double = 30
     var anchor: Date = Date()      // when the current refresh cycle started (pings the dot)
     var heartbeat: Int = 0         // bumped ONLY by a gated refresh heartbeat
@@ -1070,7 +1282,10 @@ struct StatusBadge: View {
                 return "Stale " + (s < 3600 ? "\(Int(s / 60))m" : "\(Int(s / 3600))h")
             }
             return "Stale"
-        case .rate: return "Rate-limited"; case .offline: return "Offline"
+        // "Limited", not "Rate-limited": the longer word is what crowded the plan name out of the
+        // header at the default card width, and the hourglass glyph plus the tooltip already say
+        // which kind of limit this is.
+        case .rate: return "Limited"; case .offline: return "Offline"
         case .reauth: return "Re-auth"; case .over: return "Over limit"
         }
     }
@@ -1119,7 +1334,10 @@ struct StatusBadge: View {
         case .stale:
             return "Live data is older than expected" + (age.map { " (\($0) ago)" } ?? "") + ". Showing the last numbers received. Click to retry"
         case .rate:
+            // The wait is named, because a silent backoff looks exactly like frozen numbers.
+            let wait = retryAt.map { max(0, Int($0.timeIntervalSinceNow.rounded())) }
             return "Claude's usage service is asking us to slow down. Burndown retries gently on its own"
+                + (wait.map { ". Trying again in \($0)s" } ?? "")
         case .offline:
             return "Could not reach Claude. Showing the last known numbers. Click to retry"
         case .reauth:
@@ -1150,22 +1368,44 @@ struct StatusBadge: View {
             } else if let ic = icon {
                 Image(systemName: ic).font(.system(size: 9, weight: .bold))
             }
-            Text(label.uppercased()).font(.system(size: 10, weight: .bold)).tracking(0.8)
+            // Tracking 0.5, not 0.8. The badge shares the header line with the plan name, and at
+            // the default 264pt width the widest states pushed the title down to "Claude Max 2…",
+            // which is not a truncation a reader can decode: it reads as a different plan.
+            Text(label.uppercased()).font(.system(size: 10, weight: .bold)).tracking(0.5)
         }
         .foregroundStyle(c)
         .padding(.horizontal, 9).padding(.vertical, 4)
         .background(Capsule().fill(c.opacity(0.16)))
         .contentShape(Capsule())
-        .onTapGesture { onTap() }                       // → manualRefresh resets anchor → pings below
-        // Fast custom tooltip (~600ms) - the system .help() tooltip takes ~2s. Anchored to the badge's
-        // trailing edge so it flows left into the card, and flipped above when the header sits low.
+        // A click IS the acknowledgement. The heartbeat ping below deliberately stays silent when a
+        // refresh changes nothing, which is right for the automatic cycle and wrong for the one case
+        // where a person pressed the badge and is waiting to see that something happened: a manual
+        // refresh that returns identical numbers used to give no feedback anywhere in the card.
+        // (The menu bar glyph has always flared on manual refresh; only the badge went quiet.)
+        .onTapGesture { fire(); onTap() }
+        // Fast custom tooltip (~600ms) - the system .help() tooltip takes ~2s, and AppKit does not
+        // run .help tooltips inside an NSPopover at all. Anchored to the badge's trailing edge so it
+        // flows left into the card, and flipped above when the header sits low.
         .overlay(alignment: tipAbove ? .bottomTrailing : .topTrailing) {
             if hoverTip {
+                // WRAPS, never one long line. These strings run to ~85 characters, and at a natural
+                // single-line width that is ~400pt inside a card whose MINIMUM width is 264pt, so
+                // the tooltip ran off both edges and the card clipped it: the explanation was
+                // unreadable in exactly the state that needed explaining.
+                // The width is FIXED, not a maximum. An overlay is proposed the size of the view it
+                // decorates, and this badge is about 86pt wide, so a maxWidth could never widen past
+                // that proposal: the text wrapped into a column one word per line. A fixed width
+                // overrides the proposal, and 220pt is a comfortable two or three lines for every
+                // string above at every card size.
                 Text(tipText).font(.system(size: 10, weight: .medium)).foregroundStyle(.primary)
-                    .padding(.horizontal, 7).padding(.vertical, 3)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(width: 220, alignment: .leading)
+                    .padding(.horizontal, 7).padding(.vertical, 4)
                     .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .controlBackgroundColor)))
                     .overlay(RoundedRectangle(cornerRadius: 6).stroke(.primary.opacity(0.12), lineWidth: 0.5))
-                    .fixedSize().offset(y: tipAbove ? -26 : 26).zIndex(10).transition(.opacity)
+                    .shadow(color: .black.opacity(0.18), radius: 5, y: 2)
+                    .offset(y: tipAbove ? -26 : 26).zIndex(10).transition(.opacity)
             }
         }
         .onHover { inside in
@@ -1195,6 +1435,113 @@ private func fmtMins(_ m: Double) -> String { m >= 90 ? String(format: "%.1fh", 
 // The in-popover chart picker (chip + overlay gallery) is gone on purpose: chart selection lives in
 // Settings > Charts, which has room for real previews. The popover header now just names the chart.
 
+/// GitHub release notes, flattened to something readable in a small pane.
+///
+/// Not a Markdown renderer: heading marks, emphasis and code ticks are stripped so the text reads
+/// as prose, and bullets are normalised to one mark. Deliberately conservative, because this string
+/// comes off the network and is only ever displayed.
+func releaseNotesPlain(_ notes: String) -> String {
+    var out: [String] = []
+    for raw in notes.replacingOccurrences(of: "\r\n", with: "\n").split(separator: "\n",
+                                                                       omittingEmptySubsequences: false) {
+        var l = String(raw).trimmingCharacters(in: .whitespaces)
+        if l.isEmpty { if out.last != "" { out.append("") }; continue }
+        var bullet = false
+        while l.hasPrefix("#") { l.removeFirst() }
+        l = l.trimmingCharacters(in: .whitespaces)
+        if l.hasPrefix("- ") || l.hasPrefix("* ") { bullet = true; l.removeFirst(2) }
+        l = l.replacingOccurrences(of: "**", with: "")
+             .replacingOccurrences(of: "`", with: "")
+             .trimmingCharacters(in: .whitespaces)
+        if l.isEmpty { continue }
+        out.append(bullet ? "\u{2022} " + l : l)
+    }
+    return out.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+}
+
+/// The chart's own time window, as a quiet dropdown in its title row.
+///
+/// Deliberately near-silent: the current span in the same faint ink and the same 9.5pt as the title
+/// beside it, with no border, no background and no menu arrow until the pointer is over it. At rest
+/// it reads as part of the title ("BURN RATE   24h"), which is information the reader wanted anyway,
+/// and the whole control is about thirty points wide. The alternative shapes were a row of chips per
+/// chart (a permanent second line of furniture on every chart) or scroll-to-zoom (invisible, and
+/// unreachable without a trackpad).
+///
+/// "Follow settings" is a real entry rather than a hidden default, so a chart can be handed BACK to
+/// the global setting after being changed. Without it the first click would silently and permanently
+/// detach that chart from Settings, with no way to reattach it.
+struct ChartSpanMenu: View {
+    let kind: ChartKind
+    @ObservedObject var settings: AppSettings
+    let p: Palette
+    @State private var hovering = false
+
+    private var usesDays: Bool { kind.usesDays }
+    /// A burndown's own window. Present means the default entry is "the whole window" rather than
+    /// "whatever Settings says", and the options are the shorter windows it can be trimmed to.
+    private var pinnedLabel: String? { kind.pinnedWindowLabel }
+
+    private var current: String {
+        if usesDays { return "\(settings.dayspan(for: kind))d" }
+        if let full = pinnedLabel, settings.chartSpans[kind.rawValue] == nil { return full }
+        return settings.span(for: kind).tiny
+    }
+    private var overridden: Bool {
+        usesDays ? settings.chartDayspans[kind.rawValue] != nil
+                 : settings.chartSpans[kind.rawValue] != nil
+    }
+    /// The default entry: back to the global setting for an ordinary chart, back to the whole
+    /// limit window for a burndown.
+    private var defaultTitle: String {
+        pinnedLabel.map { "Whole window (\($0))" } ?? "Follow settings"
+    }
+
+    var body: some View {
+        Menu {
+            Button(defaultTitle) {
+                if usesDays { settings.setDayspan(nil, for: kind) } else { settings.setSpan(nil, for: kind) }
+            }
+            Divider()
+            if usesDays {
+                ForEach([7, 14, 30, 90], id: \.self) { n in
+                    Button("\(n) days") { settings.setDayspan(n, for: kind) }
+                }
+            } else {
+                ForEach(AppSettings.trimOptions(for: kind)) { s in
+                    Button(s.label) { settings.setSpan(s, for: kind) }
+                }
+            }
+        } label: {
+            HStack(spacing: 2) {
+                Text(current)
+                    .font(.system(size: 9.5, weight: overridden ? .semibold : .regular))
+                    .monospacedDigit()
+                Image(systemName: "chevron.down").font(.system(size: 6, weight: .semibold))
+                    .opacity(hovering ? 1 : 0)
+            }
+            .foregroundStyle(hovering ? p.sub : p.faint)
+            .padding(.horizontal, 4).padding(.vertical, 1)
+            .background(RoundedRectangle(cornerRadius: 4)
+                .fill(hovering ? p.ink.opacity(0.06) : .clear))
+            .contentShape(Rectangle())
+        }
+        // .button + .plain, NOT .borderlessButton: the borderless style draws its own disclosure
+        // arrow on the leading edge that .menuIndicator(.hidden) does not suppress, so the control
+        // came out as an arrow with the span tucked behind it, and it took a focus ring on click.
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .noFocusRing()
+        .fixedSize()
+        .onHover { hovering = $0 }
+        .animation(.easeInOut(duration: 0.15), value: hovering)
+        .help(pinnedLabel.map { "How much of the \($0) window this chart shows. Pick a shorter one for a closer look at the recent part of the curve." }
+              ?? "Time window for this chart. Charts follow Settings until you change one here.")
+        .accessibilityLabel("Time window for \(kind.label): \(current)")
+    }
+}
+
 struct MonitorChart: View {
     @ObservedObject var live: LiveActivity
     var kinds: [ChartKind]
@@ -1214,10 +1561,6 @@ struct MonitorChart: View {
     var modelLimits: [ScopedLimit] = []   // per-model weekly caps, for the Model limits chart
     var chartHover: Bool = true
     var plotH: CGFloat = kChartH   // per-chart plot height (base + the corner grip's vertical boost)
-    var showChats = true
-    // Bound (not @State) so the chats list reopens the way the user left it: the popover discards its
-    // content view on close, which would reset any local state.
-    @Binding var chatsOpen: Bool
     var truncation: ChatTruncation = .middle
     var records: [UsageRecord] = []   // per-call usage records (spike attribution on hover)
     var explain = false               // self-explanation layer: each chart's blurb under its title
@@ -1228,20 +1571,86 @@ struct MonitorChart: View {
     /// Contact sheets label each cell themselves, so they turn the per-chart title row off to
     /// avoid printing the name twice.
     var chrome = true
+    /// Present only in the live card. Gallery previews and the screenshot renderer pass nil, so they
+    /// draw no per-chart window control and keep rendering exactly as before.
+    var settings: AppSettings? = nil
+    /// The card's compact-spacing setting. The chart stack is the tallest thing in a chart-heavy
+    /// card and honoured it nowhere, so "tighten the vertical spacing" left the block that has the
+    /// most vertical spacing to give exactly as it was.
+    var compact = false
     @State private var gearHover = false
-    @ObservedObject private var chatNames = ChatNames.shared
-    @State private var renaming: String? = nil
-    @State private var renameText = ""
+    /// Each chart block's size as last laid out at rest. The size a drag freezes against.
+    @State private var restSize: [ChartKind: CGSize] = [:]
 
-    /// Everything the chart bodies read, assembled once.
-    private var ctx: ChartCtx {
-        ChartCtx(burnSamples: live.burnSamples, usageSamples: live.usageSamples,
+    /// The card geometry the grip drag in flight started from, or nil when there is no drag.
+    ///
+    /// Gallery previews and the screenshot renderer pass no settings, so they can never freeze:
+    /// a contact sheet must be a true render or it is not evidence of anything.
+    private var resizeStart: (width: Double, boost: Double)? {
+        guard let settings, settings.cardResizeInFlight else { return nil }
+        return settings.cardResizeStart
+    }
+
+    /// The frozen layout box for one chart, and the transform that stretches it to the size the
+    /// drag has reached. nil means "lay this chart out normally".
+    ///
+    /// Returns nil whenever anything needed is missing rather than guessing: no drag in flight, no
+    /// start geometry, or no rest measurement for this kind yet (its first render, or a chart
+    /// switched on mid-drag). The scale factors are clamped so a stale or wild measurement can
+    /// only cost the chart its cursor tracking, never draw it stretched off the card.
+    ///
+    /// It also returns nil when the drag has travelled NOWHERE, which is what makes settle-on-pause
+    /// work: a transform of exactly 1 is not worth having, and taking the normal branch instead
+    /// means the chart lays out for real at the current geometry AND re-measures, so the next burst
+    /// of movement stretches from what the reader is actually looking at. Settings.settleCardResize
+    /// creates that condition on purpose by re-anchoring the start after the grip goes quiet.
+    private func stretch(_ kind: ChartKind) -> (box: CGSize, sx: CGFloat, sy: CGFloat)? {
+        guard let settings, let start = resizeStart,
+              let box = restSize[kind], box.width > 1, box.height > 1 else { return nil }
+        // The chart's slot and the card grow by the same number of points (the insets between them
+        // are constant), and a block's height grows by exactly the boost, so both deltas are exact.
+        let dw = CGFloat(CardResize.clampW(settings.cardWidth) - CardResize.clampW(start.width))
+        let dh = CGFloat(CardResize.clampB(settings.cardChartBoost) - CardResize.clampB(start.boost))
+        guard abs(dw) > 0.5 || abs(dh) > 0.5 else { return nil }
+        let sx = min(2.5, max(0.4, (box.width + dw) / box.width))
+        let sy = min(2.5, max(0.4, (box.height + dh) / box.height))
+        return (box, sx, sy)
+    }
+
+    /// Everything the chart bodies read, assembled PER CHART.
+    ///
+    /// This used to be built once for the whole section, which is why the time window could only
+    /// ever be a single global setting. The window and day span now resolve per kind, so one chart
+    /// can be on the last hour while the one under it shows the week. Charts with no override
+    /// resolve to the same globals as before, so nothing moves until something is changed.
+    private func ctx(for kind: ChartKind) -> ChartCtx {
+        // A burndown resolves to its own limit window, trimmed if the chip asks for less. It goes
+        // through ctx like every other window so ChartCtx.dataKey covers the trim and the chart
+        // cache cannot serve the previous one.
+        let window = settings.map { $0.window(for: kind) } ?? kind.pinnedWindow ?? burnSpan.seconds
+        let days = settings.map { $0.dayspan(for: kind) } ?? chartDays
+        // Whether THIS chart is really being drawn as a frozen transform right now, which is not
+        // the same as "a drag is in flight": a chart with no rest measurement, and every chart in
+        // the moment after a settle, lays out normally. Deciding it per chart from the same call
+        // the view below makes is what keeps the two in step. Claiming frozen while laying out
+        // normally would be the worst of both: SwiftUI would skip the body (see ChartBodyView's
+        // Equatable) and the settle would render the OLD chart at the new size.
+        let frozen = stretch(kind) != nil
+        return ChartCtx(burnSamples: live.burnSamples, usageSamples: live.usageSamples,
                  weeklySamples: live.weeklySamples, records: records,
                  sessionPct: sessionPct, weeklyPct: weeklyPct,
                  sessionResetAt: sessionResetAt, weeklyResetAt: weeklyResetAt,
                  modelLimits: modelLimits,
-                 accent: accent, secondary: secondary, p: p, plotH: plotH, style: chartStyle,
-                 window: burnSpan.seconds, days: chartDays, hover: chartHover,
+                 accent: accent, secondary: secondary, p: p,
+                 // While frozen the plot height is held at the value the freeze was taken from, to
+                 // match the layout box the chart is drawn inside (see `stretch`). Without this a
+                 // body that did re-run would size itself past its box and be clipped. Unfrozen
+                 // (including the settle) it is the live height, so the relayout is a true one.
+                 plotH: frozen ? (resizeStart.map { kChartH + CGFloat(CardResize.clampB($0.boost)) } ?? plotH) : plotH,
+                 frozen: frozen,
+                 resizing: resizeStart != nil,
+                 style: chartStyle,
+                 window: window, days: days, hover: chartHover,
                  currentRate: live.rate,
                  // What is burning right now, and the reader's own truncation choice: TOP CHATS
                  // could show neither, so it marked no live chat and ignored a setting ChatRow
@@ -1254,12 +1663,12 @@ struct MonitorChart: View {
     var body: some View {
         let on = live.active
         let shown = kinds.isEmpty ? [ChartKind.burnBars] : kinds
-        VStack(alignment: .leading, spacing: 7) {
+        VStack(alignment: .leading, spacing: compact ? 5 : 7) {
             // One block per selected chart: a quiet title naming the view (its tooltip explains it in a
-            // sentence), the body, and 14pt of air before the next. The gear on the first row opens
-            // Settings > Charts, where selection and every chart option live.
+            // sentence), the body, and 14pt of air before the next (10pt compact). The gear on the
+            // first row opens Settings > Charts, where selection and every chart option live.
             ForEach(Array(shown.enumerated()), id: \.element) { i, kind in
-                if i > 0 { Spacer().frame(height: 7) }
+                if i > 0 { Spacer().frame(height: compact ? 5 : 7) }
                 if chrome {
                 HStack(spacing: 5) {
                     Text(kind.label.uppercased())
@@ -1267,19 +1676,41 @@ struct MonitorChart: View {
                         .foregroundStyle(p.faint)
                     InfoDot(text: kind.blurb, p: p, accent: accent, on: explain)
                     Spacer()
-                    if i == 0 {
-                        Button { NotificationCenter.default.post(name: .openChartSettings, object: nil) } label: {
-                            Image(systemName: "gearshape").font(.system(size: 10.5))
-                                .foregroundStyle(gearHover ? p.sub : p.faint).opacity(gearHover ? 1 : 0.5)
-                        }
-                        .buttonStyle(.plain).focusable(false)
-                        .accessibilityLabel("Choose charts and chart options")
-                        .onHover { gearHover = $0 }
-                        .animation(.easeInOut(duration: 0.15), value: gearHover)
+                    // Every chart with a time axis gets the control. For the two burndowns it trims
+                    // the visible left edge of their fixed window rather than choosing a rolling
+                    // one. The pace gauge and the model caps have no time axis at all, so they
+                    // still get nothing: there would be no window for the control to mean.
+                    if let settings, kind.usesTimeChip {
+                        ChartSpanMenu(kind: kind, settings: settings, p: p)
                     }
+                    // One trailing slot on EVERY title row, the same width whether it holds
+                    // anything or not. The gear used to sit inside the first row's HStack after
+                    // its span chip, so that row's chip was pushed left by the gear's width and
+                    // the chips no longer formed a column down the card. One gear is still right;
+                    // it just has to cost every row the same space.
+                    Group {
+                        if i == 0 {
+                            Button { NotificationCenter.default.post(name: .openChartSettings, object: nil) } label: {
+                                Image(systemName: "gearshape").font(.system(size: 10.5))
+                                    .foregroundStyle(gearHover ? p.sub : p.faint).opacity(gearHover ? 1 : 0.5)
+                            }
+                            .buttonStyle(.plain).focusable(false)
+                            .accessibilityLabel("Choose charts and chart options")
+                            .onHover { gearHover = $0 }
+                            .animation(.easeInOut(duration: 0.15), value: gearHover)
+                        } else {
+                            // A REAL view, not an empty branch. An HStack drops a nil child from
+                            // its layout entirely, frame modifier and all, so the first version of
+                            // this reserved nothing on the other rows and the column stayed ragged
+                            // by exactly the slot's width plus one gap.
+                            Color.clear.frame(height: 1)
+                        }
+                    }
+                    .frame(width: kChartTitleTrailingSlot, alignment: .trailing)
                 }
                 }
-                ChartBodyView(kind: kind, ctx: ctx)
+                let block = ChartBodyView(kind: kind, ctx: ctx(for: kind))
+                    .equatable()   // frozen charts compare equal, so the body is skipped too
                     // Only the chart that actually HOSTS the indicator reserves room for it. The
                     // flag defaulted to true and was never set per chart, so all of them held back
                     // 52 points on the trailing edge of their stat line for something only the last
@@ -1290,14 +1721,106 @@ struct MonitorChart: View {
                     .overlay(alignment: .bottomTrailing) {
                         if showCadence, i == shown.count - 1 {
                             LiveCadence(on: on, accent: accent, faint: p.faint, track: p.track, anchor: anchor, period: period)
+                                // Off the corner the resize grip owns. The two drew on top of each
+                                // other on every card that ends in a chart plate: the grip's
+                                // longest stroke crossed the indicator's dot, so neither read as
+                                // itself. StatLine reserves the matching 74 for both.
+                                .padding(.trailing, 22)
                         }
                     }
+                // Moving: the chart lays out at the size it had when the movement began and is
+                // DRAWN at the size the drag has reached, so its axis labels, line weights and stat
+                // line stretch with it. Deliberate, and the whole point: a real reflow costs one
+                // Swift Charts layout per chart per frame, ~6ms whatever the chart contains, and
+                // six charts ran a 60Hz drag at about 20fps. A transform costs nothing. The outer
+                // frame reports the stretched size so the card still grows under the cursor.
+                //
+                // Still (a settle, or before the first movement, or no drag at all): every value
+                // below is nil or 1, which is ordinary layout, and the block measures itself for
+                // the next burst of movement to stretch from.
+                //
+                // ONE chain, not two branches, on purpose. Two branches are two view identities, so
+                // every freeze and unfreeze tore the chart subtree down and rebuilt it: the first
+                // moving frame after a settle cost 115ms, twice the budget for a moving frame. Same
+                // modifiers with different values is a relayout, which is what this actually is.
+                let s = stretch(kind)
+                block
+                    // Measured only while laying out for real. Frozen, this would measure the
+                    // frozen box and feed it back as the new rest size, which is a ratchet.
+                    .background(GeometryReader { g in
+                        Color.clear.preference(key: ChartBlockSizeKey.self,
+                                               value: s == nil ? [kind: g.size] : [:])
+                    })
+                    .frame(width: s?.box.width, height: s?.box.height, alignment: .topLeading)
+                    .scaleEffect(x: s?.sx ?? 1, y: s?.sy ?? 1, anchor: .topLeading)
+                    .frame(width: s.map { $0.box.width * $0.sx },
+                           height: s.map { $0.box.height * $0.sy }, alignment: .topLeading)
             }
-            // Chats burning now: calm single-line rows, set off from the
-            // chart by its own hairline with 12pt of air. Ranked ember dot + middle-truncated name +
-            // rate. No per-row share bars. Roomy 12pt gaps.
-            if showChats, !live.activeStreams.isEmpty {
-                Rectangle().fill(p.divider).frame(height: 1).padding(.top, 12)
+            // "Chats burning now" used to be drawn here, at the tail of the chart section. It is a
+            // section of its own now (CardSection.chats) so it can be dragged anywhere in the card,
+            // and so it survives hiding the charts. See BurningChatsSection.
+        }
+        .onPreferenceChange(ChartBlockSizeKey.self) { sizes in
+            // Only real movement, and only ever growth or shrinkage worth a point. A preference
+            // that writes @State on every layout pass, and whose written value feeds the next
+            // layout, is how a card ends up in a measurement loop (see MenuCard's ContentHeightKey
+            // guard, and the runaway it was added for).
+            var next = restSize
+            var moved = false
+            for (k, v) in sizes where v.width > 1 && v.height > 1 {
+                let old = next[k]
+                if abs((old?.width ?? 0) - v.width) > 0.5 || abs((old?.height ?? 0) - v.height) > 0.5 {
+                    next[k] = v; moved = true
+                }
+            }
+            if moved { restSize = next }
+        }
+    }
+}
+
+/// Each visible chart block's laid-out size, keyed by kind, collected while the card is at rest.
+private struct ChartBlockSizeKey: PreferenceKey {
+    static let defaultValue: [ChartKind: CGSize] = [:]
+    static func reduce(value: inout [ChartKind: CGSize], nextValue: () -> [ChartKind: CGSize]) {
+        value.merge(nextValue()) { _, newer in newer }
+    }
+}
+
+/// The conversations spending tokens right now.
+///
+/// Its own section, rather than a tail appended to the last chart, so its position is the reader's
+/// choice like every other panel. Draws nothing at all when nothing is burning, which is why it
+/// keeps its own `isEmpty` check rather than relying on the section list alone.
+struct BurningChatsSection: View {
+    @ObservedObject var live: LiveActivity
+    let p: Palette
+    let accent: Color
+    var explain = false
+    var truncation: ChatTruncation = .middle
+    /// The card's eyebrow setting. This heading cannot simply vanish with the others: it carries
+    /// the count and it is the collapse control, so with eyebrows off it stops being a LABEL and
+    /// is restyled as one, in sentence case and the quietest ink.
+    var eyebrows = true
+    /// Bound (not @State) so the list reopens the way the user left it: the popover discards its
+    /// content view on close, which would reset any local state.
+    @Binding var chatsOpen: Bool
+    @ObservedObject private var chatNames = ChatNames.shared
+    @State private var renaming: String? = nil
+    @State private var renameText = ""
+
+    /// The heading's words. The count is kept in both styles: it is the one number this section
+    /// puts in front of the reader before they open it.
+    private var burningHeading: String {
+        let n = live.activeStreams.count
+        if eyebrows { return n == 1 ? "1 CHAT BURNING NOW" : "\(n) CHATS BURNING NOW" }
+        return n == 1 ? "1 chat burning now" : "\(n) chats burning now"
+    }
+
+    var body: some View {
+        Group {
+            // Calm single-line rows. Ranked ember dot + middle-truncated name + rate.
+            // No per-row share bars. Roomy 12pt gaps.
+            if !live.activeStreams.isEmpty {
                 VStack(alignment: .leading, spacing: 12) {
                     // Eyebrow row: the count lives IN the eyebrow; the whole row is the
                     // collapse control, and its chevron reflects the state.
@@ -1308,8 +1831,14 @@ struct MonitorChart: View {
                         Button {
                             withAnimation(.emberEase(Dur.d240)) { chatsOpen.toggle() }
                         } label: {
-                            Text(live.activeStreams.count == 1 ? "1 CHAT BURNING NOW" : "\(live.activeStreams.count) CHATS BURNING NOW")
-                                .font(.system(size: 11, weight: .semibold)).tracking(1.1).foregroundStyle(p.sub).fixedSize()
+                            // Tracking 1.4 with the other eyebrows, so all four card headings
+                            // share one metric. With eyebrows off it is not an eyebrow at all:
+                            // sentence case, no tracking, faint ink, which reads as the control it
+                            // still has to be rather than as the one label that refused to leave.
+                            Text(burningHeading)
+                                .font(.system(size: 11, weight: .semibold))
+                                .tracking(eyebrows ? 1.4 : 0)
+                                .foregroundStyle(eyebrows ? p.sub : p.faint).fixedSize()
                                 .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
@@ -1332,7 +1861,7 @@ struct MonitorChart: View {
                     ForEach(Array(live.activeStreams.prefix(3).enumerated()), id: \.offset) { i, s in
                         ChatRow(tok: s.tok, rank: i, p: p, project: s.project, truncation: truncation,
                                 display: chatNames.display(s.name),
-                                renamed: chatNames.aliases[s.name] != nil,
+                                renamed: chatNames.isRenamed(s.name),
                                 editing: renaming == s.name, renameText: $renameText,
                                 onBeginRename: { renameText = chatNames.display(s.name); renaming = s.name },
                                 onCommitRename: { chatNames.setAlias(renameText, for: s.name); renaming = nil },
@@ -1345,7 +1874,6 @@ struct MonitorChart: View {
                     }
                     }
                 }
-                .padding(.top, 12)
                 // No .help here. It fired on hover at the same moment as the row's own name bubble,
                 // so hovering a chat produced TWO overlapping popups, one of them answering a
                 // question nobody had asked. The info mark beside the heading already says this.
@@ -1427,13 +1955,25 @@ func chartCallout(_ big: String, _ small: String, _ p: Palette, detail: String? 
 
 // A calm empty/warming-up state for the chart, so a brand-new install (no samples yet) shows a clear
 // placeholder instead of bare axes or being handed an empty Swift Charts series.
-@ViewBuilder func chartPlaceholder(_ text: String, _ p: Palette) -> some View {
-    HStack { Spacer()
-        VStack(spacing: 7) {
-            RoundedRectangle(cornerRadius: 2).fill(p.track).frame(width: 54, height: 2)
-            Text(text).font(.system(size: 11)).foregroundStyle(p.faint)
-        }
-        Spacer() }.frame(height: 74)
+//
+// `height` is the plot height the caller would have drawn a chart into, and every plotted chart
+// passes its own `ctx.plotH`. Hardcoded, it equalled kChartH at boost 0 only, so the moment a
+// chart's window emptied on a card whose grip had been dragged down, that block collapsed by up to
+// 90pt and the whole card jumped. The row-style charts keep the default: their height is their
+// rows, not a plot.
+@ViewBuilder func chartPlaceholder(_ text: String, _ p: Palette, height: CGFloat = kChartH) -> some View {
+    // The mark is a full-width rule on the plot's BASELINE, not a short bar floating in the middle
+    // of the block. Floating, it aligned with nothing and read as a stray dash; on the baseline it
+    // reads as the empty plot it stands for, because that is exactly where the chart's own axis
+    // would be.
+    VStack(spacing: 0) {
+        Spacer(minLength: 0)
+        Text(text).font(.system(size: 11)).foregroundStyle(p.faint)
+        Spacer(minLength: 0)
+        Rectangle().fill(p.divider).frame(height: 1)
+    }
+    .frame(maxWidth: .infinity)
+    .frame(height: height)
 }
 
 
@@ -1533,7 +2073,8 @@ struct EdgeDockView: View {
     private var widget: some View {
         let s = engine.snapshot, p = Palette.of(scheme), c = dockColors(s, settings, p)
         let horizontal = settings.dockEdge.horizontal
-        let d = WData(s: s.sessionPct, w: s.weeklyPct, sc: c.s, wc: c.w, p: p)
+        // A plan with weekly limits only (verified Ultra) has no session slot to draw.
+        let d = WData(s: s.sessionPct, w: s.weeklyPct, sc: c.s, wc: c.w, p: p, weekOnly: s.sessionLimitAbsent)
         let r: CGFloat = horizontal ? 11 : 12
         let scale = max(0.7, min(1.8, settings.widgetScale))
         return widgetContent(settings.widgetStyle, d, horizontal: horizontal, scale: scale)
@@ -1686,6 +2227,7 @@ struct AboutView: View {
                     .padding(.horizontal, 10).padding(.vertical, 3)
                     .background(Capsule().stroke(p.divider, lineWidth: 1))
             }.buttonStyle(.plain).padding(.top, 8).help("Click to copy the version")
+            .accessibilityLabel("Version \(kAppVersion), click to copy")
             Text("See the limit coming.")
                 .font(.system(size: 12.5)).foregroundStyle(p.sub).padding(.top, 10)
             Rectangle().fill(p.divider).frame(width: 156, height: 1).padding(.vertical, 16)
@@ -1739,6 +2281,12 @@ struct AboutView: View {
             Spacer(minLength: 0)
         }
         .frame(width: 300, height: 360).background(p.bg)
+        // No focus ring on open. This window is a plaque: the first control in it is the version
+        // pill, so opening About put a green ring around the version number as if the reader had
+        // tabbed to it and were about to do something. Everything here stays focusable and
+        // keyboard-reachable, it just does not paint the ring. (macOS 13 has no focusEffectDisabled
+        // and will still draw it; the ring is cosmetic and nothing else about the window changes.)
+        .noFocusRing()
     }
 
     /// Open a markdown doc shipped inside the app bundle (Resources/<name>.md).
@@ -1939,7 +2487,7 @@ struct AccountView: View {
                             Text(money2(spend.monthToDate))
                                 .font(.system(size: 22, weight: .semibold, design: .serif)).monospacedDigit().foregroundStyle(p.ink)
                             Text("THIS MONTH").font(.system(size: 8.5, weight: .semibold)).tracking(0.8).foregroundStyle(p.faint)
-                            Text("\(money2(spend.today)) / today  ·  \(money2(spend.dailyAvg)) / day avg")
+                            Text("\(money2(spend.lastDay)) / \(spend.lastDayLabel)  ·  \(money2(spend.dailyAvg)) / day avg")
                                 .font(.system(size: 11.5)).foregroundStyle(p.sub).padding(.top, 3)
                         }
                         Spacer(minLength: 4)
@@ -1966,13 +2514,13 @@ struct AccountView: View {
                     }
                 }
             } else {
-                Text("A separate pay-as-you-go account. The key stays on this Mac and reads only your own spend. It needs an Admin key beginning sk-ant-admin, created by an org owner at console.anthropic.com under Settings, Admin keys.")
+                Text("A separate pay-as-you-go account. It needs an Admin key (sk-ant-admin01…) from platform.claude.com, under Settings, Admin keys. No Admin keys page there means an Individual Org: Anthropic only serves spend reports to organizations, and Settings, Organization can convert yours. The key stays on this Mac and Burndown only reads spend with it, but an Admin key can manage the whole org, so give it an expiry.")
                     .font(.system(size: 11.5)).foregroundStyle(p.sub).fixedSize(horizontal: false, vertical: true)
                 HStack(spacing: 6) {
                     // SecureField, not TextField: this is a long-lived org-scoped credential and
                     // the copy above tells the user to paste it in, which is exactly when a
                     // screen share or a recording is most likely to be capturing the window.
-                    SecureField("sk-ant-admin-...", text: $apiKeyField)
+                    SecureField("sk-ant-admin01-...", text: $apiKeyField)
                         .textFieldStyle(.plain).font(.system(size: 13, design: .monospaced)).lineLimit(1)
                         .padding(.horizontal, 8).padding(.vertical, 6)
                         .background(RoundedRectangle(cornerRadius: 8).fill(p.track))
@@ -2154,6 +2702,18 @@ struct AccountView: View {
                                     p: p, accent: Color(hex: settings.accentHex))
                         }
                         ByModelSplit(usage: snap.modelUsage, p: p)
+                    }
+                }
+
+                if !snap.weeklyBreakdown.isEmpty {
+                    VStack(alignment: .leading, spacing: 9) {
+                        HStack(spacing: 6) {
+                            eyebrow("BY SURFACE", p)
+                            InfoDot(text: "Where this week's usage came from: Claude Code, chats on claude.ai, Cowork, or anything else, each as a share of the week.",
+                                    p: p, accent: Color(hex: settings.accentHex))
+                        }
+                        ByModelSplit(usage: snap.weeklyBreakdown.filter { $0.pct > 0 }.map { ModelUse(label: $0.label, cost: 0, share: $0.pct) },
+                                     p: p, hue: { surfaceHue($0, $1) })
                     }
                 }
             }
@@ -2631,10 +3191,46 @@ struct SettingsView: View {
         }
         subhead("Updates", p)
         card(p) {
-            row("Check for updates automatically", p, info: "Looks for a newer Burndown once a day. The check is a version lookup at github.com; nothing about you or your usage is sent.") {
+            row("Check for updates automatically", p, info: "Looks for a newer Burndown on the schedule below. The check is a version lookup at github.com; nothing about you or your usage is sent.") {
                 Toggle("", isOn: $settings.autoUpdateCheck).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(coral)
             }
+            if settings.autoUpdateCheck {
+                div(p)
+                row("How often", p, info: "How much time passes between automatic checks. Burndown also checks a few seconds after it starts.") {
+                    DropPicker(options: UpdateCadence.allCases.map { ($0.label, $0) },
+                               selection: $settings.updateCadence, p: p)
+                }
+                div(p)
+                row("When one is found", p, info: settings.updateAction.blurb) {
+                    DropPicker(options: UpdateAction.allCases.map { ($0.label, $0) },
+                               selection: $settings.updateAction, p: p)
+                }
+                if settings.updateAction == .install {
+                    Text("Burndown restarts itself to finish an install, so it waits until no chats are burning.")
+                        .font(.system(size: 11)).foregroundStyle(p.sub)
+                        .frame(maxWidth: .infinity, alignment: .leading).padding(.bottom, 6)
+                }
+            }
             div(p)
+            // The release notes were being downloaded with every check and then shown to nobody:
+            // the field was parsed, stored and never read anywhere in the app. An update is a
+            // request to replace software someone is running, and "trust me" is not an answer.
+            if let rel = updater.availableRelease, !rel.notes.isEmpty {
+                AdvancedCard(title: "What's new in \(rel.version)", p: p, spacing: 0) {
+                    ScrollView {
+                        // Plain text on purpose. This is Markdown written by whoever cut the
+                        // release, i.e. server-supplied content: it is shown as characters and
+                        // nothing in it is followed, opened or executed.
+                        Text(releaseNotesPlain(rel.notes))
+                            .font(.system(size: 11.5)).foregroundStyle(p.sub)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.vertical, 4)
+                    }
+                    .frame(maxHeight: 200)
+                }
+                div(p)
+            }
             HStack(spacing: 8) {
                 Text("Burndown \(kAppVersion)").font(.system(size: 13)).foregroundStyle(p.ink)
                 Text(updater.statusLine)
@@ -3246,7 +3842,9 @@ struct SettingsView: View {
         subhead("Chart & chats", p)
         card(p) {
             visRow("Chart section", $settings.showBurnChart, "The chart card. Off hides the whole chart section and its divider. Pick which charts it shows in the Charts tab.", p, coral); div(p)
-            visRow("Chats burning now", $settings.showChatsBurning, "The list of chats currently using tokens.", p, coral); div(p)
+            // "Chats burning now" is not a row here any more: it is a SECTION, so it is shown,
+            // hidden and repositioned in the Sections editor above like every other panel. Two
+            // switches for one thing is how they end up disagreeing.
             visRow("Chats expanded", $settings.chatsExpanded, "Show the chat rows expanded. The popover remembers whichever way you leave it.", p, coral); div(p)
             row("Chat name truncation", p, info: "How a long chat name is shortened in the card. Middle keeps the start AND the end, which is usually what tells two chats apart; End keeps the start only. Either way, hovering a row shows the full name, and Full simply skips the shortening.") {
                 DropPicker(options: ChatTruncation.allCases.map { ($0.label, $0) }, selection: $settings.chatTruncation, p: p)
@@ -3579,8 +4177,8 @@ struct SettingsView: View {
         var g: GlyphData
         if settings.chipLivePreview {
             let s = engine.snapshot
-            let sP = s.sessionPct, wP = s.weeklyPct
-            switch settings.menuBarShow {
+            let sP = s.primaryPct, wP = s.weeklyPct
+            switch s.sessionLimitAbsent ? .weekly : settings.menuBarShow {
             case .session: g = GlyphData(pct: sP, pctText: pctStr(sP), primary: uc(sP), secFrac: 0.9, secText: s.sessionResetAt.map { weekLeftString($0) } ?? "-", secondary: sec, pLabel: "", sLabel: "")
             case .weekly:  g = GlyphData(pct: wP, pctText: pctStr(wP), primary: uc(wP), secFrac: 0.6, secText: s.weeklyResetAt.map { weekLeftString($0) } ?? "-", secondary: sec, pLabel: "", sLabel: "")
             case .both:    g = GlyphData(pct: sP, pctText: pctStr(sP), primary: uc(sP), secFrac: wP, secText: pctStr(wP), secondary: uc(wP), pLabel: "S", sLabel: "W")
@@ -3750,6 +4348,39 @@ struct InfoDot: View {
 /// AppKit does not run tooltips inside a popover, so the name was simply unreachable once
 /// truncated - including under the "Full on hover" setting, which had nothing behind it at all.
 /// And renaming was right-click only, with no sign anywhere that it existed. Hovering a row now
+/// The rename affordance, in one place so a chat row reads the same wherever it appears.
+///
+/// It used to be a bare 10pt `pencil` glyph on a faint swatch. At that size the symbol reads as a
+/// stray tick rather than a pencil, and an unlabelled icon has to be guessed at: the owner could
+/// not tell what it was or what it would do, and after pressing it could not tell that anything had
+/// happened. It says the word now, and the pressed state says the field is live.
+struct RenameButton: View {
+    let p: Palette
+    var editing = false
+    var action: () -> Void
+    @State private var hover = false
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 3) {
+                Image(systemName: editing ? "pencil.circle.fill" : "square.and.pencil")
+                    .font(.system(size: 11, weight: .semibold))
+                Text(editing ? "Editing" : "Rename").font(.system(size: 10, weight: .medium))
+            }
+            .foregroundStyle(editing ? Color(hex: kAccentHex) : (hover ? p.ink : p.sub))
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(hover ? p.ink.opacity(0.10) : p.track))
+            .overlay(RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .stroke(p.divider, lineWidth: 0.5))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain).focusable(false)
+        .onHover { hover = $0 }
+        .help("Give this chat your own name. It is stored on this Mac and never leaves it.")
+        .accessibilityLabel("Rename this chat")
+    }
+}
+
 /// shows the whole name in a quiet bubble and reveals a pencil; right-click still works.
 struct ChatRow: View {
     let tok: Int
@@ -3824,17 +4455,14 @@ struct ChatRow: View {
                     // keyed to one of them silently detaches from its own chat overnight and the
                     // rename appears to have been lost. Renaming becomes possible as soon as the
                     // conversation has a real title.
-                    if hover, !isGeneratedTitle(display) {
-                        Button(action: onBeginRename) {
-                            Image(systemName: "pencil").font(.system(size: 11.5, weight: .medium))
-                                .foregroundStyle(p.sub)
-                                .padding(.horizontal, 4).padding(.vertical, 1)
-                                .background(RoundedRectangle(cornerRadius: 4).fill(p.track))
-                        }
-                        .buttonStyle(.plain).focusable(false)
-                        .accessibilityLabel("Rename this chat")
-                        .transition(.opacity)
-                    }
+                    // RESERVED, not inserted. Rendering it only on hover reflowed the row under
+                    // the pointer: the button is ~62pt wide, so the project name it shares the
+                    // line with jumped left the moment the row was hovered, which reads as the
+                    // row twitching away from the cursor. The slot is always there and only its
+                    // paint changes.
+                    RenameButton(p: p, action: onBeginRename)
+                        .opacity(hover ? 1 : 0)
+                        .allowsHitTesting(hover && !isGeneratedTitle(display))
                 }
                 .padding(.leading, 12)
             }
@@ -4000,22 +4628,69 @@ struct GlassBG: NSViewRepresentable {
     func updateNSView(_ v: NSVisualEffectView, context: Context) { v.material = material }
 }
 
+/// Hosts the real macOS 26 glass (or the frosted fallback) and keeps its corner radius agreeing
+/// with the card's. See applyShape for what is and is not known about how this view clips.
+///
+/// The frosted and clear styles never come through here; SwiftUI masks an NSVisualEffectView
+/// correctly, so those paths are untouched.
+final class GlassHostView: NSView {
+    var radius: CGFloat = 14
+    /// nil when this OS has no NSGlassEffectView and the frosted fallback is standing in.
+    private var glass: NSView?
+
+    init(fallback: NSVisualEffectView.Material) {
+        super.init(frame: .zero)
+        let v: NSView
+        if let cls = NSClassFromString("NSGlassEffectView") as? NSView.Type {
+            let g = cls.init(frame: .zero)
+            g.wantsLayer = true
+            glass = g
+            v = g
+        } else {
+            let ve = NSVisualEffectView()
+            ve.material = fallback; ve.blendingMode = .behindWindow; ve.state = .active
+            v = ve
+        }
+        v.autoresizingMask = [.width, .height]
+        addSubview(v)
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    override func layout() {
+        super.layout()
+        subviews.first?.frame = bounds
+        applyShape()
+    }
+
+    /// Tell the native view the card's own corner radius.
+    ///
+    /// ⚠️ MEASURED, so nobody re-derives it from first principles: on macOS 26.0 the SwiftUI
+    /// `.clipShape` around this view DOES clip NSGlassEffectView. A controlled A/B on the real
+    /// screen (same desktop plate, card at the same position, glass shaped vs left at its
+    /// defaults) came back pixel-identical on the floating host and differed only by live chart
+    /// data on the menu host, and the card's lit region was exactly its 660px window width in both.
+    /// So this is belt and braces, not a fix: it makes the view's DECLARED shape agree with the
+    /// clip that is actually doing the work, which is what a future OS would need if it ever
+    /// stopped honouring the mask. Do not add private SPI here on a hunch; `_setPath:` exists and
+    /// was tried, and it bought nothing.
+    func applyShape() {
+        guard let g = glass, bounds.width > 0, bounds.height > 0 else { return }
+        if g.responds(to: Selector(("setCornerRadius:"))) { g.setValue(radius, forKey: "cornerRadius") }
+    }
+}
+
 // True macOS 26 "Liquid Glass": reach the real NSGlassEffectView via the ObjC runtime (the build SDK
 // predates it, but the OS at runtime has it). It refracts and reflects the desktop behind the window
 // instead of just blurring it. On anything older, it transparently falls back to the frosted material.
 struct LiquidGlassBG: NSViewRepresentable {
     var fallback: NSVisualEffectView.Material = .underWindowBackground
-    func makeNSView(context: Context) -> NSView {
-        if let cls = NSClassFromString("NSGlassEffectView") as? NSView.Type {
-            let v = cls.init(frame: .zero)
-            v.wantsLayer = true
-            return v
-        }
-        let ve = NSVisualEffectView()
-        ve.material = fallback; ve.blendingMode = .behindWindow; ve.state = .active
-        return ve
+    /// The card's own radius, passed in rather than assumed: see GlassHostView.applyShape.
+    var radius: CGFloat = 14
+    func makeNSView(context: Context) -> GlassHostView { GlassHostView(fallback: fallback) }
+    func updateNSView(_ v: GlassHostView, context: Context) {
+        v.radius = radius
+        v.applyShape()
     }
-    func updateNSView(_ v: NSView, context: Context) {}
 }
 
 // The themed surface for the popover / floating card, honoring the Frosted-glass slider + material.
@@ -4023,6 +4698,17 @@ struct LiquidGlassBG: NSViewRepresentable {
 struct CardSurface: View {
     @ObservedObject var settings: AppSettings
     var p: Palette
+    /// Where the menu card's peak points, in the surface's own coordinates. nil everywhere else.
+    ///
+    /// The notch has to be part of what CLIPS the material, not something drawn on top of it: this
+    /// view hosts an NSVisualEffectView, and a peak painted over it would be a flat triangle of
+    /// some approximated colour sitting next to real glass, obviously not the same surface.
+    var notchX: CGFloat? = nil
+    /// The peak's SIZE, passed in for the same reason its position is: the card is drawn at
+    /// textScale, so the host scales these, and a surface that assumed the unscaled constants wore
+    /// a peak of a different size from the one the content was clipped to at any zoom but 1.
+    var notchW: CGFloat = kMenuNotchW
+    var notchH: CGFloat = kMenuNotchH
     var body: some View {
         let s = settings
         let tint: Color = {
@@ -4032,12 +4718,15 @@ struct CardSurface: View {
             case .accent: return Color(hex: s.accentHex)
             }
         }()
+        let shape = CardShape(radius: s.glassCornerRadius, notchX: notchX, notchW: notchW, notchH: notchH)
         ZStack {
             // The material (refraction/blur), with adjustable extra blur + saturation applied to the
             // composited backdrop. Clear = no material, just the tint scrim over the live desktop.
             Group {
                 switch s.glassStyle {
-                case .liquid:  LiquidGlassBG()
+                // The native glass is told the card's radius as well as being clipped by it; see
+                // GlassHostView.applyShape for which of the two is actually doing the work.
+                case .liquid:  LiquidGlassBG(radius: s.glassCornerRadius)
                 case .frosted: GlassBG(material: nsMaterial(s.glassMaterial))
                 case .clear:   Color.clear
                 }
@@ -4048,11 +4737,8 @@ struct CardSurface: View {
             tint.opacity(min(1, s.glassTintIntensity / 100 * 0.7))
         }
         .opacity(max(0.05, min(1, s.glassOpacity / 100)))
-        .clipShape(RoundedRectangle(cornerRadius: s.glassCornerRadius, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: s.glassCornerRadius, style: .continuous)
-                .strokeBorder(p.ink.opacity(s.glassBorderOpacity / 100), lineWidth: s.glassBorderWidth)
-        )
+        .clipShape(shape)
+        .overlay(shape.strokeBorder(p.ink.opacity(s.glassBorderOpacity / 100), lineWidth: s.glassBorderWidth))
         .shadow(color: .black.opacity(s.glassShadow / 100 * 0.45), radius: s.glassShadow / 100 * 22, y: 6)
     }
 }
@@ -4097,6 +4783,13 @@ struct RedlineOverlay: View {
     var heat: Double
     var radius: CGFloat
     var p: Palette
+    /// Same peak as the card's edge. The redline traces that edge, so without this the notch would
+    /// stand outside the warning ring, which is the one thing on the card that must not be vague
+    /// about where the card ends.
+    var notchX: CGFloat? = nil
+    /// Scaled by the host, like every other consumer of the card's outline.
+    var notchW: CGFloat = kMenuNotchW
+    var notchH: CGFloat = kMenuNotchH
     @Environment(\.accessibilityReduceMotion) private var reduce
     var body: some View {
         let anger = p.overLimit
@@ -4109,7 +4802,14 @@ struct RedlineOverlay: View {
                            lo: 0.667, hi: 1.0,       // 0.12 * (0.667...1.0) == the spec's 8 -> 12 percent
                            period: BurnTier.redline.period,
                            cornerRadius: radius, endRadius: 110, still: reduce)
-            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                // The overlay's bounds include the notch headroom band, which is transparent card
+                // and not card at all. The bloom is a plain rounded rectangle, so it painted a
+                // straight-edged glow across that band, outside the outline the stroke below
+                // traces. Inset by the headroom and it starts where the card starts.
+                // Inset, never masked: nothing here may touch layer properties (see the crash-trap
+                // note on the floating panel).
+                .padding(.top, notchX == nil ? 0 : notchH)
+            CardShape(radius: radius, notchX: notchX, notchW: notchW, notchH: notchH)
                 .strokeBorder(anger.opacity(0.35 * heat), lineWidth: 1)
         }
         .allowsHitTesting(false)
@@ -4133,6 +4833,15 @@ final class GripNSView: NSView {
     var reset: () -> Void = {}
     var hover: (_ inside: Bool) -> Void = { _ in }
     private var start = NSPoint.zero
+    /// The most recent cursor delta, and whether a delivery is already scheduled for this frame.
+    ///
+    /// Mouse-moved events arrive far faster than the card can lay itself out, and each one used to
+    /// drive a FULL cycle synchronously: SwiftUI re-layout of every chart, a new preferred content
+    /// size, and an AppKit window resize. Events then queued up behind that work, so the card
+    /// rendered sizes the cursor had already left and lurched trying to catch up. Only the newest
+    /// delta in a gesture can matter, so intermediate ones are dropped rather than drawn.
+    private var pending: (dx: Double, dy: Double)?
+    private var deliveryScheduled = false
 
     override var mouseDownCanMoveWindow: Bool { false }
     override func updateTrackingAreas() {
@@ -4146,14 +4855,38 @@ final class GripNSView: NSView {
     override func mouseDown(with event: NSEvent) {
         if event.clickCount == 2 { reset(); return }
         start = NSEvent.mouseLocation
+        pending = nil
         began()
     }
     override func mouseDragged(with event: NSEvent) {
         let l = NSEvent.mouseLocation
         // Screen y grows upward; the card grows DOWNWARD from its anchored top, so down = growth.
-        changed(Double(l.x - start.x), Double(start.y - l.y))
+        pending = (Double(l.x - start.x), Double(start.y - l.y))
+        scheduleDelivery()
     }
-    override func mouseUp(with event: NSEvent) { ended() }
+    override func mouseUp(with event: NSEvent) {
+        // Deliver the last position before ending, so letting go never leaves the card a frame
+        // behind where the cursor actually stopped.
+        flush()
+        ended()
+    }
+
+    /// Coalesce to at most one layout per runloop turn.
+    private func scheduleDelivery() {
+        guard !deliveryScheduled else { return }
+        deliveryScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.deliveryScheduled = false
+            self.flush()
+        }
+    }
+
+    private func flush() {
+        guard let p = pending else { return }
+        pending = nil
+        changed(p.dx, p.dy)
+    }
 
     static let cursor: NSCursor = {
         if #available(macOS 15.0, *) { return .frameResize(position: .bottomRight, directions: .all) }
@@ -4192,8 +4925,12 @@ struct ResizeGrip: View {
                     path.addLine(to: CGPoint(x: 15, y: 15 - o))
                 }
             }
-            .stroke((hovering ? p.sub : p.faint).opacity(hovering ? 0.95 : 0.55),
-                    style: StrokeStyle(lineWidth: 1, lineCap: .round))
+            // Rest state raised from 0.55/1pt. Sampled on the rendered card, the darkest stroke
+            // pixel was 2.2:1 against the plate, under the 3:1 floor a non-text control has to
+            // clear: the one affordance that says the card can be resized was invisible until the
+            // pointer happened to land on it. Still quiet, now findable.
+            .stroke((hovering ? p.sub : p.faint).opacity(hovering ? 0.95 : 0.75),
+                    style: StrokeStyle(lineWidth: 1.25, lineCap: .round))
             GripHost(began: began, changed: changed, ended: ended, reset: reset,
                      hover: { hovering = $0 })
         }
@@ -4213,6 +4950,10 @@ struct ResizeGrip: View {
 struct ScrollWhenTall: ViewModifier {
     let active: Bool
     let height: CGFloat
+    /// False when the card has no visible surface (see AppSettings.surfaceIsVisible): the fade is
+    /// black, so with nothing under it it stops reading as an edge of the card and becomes a dark
+    /// band laid straight over the desktop. The scroller thumb still says "there is more".
+    var fade = true
     func body(content: Content) -> some View {
         if active {
             ScrollView(.vertical, showsIndicators: true) { content }
@@ -4222,10 +4963,12 @@ struct ScrollWhenTall: ViewModifier {
                 // otherwise just look truncated mid-chart. A short fade at the bottom edge says
                 // "this continues" without adding a permanent piece of chrome.
                 .overlay(alignment: .bottom) {
-                    LinearGradient(colors: [.black.opacity(0), .black.opacity(0.28)],
-                                   startPoint: .top, endPoint: .bottom)
-                        .frame(height: 22)
-                        .allowsHitTesting(false)
+                    if fade {
+                        LinearGradient(colors: [.black.opacity(0), .black.opacity(0.28)],
+                                       startPoint: .top, endPoint: .bottom)
+                            .frame(height: 22)
+                            .allowsHitTesting(false)
+                    }
                 }
         } else {
             content
@@ -4237,6 +4980,130 @@ private extension View {
     /// The ScrollView must not paint its own backing over the card's glass.
     @ViewBuilder func scrollContentBackgroundHidden() -> some View {
         if #available(macOS 13.0, *) { self.scrollContentBackground(.hidden) } else { self }
+    }
+}
+
+/// The width every chart title row reserves on its trailing edge, whether or not it draws anything
+/// there. Only the first row carries the gear, and without a reserved slot that row's span chip sat
+/// a gear's width further left than all the others, so the chips read as a ragged edge instead of a
+/// column. Sized to the 10.5pt gearshape glyph.
+let kChartTitleTrailingSlot: CGFloat = 14
+
+/// The chart section's raised plate reaches OUT of the card's 16pt padding by this much, so the
+/// charts inside it get more width. What is left, 16 - 9 = 7pt, is the bare card surface down each
+/// side of the plate. There is no matching margin UNDER it: when the plate is the card's last
+/// element it runs flush to the bottom edge (see plateIsLast).
+let kPlateOutset: CGFloat = 9
+
+/// The bare card surface left down each side of the plate. Named because the resize grip has to
+/// step inside it to sit on the plate rather than on that strip, which is the only real surface at
+/// the card's bottom corner once the plate is flush (see MenuCard's grip overlay).
+let kPlateSideMargin: CGFloat = 16 - kPlateOutset
+
+/// The chart plate's outline. Square bottom corners when the plate meets the card's bottom edge.
+///
+/// Rounding both would put one corner inside the other with a sliver of pale card surface trapped
+/// between them, which is the double-corner look this whole arrangement exists to kill. The card
+/// clips its own content to CardShape, so the outer rounding is applied there and the plate must
+/// not draw a second one. Unflushed it is exactly `RoundedRectangle(cornerRadius:)`, circular
+/// style, as it has always been.
+struct PlateShape: Shape {
+    var radius: CGFloat = 12
+    var squareBottom = false
+
+    func path(in rect: CGRect) -> Path {
+        guard squareBottom else { return RoundedRectangle(cornerRadius: radius).path(in: rect) }
+        guard rect.width > 0, rect.height > 0 else { return Path() }
+        let r = max(0, min(radius, min(rect.width, rect.height) / 2))
+        var p = Path()
+        p.move(to: CGPoint(x: rect.minX, y: rect.maxY))
+        p.addLine(to: CGPoint(x: rect.minX, y: rect.minY + r))
+        p.addArc(tangent1End: CGPoint(x: rect.minX, y: rect.minY),
+                 tangent2End: CGPoint(x: rect.maxX, y: rect.minY), radius: r)
+        p.addLine(to: CGPoint(x: rect.maxX - r, y: rect.minY))
+        p.addArc(tangent1End: CGPoint(x: rect.maxX, y: rect.minY),
+                 tangent2End: CGPoint(x: rect.maxX, y: rect.maxY), radius: r)
+        p.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        p.closeSubpath()
+        return p
+    }
+}
+
+/// The peak that points the menu card at its status icon.
+let kMenuNotchW: CGFloat = 12
+let kMenuNotchH: CGFloat = 6
+
+/// Where the menu card's peak points, published so the card can follow the panel.
+///
+/// The panel is centred under the status icon until it cannot be: a wide card near the right end
+/// of the menu bar gets clamped back inside the screen, and from then on the icon is no longer
+/// above the card's middle. The offset is therefore computed WHERE the clamping happens
+/// (placeMenuPanel and pinMenuPanel) and handed to the card, rather than the card assuming.
+final class MenuAnchor: ObservableObject {
+    /// Icon centre in the panel's own coordinates, or nil when there is no panel to point from.
+    @Published var notchX: CGFloat? = nil
+}
+
+/// The card's outline: a rounded rectangle, plus an optional peak on the top edge.
+///
+/// ONE shape for everything that traces the card's edge, because a notch drawn by some of them and
+/// not the others is not a notch, it is a mismatch: the glass clip, the border stroke, the redline,
+/// and the clip on the card's own content all take this.
+///
+/// With no notch it returns exactly `RoundedRectangle(style: .continuous)`, so the floating card
+/// and every offscreen render are unchanged to the pixel. The notched variant draws its corners as
+/// circular arcs rather than Apple's continuous curve: at a 12pt radius the two differ by about a
+/// pixel, and only the menu card, which is gaining a peak anyway, is ever drawn with it.
+struct CardShape: InsettableShape {
+    var radius: CGFloat
+    /// Centre of the peak in the shape's own coordinates. nil is a plain rounded rect.
+    var notchX: CGFloat?
+    var notchW: CGFloat = kMenuNotchW
+    var notchH: CGFloat = kMenuNotchH
+    var inset: CGFloat = 0
+
+    func inset(by amount: CGFloat) -> CardShape {
+        var c = self; c.inset += amount; return c
+    }
+
+    func path(in rect: CGRect) -> Path {
+        let r = rect.insetBy(dx: inset, dy: inset)
+        guard r.width > 0, r.height > 0 else { return Path() }
+        guard let nx = notchX, notchW > 0, notchH > 0 else {
+            return RoundedRectangle(cornerRadius: radius, style: .continuous).path(in: r)
+        }
+        let rad = max(0, min(radius, min(r.width, r.height) / 2))
+        // The body hangs below the notch band; the peak rises into it.
+        let top = r.minY + notchH
+        let tl = CGPoint(x: r.minX, y: top), tr = CGPoint(x: r.maxX, y: top)
+        let br = CGPoint(x: r.maxX, y: r.maxY), bl = CGPoint(x: r.minX, y: r.maxY)
+        // Kept clear of both corner arcs, so a card clamped hard against a screen edge gets a peak
+        // at the end of its top edge rather than one merged into the rounding.
+        let w = max(0, min(notchW, r.width - 2 * rad - 2))
+        let cx = min(max(nx, r.minX + rad + w / 2 + 1), r.maxX - rad - w / 2 - 1)
+        var p = Path()
+        p.move(to: CGPoint(x: r.minX + rad, y: top))
+        if w > 0 {
+            let l = CGPoint(x: cx - w / 2, y: top)
+            let tip = CGPoint(x: cx, y: r.minY)
+            let rt = CGPoint(x: cx + w / 2, y: top)
+            p.addLine(to: l)
+            // Cubics on both flanks: the controls round the tip AND soften where the peak meets the
+            // top edge, so it reads as the card swelling toward the icon rather than a triangle
+            // stuck onto it.
+            p.addCurve(to: tip,
+                       control1: CGPoint(x: l.x + w * 0.30, y: l.y),
+                       control2: CGPoint(x: tip.x - w * 0.28, y: tip.y))
+            p.addCurve(to: rt,
+                       control1: CGPoint(x: tip.x + w * 0.28, y: tip.y),
+                       control2: CGPoint(x: rt.x - w * 0.30, y: rt.y))
+        }
+        p.addArc(tangent1End: tr, tangent2End: br, radius: rad)
+        p.addArc(tangent1End: br, tangent2End: bl, radius: rad)
+        p.addArc(tangent1End: bl, tangent2End: tl, radius: rad)
+        p.addArc(tangent1End: tl, tangent2End: tr, radius: rad)
+        p.closeSubpath()
+        return p
     }
 }
 
@@ -4258,9 +5125,15 @@ struct MenuCard: View {
     var onSignIn: () -> Void = {}
     var onOpenLogs: () -> Void = {}
     var onResizing: (Bool) -> Void = { _ in }   // popover kills its size animation during a grip drag
+    /// The card's measured height, reported when it actually moves. The hosts recompute the window
+    /// shadow on it: AppKit caches that shadow against the content's outline and never revisits it.
+    var onHeight: (CGFloat) -> Void = { _ in }
     /// The display this card is showing on, so the height ceiling matches the screen the user is
     /// actually looking at rather than whichever one macOS calls main.
     var hostScreen: NSScreen? = nil
+    /// Where the status icon is, for the menu card's peak. The floating card passes nothing and
+    /// keeps its plain rounded rect: it hangs from nothing and has nothing to point at.
+    @ObservedObject var anchor: MenuAnchor = MenuAnchor()
     @Environment(\.colorScheme) private var scheme
     @State private var natH: CGFloat = 500
     // Corner-drag resize (reflow, not zoom): sideways drives settings.cardWidth, down drives
@@ -4268,6 +5141,31 @@ struct MenuCard: View {
     /// Anchor for a grip drag: the width and boost at mouse-down, plus the largest boost this
     /// drag may reach. All three are fixed for the whole gesture.
     @State private var dragStart: (w: Double, boost: Double, maxBoost: Double)? = nil
+    /// Pending settle: the one real relayout that happens if the grip stops moving mid-drag.
+    @State private var settleWork: DispatchWorkItem? = nil
+
+    /// How long the grip has to be still before the charts settle to their true layout.
+    ///
+    /// Long enough that it never fires during a drag (cursor deltas arrive far closer together
+    /// than this), short enough to feel like the card catching up the moment you stop to look.
+    private static let settleAfter = 0.2
+
+    /// Restart the stillness countdown. Called on every cursor delta, so a moving grip keeps
+    /// pushing the settle out ahead of itself and it can only land in a genuine pause.
+    private func armSettle() {
+        settleWork?.cancel()
+        let work = DispatchWorkItem { settings.settleCardResize() }
+        settleWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.settleAfter, execute: work)
+    }
+
+    /// Drop any pending settle. Every path that ends a drag calls this, so a settle can never
+    /// land after the release that made it meaningless. (settleCardResize refuses to run without
+    /// a gesture in flight as well, because a cancel can always lose a race.)
+    private func cancelSettle() {
+        settleWork?.cancel()
+        settleWork = nil
+    }
     // The 7-day cost spark is O(records) with per-record price lookups; cache it so a card re-render
     // (the floating window redraws on every live update) does NOT recompute it every frame.
     @State private var spark: [Double] = []
@@ -4281,15 +5179,31 @@ struct MenuCard: View {
         // 1:1 (each chart grows by boost, so the card grows by charts x boost).
         let chartCount = (settings.showBurnChart && settings.visibleSections().contains(.chart))
             ? max(1, settings.chartKinds.count) : 0
-        // Redline heat: the whole card smolders as the session nears its cap.
+        // Redline heat: the whole card smolders as the primary gauge (the session, or the week
+        // on a plan without one) nears its cap.
         let s = engine.snapshot
-        let heat = s.over ? 1.0 : max(0, (min(1, s.sessionPct) - 0.85) / 0.15)
+        let heat = s.primaryOver ? 1.0 : max(0, (min(1, s.primaryPct) - 0.85) / 0.15)
         // The card may not grow past the bottom of the screen. Under the ceiling nothing changes
         // at all: same card, no scroller, content-sized as always. Over it, the card stops at the
         // ceiling and scrolls, which is the only way the sections past the fold are reachable.
         let ceiling = cardHeightCeiling(scale: scale, screen: hostScreen)
         let overflows = natH > ceiling + 0.5
         let shownH = min(natH, ceiling)
+        // Where the card's real bottom surface is. With the chart plate flush it IS that surface,
+        // and it stops kPlateSideMargin short of the card's side edges, so the grip has to step in
+        // by the same amount to sit on it (see the grip overlay below).
+        let plateFlush = chartPlateIsLast(settings: settings, live: live,
+                                          signedIn: engine.isSignedIn(), loading: !engine.ready,
+                                          apiSpend: engine.apiSpend,
+                                          sessionLimitAbsent: engine.snapshot.sessionLimitAbsent)
+        // The peak, and the transparent band it needs above the card to live in. Menu host only:
+        // the floating card hangs from nothing, so it has nothing to point at and keeps the plain
+        // rounded rect it has always had. Everything is in screen points, like the outer frame
+        // below, because the whole card is already scaled by then.
+        let notchX: CGFloat? = floating ? nil : anchor.notchX
+        let notchH = notchX == nil ? 0 : kMenuNotchH * scale
+        let shape = CardShape(radius: settings.glassCornerRadius, notchX: notchX,
+                              notchW: kMenuNotchW * scale, notchH: notchH)
         return DetailCard(snapshot: engine.snapshot, settings: settings, live: live,
                    refreshAnchor: engine.refreshAnchor, heartbeat: engine.heartbeat,
                    period: engine.refreshPeriod,
@@ -4311,7 +5225,8 @@ struct MenuCard: View {
             // Only when it overflows. A ScrollView here unconditionally would put a scroller on
             // every card and, worse, propose its own height back into the measurement that the
             // fixedSize above exists to protect.
-            .modifier(ScrollWhenTall(active: overflows, height: shownH))
+            // The fade is skipped when there is no surface to fade INTO; see ScrollWhenTall.
+            .modifier(ScrollWhenTall(active: overflows, height: shownH, fade: settings.surfaceIsVisible))
             .scaleEffect(scale, anchor: .topLeading)
             // min(6000, natH): the measured height passes through @State on its way to a WINDOW
             // frame (the hosting view sizes the popover and floating panel from this). A single
@@ -4320,8 +5235,25 @@ struct MenuCard: View {
             // card and far inside AppKit's limits; both the write (onPreferenceChange) and this
             // read clamp, so no transient can ever become a window frame.
             .frame(width: cw * scale, height: min(6000, shownH) * scale, alignment: .topLeading)
-            .background(CardSurface(settings: settings, p: p))
-            .overlay(RedlineOverlay(heat: heat, radius: settings.glassCornerRadius, p: p))
+            // Transparent headroom for the peak, so it is inside the window's bounds and not
+            // clipped away by them. The card body starts below it, and placeMenuPanel gives the
+            // panel back the same 6pt at the top, so the content stays exactly where it was.
+            .padding(.top, notchH)
+            // ⚠️ THE CARD'S OWN EDGE. Everything above this is content, and content does not know
+            // the card has rounded corners: when the card overflows its ceiling, ScrollWhenTall's
+            // bottom fade painted a full-width square band whose corners stuck out past the
+            // rounding (measured: corner pixel at 28 percent alpha, exactly the fade's own value,
+            // on both hosts). Clipping the CONTENT fixes that class outright. It is deliberately
+            // not an outer mask over the whole thing: the shadow is drawn by CardSurface below, as
+            // a background, so it stays outside this clip and survives.
+            .clipShape(shape)
+            // The surface and the redline get the SAME peak dimensions the clip above was built
+            // with. They used to take the unscaled constants, so at any textScale but 1 the glass,
+            // the border and the warning ring each wore a slightly different peak.
+            .background(CardSurface(settings: settings, p: p, notchX: notchX,
+                                    notchW: kMenuNotchW * scale, notchH: notchH))
+            .overlay(RedlineOverlay(heat: heat, radius: settings.glassCornerRadius, p: p, notchX: notchX,
+                                    notchW: kMenuNotchW * scale, notchH: notchH))
             // Corner-drag resize. The grip lives HERE, not in DetailCard, so the ImageRenderer
             // screenshot pipeline (which renders DetailCard) never meets the NSViewRepresentable.
             .overlay(alignment: .bottomTrailing) {
@@ -4336,35 +5268,60 @@ struct MenuCard: View {
                         let room = CardResize.boostHeadroom(currentHeight: Double(natH),
                                                             ceiling: Double(ceiling), charts: chartCount)
                         dragStart = (cw, b, min(CardResize.maxBoost, b + room))
+                        // Hold the geometry in memory for the gesture: no disk write per frame, no
+                        // menu bar repaint per frame (see the objectWillChange sink in main), and
+                        // the charts frozen at this width and boost (see MonitorChart.stretch).
+                        settings.beginCardResize()
                         onResizing(true)
                     },
                     changed: { dx, dy in
                         guard let a = dragStart else { return }
                         // Cursor deltas arrive in screen points; divide the zoom back out so the
-                        // reflow happens in design points and the edges track the cursor 1:1.
+                        // reflow happens in design points. Both hosts are panels pinned at their
+                        // top-left, so the delta needs no per-host correction on top of that.
                         settings.cardWidth = CardResize.width(start: a.w, dx: dx / scale)
                         // Absolute from the anchor, clamped by a limit fixed at mouse-down, so the
                         // bottom edge follows the cursor exactly until it reaches the screen.
                         settings.cardChartBoost = min(a.maxBoost,
                             CardResize.boost(start: a.boost, dy: dy / scale, charts: chartCount))
+                        armSettle()
                     },
                     ended: {
                         dragStart = nil
+                        cancelSettle()
+                        settings.commitCardGeometry()
                         onResizing(false)
                     },
                     reset: {
                         dragStart = nil
+                        cancelSettle()
+                        settings.cardResizeInFlight = false
+                        settings.cardResizeStart = nil   // no gesture left to freeze the charts against
                         settings.cardWidth = CardResize.minWidth
                         settings.cardChartBoost = 0
                     })
                     .padding(4)
+                    // Inside the plate's corner when the plate is the card's bottom edge, so the
+                    // grip always has a real surface under it instead of the bare strip beside the
+                    // plate, which on a see-through card is bare desktop. Scaled like every other
+                    // consumer of the card's geometry: this overlay is outside the scaleEffect, and
+                    // the margin it is stepping over is a design-point measurement inside it.
+                    // Layout, not style: the grip keeps one home per layout in every glass style.
+                    .padding(.trailing, plateFlush ? kPlateSideMargin * scale : 0)
             }
             // Floating window: a soft usage-colored halo around the card (calm clay normally,
             // warming as the session climbs) - it reads "alive" against any desktop.
-            .shadow(color: floating ? Color(hex: kAccentHex).opacity(0.16 + 0.30 * heat) : .clear,
-                    radius: floating ? 16 : 0)
+            //
+            // ONLY when the card actually has a surface. A SwiftUI shadow is cast by whatever is
+            // opaque, so on a transparent card (Clear glass, or the glass turned right down) the
+            // halo stops being a glow behind the card and becomes a free-floating warm smear
+            // around the one solid thing left, the chart plate: a pale ledge under it and a faint
+            // band above it, both hanging in empty space with no card visible to justify them.
+            .shadow(color: floating && settings.surfaceIsVisible
+                        ? Color(hex: kAccentHex).opacity(0.16 + 0.30 * heat) : .clear,
+                    radius: floating && settings.surfaceIsVisible ? 16 : 0)
             // Guard against a preference-change render loop: only update when the height really moved.
-            .onPreferenceChange(ContentHeightKey.self) { let h = min(6000, max(80, $0)); if abs(h - natH) > 0.5 { natH = h } }
+            .onPreferenceChange(ContentHeightKey.self) { let h = min(6000, max(80, $0)); if abs(h - natH) > 0.5 { natH = h; onHeight(h) } }
             // Recompute the cost spark only when the record set actually grows (not every render).
             .onChange(of: engine.records.count) { c in if c != sparkKey { sparkKey = c; spark = dailyCostSpark(engine.records) } }
             .onAppear { if sparkKey != engine.records.count { sparkKey = engine.records.count; spark = dailyCostSpark(engine.records) } }

@@ -24,6 +24,10 @@ struct WData {
     var sc: Color      // session color
     var wc: Color      // weekly color
     var p: Palette
+    /// The plan has weekly limits only (verified Ultra: `UsageSnapshot.sessionLimitAbsent`).
+    /// Every style then draws the week as its one meter, labelled as the week, and no session
+    /// slot at all: a session reading of 0% would be inventing a limit the plan does not have.
+    var weekOnly: Bool = false
 }
 
 private func pctN(_ x: Double) -> String { "\(Int((x * 100).rounded()))" }
@@ -71,7 +75,19 @@ func widgetContent(_ style: WidgetStyle, _ d: WData, horizontal: Bool, scale: CG
     let sLab = words ? "SESSION" : "S", wLab = words ? "WEEK" : "W"
     switch style {
     case .twinTanks:
-        if horizontal {
+        if d.weekOnly {
+            // One tank (or one bar): the week, labelled W, in the weekly role.
+            if horizontal {
+                HStack(spacing: 6) {
+                    cap("W", d.p.faint); hbar(d.w, d.wc, tk, w: 30, h: 4); Text(pctN(d.w)).font(.system(size: 10, weight: .semibold)).foregroundStyle(d.wc).frame(width: 17, alignment: .leading)
+                }
+            } else {
+                VStack(spacing: 4) {
+                    tank(d.w, d.wc, tk, w: 10, h: 44)
+                    Text(pctN(d.w)).foregroundStyle(d.wc).frame(width: 14).font(.system(size: 9, weight: .semibold))
+                }
+            }
+        } else if horizontal {
             HStack(spacing: 6) {
                 cap("S", d.p.faint); hbar(d.s, d.sc, tk, w: 30, h: 4); Text(pctN(d.s)).font(.system(size: 10, weight: .semibold)).foregroundStyle(d.sc).frame(width: 17, alignment: .leading)
                 cap("W", d.p.faint); hbar(d.w, d.wc, tk, w: 30, h: 4); Text(pctN(d.w)).font(.system(size: 10, weight: .semibold)).foregroundStyle(d.wc).frame(width: 17, alignment: .leading)
@@ -92,17 +108,30 @@ func widgetContent(_ style: WidgetStyle, _ d: WData, horizontal: Bool, scale: CG
                 hbar(v, c, tk, w: horizontal ? 42 : 38, h: 3)
             })
         }
+        // Weekly-only plan: the week is the one meter, so it never drops at small scale.
+        if d.weekOnly { block(wLab, d.w, d.wc) }
         // Below 0.85x the weekly meter drops so the widget stays compact.
-        if horizontal { HStack(spacing: 11) { block(sLab, d.s, d.sc); if !tiny { block(wLab, d.w, d.wc) } } }
+        else if horizontal { HStack(spacing: 11) { block(sLab, d.s, d.sc); if !tiny { block(wLab, d.w, d.wc) } } }
         else { VStack(alignment: .leading, spacing: 7) { block(sLab, d.s, d.sc); if !tiny { block(wLab, d.w, d.wc) } } }
     case .rings:
-        let body = ZStack {
-            ring(d.s, d.sc, tk, size: horizontal ? 26 : 36, lw: horizontal ? 3.0 : 3.5)
-            if !horizontal { ring(d.w, d.wc, tk, size: 24, lw: 2.5) }
-            Text(pctN(d.s)).font(.system(size: horizontal ? 9 : 11, weight: .semibold)).foregroundStyle(d.p.ink)
+        if d.weekOnly {
+            // One ring for the week, the number inside, a W beside (bar) or beneath (card) so the
+            // lone ring still says which window it is.
+            let wr = ZStack {
+                ring(d.w, d.wc, tk, size: horizontal ? 26 : 36, lw: horizontal ? 3.0 : 3.5)
+                Text(pctN(d.w)).font(.system(size: horizontal ? 9 : 11, weight: .semibold)).foregroundStyle(d.p.ink)
+            }
+            if horizontal { HStack(spacing: 6) { wr.frame(width: 26, height: 26); cap(wLab, d.p.faint) } }
+            else { VStack(spacing: 3) { wr; cap(wLab, d.p.faint) } }
+        } else {
+            let body = ZStack {
+                ring(d.s, d.sc, tk, size: horizontal ? 26 : 36, lw: horizontal ? 3.0 : 3.5)
+                if !horizontal { ring(d.w, d.wc, tk, size: 24, lw: 2.5) }
+                Text(pctN(d.s)).font(.system(size: horizontal ? 9 : 11, weight: .semibold)).foregroundStyle(d.p.ink)
+            }
+            if horizontal { HStack(spacing: 7) { body.frame(width: 26, height: 26); Text("W \(pctN(d.w))%").font(.system(size: 10, weight: .medium)).foregroundStyle(d.wc) } }
+            else { body }
         }
-        if horizontal { HStack(spacing: 7) { body.frame(width: 26, height: 26); Text("W \(pctN(d.w))%").font(.system(size: 10, weight: .medium)).foregroundStyle(d.wc) } }
-        else { body }
     case .arcs:
         let one: (String, Double, Color) -> AnyView = { lab, v, c in AnyView(
             ZStack {
@@ -110,7 +139,8 @@ func widgetContent(_ style: WidgetStyle, _ d: WData, horizontal: Bool, scale: CG
                 VStack(spacing: 0) { Text(pctN(v)).font(.system(size: 9, weight: .semibold)).foregroundStyle(d.p.ink); cap(lab, d.p.faint) }
             }.frame(width: 26, height: 26))
         }
-        HStack(spacing: 6) { one("S", d.s, d.sc); one("W", d.w, d.wc) }
+        if d.weekOnly { one("W", d.w, d.wc) }
+        else { HStack(spacing: 6) { one("S", d.s, d.sc); one("W", d.w, d.wc) } }
     case .bigTile:
         let big: (String, Double, Color) -> AnyView = { lab, v, c in AnyView(
             VStack(alignment: horizontal ? .center : .leading, spacing: 0) {
@@ -121,7 +151,10 @@ func widgetContent(_ style: WidgetStyle, _ d: WData, horizontal: Bool, scale: CG
                 }
             })
         }
-        if horizontal { HStack(spacing: 11) { big(words ? "SESSION" : "SESS", d.s, d.sc); if !tiny { big(wLab, d.w, d.wc) } } }
+        // Weekly-only plan: one big number, the week, spelled out at every scale (WEEK is as
+        // short as SESS, so there is no abbreviation to reach for).
+        if d.weekOnly { big("WEEK", d.w, d.wc) }
+        else if horizontal { HStack(spacing: 11) { big(words ? "SESSION" : "SESS", d.s, d.sc); if !tiny { big(wLab, d.w, d.wc) } } }
         else if tiny { big(words ? "SESSION" : "SESS", d.s, d.sc) }
         else { VStack(alignment: .leading, spacing: 4) { big(words ? "SESSION" : "SESS", d.s, d.sc); Rectangle().fill(d.p.divider).frame(height: 0.75); big(wLab, d.w, d.wc) } }
     case .pills:
@@ -131,7 +164,9 @@ func widgetContent(_ style: WidgetStyle, _ d: WData, horizontal: Bool, scale: CG
                 .frame(width: 42, height: 17)
                 .background(filled ? AnyView(Capsule().fill(c)) : AnyView(Capsule().strokeBorder(c, lineWidth: 1.2))))
         }
-        if horizontal { HStack(spacing: 6) { pill(d.s, d.sc, true); pill(d.w, d.wc, false) } }
+        // Weekly-only plan: the one pill is the week, filled, since it is now the primary gauge.
+        if d.weekOnly { pill(d.w, d.wc, true) }
+        else if horizontal { HStack(spacing: 6) { pill(d.s, d.sc, true); pill(d.w, d.wc, false) } }
         else { VStack(spacing: 5) { pill(d.s, d.sc, true); pill(d.w, d.wc, false) } }
     }
 }
