@@ -1,5 +1,19 @@
 # What's new in Burndown
 
+## 0.9.10
+
+One change, for plans with a weekly limit and no five-hour session (verified Ultra).
+
+- **The week's time left is written out again.** 0.9.9 gave these plans a new layout: the week as
+  one large number with a small countdown ring beside it, and the plain "1d 18h left" text beside
+  THIS WEEK was dropped because the ring said the same thing. In use the ring did not read as "time
+  left in the week": it is small, it carries no label, and the words people looked for were gone.
+  The week is back to the row every other plan has, with the percentage, its bar, and the time
+  left in plain text beside the heading. The session gauge still does not appear on these plans,
+  and the menu bar still shows the weekly percent.
+
+Pro and Max cards are unchanged.
+
 ## 0.9.9
 
 The whole card was reworked around three complaints that turned out to be load-bearing: resizing

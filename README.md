@@ -588,8 +588,8 @@ account reports, including any per-model caps, and the Account window
 has a refresh that picks up a plan change on the spot. Pro and Max have
 a 5-hour session and a weekly limit, so the card shows both. A verified
 Ultra account (Max 20x before October 30, 2026) has no session limit, so
-the card shows no session gauge: the week is the big number, the menu
-bar shows the weekly percent, and a line on the card says why.
+the card shows no session gauge: the week row leads the card with its
+time left written out, and the menu bar shows the weekly percent.
 
 **Intel Macs?**
 Yes. Releases are universal binaries (Apple Silicon and Intel), macOS 13

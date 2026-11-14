@@ -500,7 +500,7 @@ enum StyleSheet {
         s.plan = "Max"
         s.liveUpdated = Date()
         // QA: CUB_PLAN=ultra renders a plan with weekly limits only (verified Ultra, Max 20x until
-        // October 30, 2026): no session window at all, the week as the hero, the Fable scoped cap
+        // October 30, 2026): no session window at all, the week row leading the card, the Fable scoped cap
         // and the by-surface split, with the numbers the usage service reported for such an
         // account on 2026-11-06. The default stays Max, which has both limits and is the layout
         // every published screenshot shows. CUB_PCT drives the week here.

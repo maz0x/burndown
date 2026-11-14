@@ -295,7 +295,7 @@ enum LiveColor: String, CaseIterable, Identifiable {
     }
 }
 let kAppName = "Burndown"           // app name (floating window title + About). Tagline: "usage monitor for Claude"
-let kAppVersion = "0.9.9"           // bump on release builds; 1.0 is reserved for Developer ID signing + multi-provider
+let kAppVersion = "0.9.10"          // bump on release builds; 1.0 is reserved for Developer ID signing + multi-provider
 let kMinWindowAlpha = 0.45          // most see-through the windows go at 100% transparency (keeps text legible)
 
 // ── When the card stops having a surface (see AppSettings.surfaceIsVisible) ──

@@ -734,7 +734,7 @@ struct DetailCard: View {
                 case .chart:
                     chartSection(p: p, liveAccent: liveAccent, ringC: ringC, flush: plateIsLast)
                 case .week:
-                    weekSection(p: p, wColor: wColor, ringC: ringC)
+                    weekSection(p: p, wColor: wColor)
                 case .chats:
                     BurningChatsSection(live: live, p: p, accent: liveAccent,
                                         explain: settings.popoverExplain,
@@ -917,7 +917,7 @@ struct DetailCard: View {
             .padding(.horizontal, -kPlateOutset)
     }
 
-    private func weekSection(p: Palette, wColor: Color, ringC: Color) -> some View {
+    private func weekSection(p: Palette, wColor: Color) -> some View {
         // Layout groups by SCOPE so nothing reads out of place:
         //   ALL MODELS  -> the big weekly % + its 7-day history spark (both are the whole-account total)
         //   PER MODEL   -> the model caps that have their own weekly limit (Fable), always visible since
@@ -925,14 +925,13 @@ struct DetailCard: View {
         // The share split is one segmented bar (not per-model progress bars), so a model never shows two
         // separate bars, and the spark no longer sits marooned between a cap row and the share list.
         // A plan with no session limit (verified Ultra) has one constraint, and it is this one.
-        // The week then takes the session's place as the card's hero: the 60pt numeral, the reset
-        // ring and the full-height bar, so the one number that matters reads at the size the
-        // session did. A plan with both limits keeps the quieter 30pt week exactly as it was.
-        let hero = snapshot.sessionLimitAbsent
-        // The hero's ring already counts down to the reset, so the caption that says the same
-        // thing in the eyebrow row is only drawn when the ring is not.
-        let captionShown = settings.showWeekResets && !(hero && settings.showTimeRing)
-        let resetCaption = captionShown ? snapshot.weeklyResetAt.map { weekLeftString($0) + " left" } : nil
+        // It still draws as the same row every other plan gets: the percentage, its bar, and the
+        // time left written out in words beside the heading. For a while such a plan drew the week
+        // as a 60pt hero with a countdown ring instead, and the ring replaced the words. A small
+        // unlabelled circle did not read as "time left in the week" (2026-11-12), so the row is
+        // back and the words with it.
+        let weeklyOnly = snapshot.sessionLimitAbsent
+        let resetCaption = settings.showWeekResets ? snapshot.weeklyResetAt.map { weekLeftString($0) + " left" } : nil
         let caps = snapshot.modelLimits
         let usage = snapshot.modelUsage
         // With eyebrows off the header row has nothing left to hold but the reset caption, and a
@@ -944,7 +943,7 @@ struct DetailCard: View {
             if settings.popoverEyebrows {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Text("THIS WEEK").font(.system(size: 11, weight: .semibold)).tracking(1.4).foregroundStyle(p.sub)
-                    InfoDot(text: (hero ? "This plan has a weekly limit and no five-hour session, so this is the one number to watch: how much of the week is used, and the time until it resets."
+                    InfoDot(text: (weeklyOnly ? "This plan has a weekly limit and no five-hour session, so this is the one number to watch: how much of the week is used, and the time until it resets."
                                         : "Your weekly allowance across every model.")
                             // The second sentence promises rows that only exist when the
                             // service reports per-model caps, so it is only said then.
@@ -958,9 +957,7 @@ struct DetailCard: View {
                 }.padding(.bottom, settings.popoverCompact ? 6 : 8)
             }
             // ── ALL MODELS: the weekly pool everything counts against ──
-            if hero {
-                weekHero(p: p, wColor: wColor, ringC: ringC, hungCaption: hungCaption)
-            } else if settings.showWeekPercent {
+            if settings.showWeekPercent {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     HStack(alignment: .firstTextBaseline, spacing: 1) {
                         let weekText = heroPercent(snapshot.weeklyPct)
@@ -1075,56 +1072,6 @@ struct DetailCard: View {
 
     private func capRow(_ m: ScopedLimit, _ p: Palette, _ wColor: Color) -> some View {
         CapLimitRow(m: m, p: p, barColor: wColor)
-    }
-
-    // The week as the card's hero, for a plan with no session limit. Same bones as the session
-    // block it stands in for (numeral, ring, one quiet line, the 7pt bar), fed by the week.
-    @ViewBuilder
-    private func weekHero(p: Palette, wColor: Color, ringC: Color, hungCaption: String?) -> some View {
-        if snapshot.weeklyOver { OverPill(color: p.overLimit).padding(.bottom, 7) }
-        HStack(alignment: .top, spacing: 10) {
-            HStack(alignment: .firstTextBaseline, spacing: 1) {
-                // Ink at rest, warming to the week's hue from the alert threshold up, flat
-                // overLimit past 100%: the same rule the session numeral follows.
-                let warmth = snapshot.weeklyOver ? 1.0 : max(0, min(1, (snapshot.weeklyPct - (settings.alertWeeklyAt - 0.15)) / 0.15))
-                let heroBase = Color(nsColor: NSColor(p.ink).blended(to: NSColor(wColor), CGFloat(warmth)))
-                let weekText = heroPercent(snapshot.weeklyPct)
-                Text(weekText)
-                    .font(.system(size: 60, weight: .semibold, design: .serif)).tracking(-0.5)
-                    .foregroundStyle(snapshot.weeklyOver ? AnyShapeStyle(p.overLimit)
-                        : warmth > 0.02 ? AnyShapeStyle(LinearGradient(colors: [heroBase.brighten(0.10 * warmth), heroBase], startPoint: .top, endPoint: .bottom))
-                        : AnyShapeStyle(p.ink))
-                    .monospacedDigit()
-                    .numberAnim(reduce || weekText == "<1" ? .none : settings.numberStyle,
-                                Int((snapshot.weeklyPct * 100).rounded()))
-                Text("%").font(.system(size: 28, weight: .regular, design: .serif)).foregroundStyle(p.sub)
-            }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel("This week, all models")
-            .accessibilityValue({
-                var t = snapshot.weeklyOver ? "limit reached" : "\(heroPercent(snapshot.weeklyPct)) percent used"
-                if let r = snapshot.weeklyResetAt { t += ", \(weekLeftString(r)) until reset" }
-                return t + ". No session limit on this plan"
-            }())
-            .accessibilityAddTraits(.updatesFrequently)
-            Spacer(minLength: 0)
-            if settings.showTimeRing {
-                // A week drains by the minute, not the second.
-                TimelineView(.periodic(from: .now, by: 60)) { ctx in
-                    let rt = weekRingText(snapshot.weeklyResetAt, now: ctx.date)
-                    TimeRing(frac: rt.0, big: rt.1, small: rt.2, track: p.track, ink: p.ink, faint: p.faint, ring: ringC, size: 62)
-                        .accessibilityLabel("Week resets in \(rt.1) \(rt.2)")
-                }
-            }
-        }.padding(.top, 2)
-        // The one quiet line under the number: why there is no session gauge, or claude.ai's own
-        // pace sentence once the service sends one. With the eyebrows off the reset caption has
-        // nowhere else to hang, so it rides on the end of this line.
-        Text([snapshot.weeklyPace ?? "No session limit on this plan", hungCaption].compactMap { $0 }.joined(separator: " · "))
-            .font(.system(size: 11.5)).foregroundStyle(p.faint).padding(.top, 8).lineLimit(1)
-        HBar(pct: snapshot.weeklyPct, color: wColor, track: p.track, height: 7,
-             redline: snapshot.weeklyOver ? 1 : max(0, (min(1, snapshot.weeklyPct) - 0.85) / 0.15),
-             overLimit: p.overLimit, a11yLabel: "Weekly usage, all models").padding(.top, 13)
     }
 
     // The week by surface (Claude Code / Chats / Cowork / Other), as the usage service reports
