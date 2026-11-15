@@ -84,6 +84,22 @@ enum ChartKind: String, CaseIterable, Identifiable {
         }
     }
 
+    /// The title on a weekly-only plan (no five-hour limit), where "Session" names nothing.
+    /// Every other kind, and every plan with both limits, keeps `label`.
+    func label(sessionLimitAbsent: Bool) -> String {
+        sessionLimitAbsent && self == .usageLines ? "Week %" : label
+    }
+
+    /// The info text to match: the two charts that mention the session say only what is drawn.
+    func blurb(sessionLimitAbsent: Bool) -> String {
+        guard sessionLimitAbsent else { return blurb }
+        switch self {
+        case .usageLines: return "The week on a 0-100% scale, plus each model's share. Click a legend name to hide its line."
+        case .paceGauge:  return "The week against the pace that lasts exactly to the reset. Past 1.0x you are overspending."
+        default:          return blurb
+        }
+    }
+
     var blurb: String {
         switch self {
         case .burnLine:        return "Tokens per minute as a smoothed line, with the rolling average."

@@ -93,5 +93,18 @@ check(!minJSON.contains("\"sessionCost\""), "sessionCost is omitted when nil, no
 check(decodedBare?.sessionCost == nil, "a payload without sessionCost decodes with it nil")
 check(decodeBurndownLive(fullJSON)?.sessionCost == 4.75, "sessionCost round-trips by value")
 
+// A plan with a weekly limit and no five-hour session, and a model with its own cap.
+var weeklyOnly = minimal
+weeklyOnly.sessionLimitAbsent = true
+weeklyOnly.modelLimits = [BurndownLiveCap(label: "Fable", pct: 0.63, resetAt: "2026-07-01T00:00:00Z")]
+let weeklyOnlyJSON = encodeBurndownLive(weeklyOnly)
+check(weeklyOnlyJSON.contains("\"sessionLimitAbsent\" : true"), "sessionLimitAbsent is emitted when the plan has no session limit")
+check(!minJSON.contains("sessionLimitAbsent"), "and omitted on every other plan, never sent as false")
+check(!minJSON.contains("modelLimits"), "modelLimits is omitted when the plan caps no model separately")
+check(decodeBurndownLive(weeklyOnlyJSON) == weeklyOnly, "a weekly-only payload with a model cap round-trips")
+check(decodeBurndownLive(weeklyOnlyJSON)?.modelLimits?.first?.label == "Fable", "the cap keeps its label")
+check(decodedBare?.sessionLimitAbsent == nil && decodedBare?.modelLimits == nil,
+      "a payload written before these fields existed still decodes, with both nil")
+
 print(failures == 0 ? "\nALL LIVECONTRACT TESTS PASSED" : "\n\(failures) FAILURE(S)")
 exit(failures == 0 ? 0 : 1)

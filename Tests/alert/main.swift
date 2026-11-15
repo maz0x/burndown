@@ -92,5 +92,29 @@ do {
     check(moved != .none, "but a reset that jumped an hour earlier re-arms it")
 }
 
+print("per-model caps, each on its own state:")
+do {
+    let t = Date()
+    let week = t.addingTimeInterval(2 * 86_400)
+    var states: [String: AlertPctState] = [:]
+    func run(_ caps: [AlertCap], at now: Date = t) -> [(label: String, action: AlertPctAction)] {
+        alertCapsEval(caps: caps, base: 90, repeatMin: 0, now: now, states: &states)
+    }
+    check(run([AlertCap(label: "Fable", pct: 0.63, reset: week)]).isEmpty, "Fable at 63% with a 90% level: nothing")
+    let first = run([AlertCap(label: "Fable", pct: 0.91, reset: week)])
+    check(first.count == 1 && first[0].label == "Fable" && first[0].action == .fire(level: 90, cur: 91),
+          "Fable crossing 90% fires once, named")
+    check(run([AlertCap(label: "Fable", pct: 0.93, reset: week)]).isEmpty, "and not again at 93% in the same week")
+    check(run([]).isEmpty, "a reading with no caps at all fires nothing")
+    check(run([AlertCap(label: "Fable", pct: 0.93, reset: week)]).isEmpty,
+          "the cap coming back after a missing reading does not repeat the 90% alert")
+    let two = run([AlertCap(label: "Fable", pct: 0.94, reset: week), AlertCap(label: "Opus", pct: 0.95, reset: week)])
+    check(two.count == 1 && two[0].label == "Opus", "a second model crossing fires for that model only")
+    let full = run([AlertCap(label: "Fable", pct: 1.0, reset: week)])
+    check(full.count == 1 && full[0].action == .fire(level: 100, cur: 100), "Fable reaching 100% fires the limit alert")
+    let next = run([AlertCap(label: "Fable", pct: 0.92, reset: week.addingTimeInterval(7 * 86_400))])
+    check(next.count == 1 && next[0].action == .fire(level: 90, cur: 92), "a new week re-arms the level")
+}
+
 print(failures == 0 ? "\nALL PASS" : "\n\(failures) FAILURE(S)")
 exit(failures == 0 ? 0 : 1)

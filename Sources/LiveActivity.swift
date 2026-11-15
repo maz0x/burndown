@@ -54,10 +54,13 @@ final class LiveActivity: ObservableObject {
 
     /// Append the current session + weekly % as Usage points, downsampled to ~1/60 s regardless
     /// of the (possibly 2 s) refresh cadence - driven by a separate coarse timer in the app.
-    func recordUsage(session: Double, weekly: Double, at now: Date = Date()) {
+    /// `session` is nil on a plan with no session limit. Nothing is recorded for it then: a run of
+    /// zeros in the history (and in the CSV export) would read as "the session was at 0%", which
+    /// is a different statement from "there is no session".
+    func recordUsage(session: Double?, weekly: Double, at now: Date = Date()) {
         guard now.timeIntervalSince(lastUsageAt) >= Self.usageMinSpacing else { return }
         lastUsageAt = now
-        usageSamples.append(TimedSample(t: now, v: min(1, max(0, session))))
+        if let session { usageSamples.append(TimedSample(t: now, v: min(1, max(0, session)))) }
         weeklySamples.append(TimedSample(t: now, v: min(1, max(0, weekly))))
         trimAndPersist(now)
     }

@@ -852,7 +852,16 @@ enum StyleSheet {
         let noScroll = ProcessInfo.processInfo.environment["CUB_NOSCROLL"] != nil
         let tab = ProcessInfo.processInfo.environment["CUB_TAB"].flatMap { SettingsTab(rawValue: $0) } ?? .general
         let h: CGFloat = noScroll ? qaSettingsPaneHeight(tab) : 580
-        let view = SettingsView(settings: settings, engine: UsageEngine(), live: LiveActivity(),
+        let env = ProcessInfo.processInfo.environment
+        // QA: CUB_GLYPH_STYLE=<MenuBarStyle rawValue> picks the menu bar icon the panes are drawn
+        // for. Rows that only apply to some icons ("Time to reset") change with it.
+        if let ms = env["CUB_GLYPH_STYLE"].flatMap({ MenuBarStyle(rawValue: $0) }) { settings.menuBarStyle = ms }
+        let engine = UsageEngine()
+        // QA: CUB_PLAN=ultra|max pins whether the plan has a session limit. Without it the engine
+        // answers from this machine's own cached reading, so the same command drew the "Time ring"
+        // row one way on a weekly-only account and another way everywhere else.
+        if let plan = env["CUB_PLAN"] { engine.snapshot.sessionLimitAbsent = (plan == "ultra") }
+        let view = SettingsView(settings: settings, engine: engine, live: LiveActivity(),
                                 loginInitially: false, onLogin: { _ in })
             .frame(width: 660)
             .environment(\.colorScheme, dark ? .dark : .light)

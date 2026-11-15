@@ -257,7 +257,7 @@ independently.</p>
 <img src="screenshots/settings-alerts.png" width="660" alt="The Burndown alerts settings pane showing session, weekly and per-model thresholds, burn spike, forecast, behavior options and quiet hours">
 <table>
   <tr><th>Alert</th><th>Fires when</th></tr>
-  <tr><td><b>Session / Weekly / Opus / Sonnet threshold</b></td><td>That metric crosses the percentage you picked, once per window, re-arming at the reset.</td></tr>
+  <tr><td><b>Session / Weekly / Model limits threshold</b></td><td>That metric crosses the percentage you picked, once per window, re-arming at the reset.</td></tr>
   <tr><td><b>Burn spike</b></td><td>Your rate crosses a tokens-per-minute threshold. Uses hysteresis so it cannot flap, and names the conversation responsible.</td></tr>
   <tr><td><b>Forecast</b></td><td>The projected time to your session limit drops below 30 minutes, 1 hour, or 2 hours, while there is still time to wrap up. Plans with no session limit (Ultra) do not get this one.</td></tr>
   <tr><td><b>Runaway burn</b></td><td>Your rate runs far above your own recent normal, measured from a median baseline rather than a fixed number. Built for the agent that keeps spending while you are away.</td></tr>
@@ -335,8 +335,8 @@ points Claude Code's statusline at it, so your limits ride inside every Claude C
 <img src="screenshots/cli.png" width="750" alt="The Burndown statusline gauge inside Claude Code, a reconfigured version adding cost and burn rate, and the output of Burndown --json">
 <p>The install is reversible: your <code>~/.claude/settings.json</code> is backed up once before
 the first install, and Remove Terminal Gauge deletes only the statusline entry Burndown added.</p>
-<p>Compose the line from six segments with an environment variable:</p>
-<pre><code>export BURNDOWN_STATUSLINE=bar,pct,resets,week,cost,rate  # default: bar,pct,resets,week
+<p>Compose the line from seven segments with an environment variable:</p>
+<pre><code>export BURNDOWN_STATUSLINE=bar,pct,resets,week,caps,cost,rate  # default: bar,pct,resets,week
 export BURNDOWN_ASCII=1   # plain characters instead of the flame and block cells</code></pre>
 
 <h2 id="json">The JSON contract</h2>
@@ -359,7 +359,9 @@ is byte-stable, so it diffs and caches cleanly. A missing optional field means u
 zero. <code>schemaVersion</code> only changes on a breaking change, and the contract has its own
 test suite so it will not drift under you. On an Ultra plan, which has no session limit,
 <code>sessionPct</code> is 0 and <code>sessionResetAt</code> is absent; <code>weeklyPct</code> is
-the number to read.</p>
+the number to read, and <code>"sessionLimitAbsent" : true</code> is there so a script can tell that
+from a real 0%. Models your plan caps separately arrive as <code>modelLimits</code>, a list of
+<code>label</code>, <code>pct</code> and <code>resetAt</code>.</p>
 <p>One difference between the two doors: <code>burnPerMin</code> and <code>sessionCost</code> are
 live readings, so only the running app knows them. The file carries both. A cold
 <code>Burndown --json</code> reads the cache and reports each as <code>null</code>, which is the

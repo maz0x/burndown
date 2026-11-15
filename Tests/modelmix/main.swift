@@ -70,5 +70,17 @@ check(a8.tightestFamily == "", "empty input -> tightestFamily is empty")
 check(a8.recommendedFamily == "", "empty input -> recommendedFamily is empty")
 check(a8.message == "", "empty input -> empty message")
 
+// A model the plan caps separately (Fable): the account reports no Opus or Sonnet number at all.
+let f1 = modelMixAdvice([ModelHeadroom(family: "Fable", fractionUsed: 0.80)])
+check(f1.shouldAdvise, "advises when a separately capped model is over the threshold")
+check(f1.message == "You are at 80% of your Fable weekly limit, shift routine work to another model",
+      "names the model and does not invent which one to switch to")
+check(f1.recommendedFamily == "", "recommends no particular family for a model it knows nothing about")
+let f2 = modelMixAdvice([ModelHeadroom(family: "Fable", fractionUsed: 0.63)])
+check(!f2.shouldAdvise && f2.message == "", "stays quiet below the threshold")
+let f3 = modelMixAdvice([ModelHeadroom(family: "Fable", fractionUsed: 0.80),
+                         ModelHeadroom(family: "Sonnet", fractionUsed: 0.90)])
+check(!f3.shouldAdvise, "still quiet when Sonnet is the tightest, whatever else is capped")
+
 print(failures == 0 ? "\nALL MODELMIX TESTS PASSED" : "\n\(failures) FAILURE(S)")
 exit(failures == 0 ? 0 : 1)

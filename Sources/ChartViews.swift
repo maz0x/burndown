@@ -13,6 +13,8 @@ struct ChartCtx {
     var sessionPct: Double = 0
     var weeklyPct: Double = 0
     var sessionResetAt: Date? = nil
+    /// True on a weekly-only plan (no five-hour limit), so session lines, strips and titles are left out.
+    var sessionLimitAbsent: Bool = false
     var weeklyResetAt: Date? = nil
     var modelLimits: [ScopedLimit] = []
     var accent: Color = .orange
@@ -82,10 +84,14 @@ struct ChartCtx {
     ///
     /// Records are appended to, and trimmed from the front by the retention setting, so count alone
     /// is not enough: a trim plus an append leaves it unchanged. First and last dates close that.
+    /// A copy with the plan's "no session limit" flag set. Lets a caller that builds a context
+    /// from fixed sample data still say which plan the charts are being drawn for.
+    func with(sessionLimitAbsent: Bool) -> ChartCtx { var c = self; c.sessionLimitAbsent = sessionLimitAbsent; return c }
+
     var dataKey: String {
         "\(records.count)|\(records.first?.date.timeIntervalSince1970 ?? 0)"
         + "|\(records.last?.date.timeIntervalSince1970 ?? 0)|\(days)|\(window)"
-        + "|\(tick.timeIntervalSinceReferenceDate)"
+        + "|\(tick.timeIntervalSinceReferenceDate)|\(sessionLimitAbsent)"
     }
 }
 
@@ -814,16 +820,18 @@ struct UsageLinesChart: View {
         // `derived` marks the model lines: measured readings are solid, the per-model split is
         // worked out from the local logs, and the legend says which is which.
         // `gated` entries are real models of this week whose lines this window is too short to draw.
+        // On a weekly-only plan there is no session line to offer, so the legend drops it.
+        let hasSession = !ctx.sessionLimitAbsent
         let series: [(key: String, colour: Color, derived: Bool, gated: Bool)] =
-            [(key: "Session", colour: ctx.accent, derived: false, gated: false),
-             (key: "Week", colour: ctx.secondary, derived: false, gated: false)]
+            (hasSession ? [(key: "Session", colour: ctx.accent, derived: false, gated: false)] : [])
+            + [(key: "Week", colour: ctx.secondary, derived: false, gated: false)]
             + allModels.map { (key: $0.label, colour: modelHue($0.label, p), derived: true, gated: modelsGated) }
         return VStack(alignment: .leading, spacing: 5) {
-            if s.isEmpty && w.isEmpty {
+            if (hasSession ? s.isEmpty : true) && w.isEmpty {
                 chartPlaceholder("Warming up, collecting samples", p, height: ctx.plotH)
             } else {
                 Chart {
-                    if shown("Session") {
+                    if hasSession && shown("Session") {
                         ForEach(s, id: \.t) { pt in
                             LineMark(x: .value("t", pt.t), y: .value("v", pt.v), series: .value("k", "Session"))
                                 .foregroundStyle(ctx.accent).lineStyle(StrokeStyle(lineWidth: ctx.lineW)).interpolationMethod(.monotone)
@@ -860,15 +868,15 @@ struct UsageLinesChart: View {
                                     return "\(m.label) \(Int((v * 100).rounded()))%"
                                 }
                                 chartCallout(
-                                    (shown("Session") ? "S \(Int(((selS?.v ?? 0) * 100).rounded()))%" : "")
-                                    + (shown("Session") && shown("Week") ? "  \u{00B7}  " : "")
+                                    (hasSession && shown("Session") ? "S \(Int(((selS?.v ?? 0) * 100).rounded()))%" : "")
+                                    + (hasSession && shown("Session") && shown("Week") ? "  \u{00B7}  " : "")
                                     + (shown("Week") ? "W \(Int(((selW?.v ?? 0) * 100).rounded()))%" : ""),
                                     // The SAMPLE's own time, not the pointer's. These readings
                                     // come from nearestSample, which can be minutes away in a
                                     // sparse stretch, and labelling them with wherever the mouse
                                     // happened to be told the reader a value belonged to a moment
                                     // it did not.
-                                    relTimeLabel(selS?.t ?? selW?.t ?? t, now: now), p,
+                                    relTimeLabel((hasSession ? selS?.t : nil) ?? selW?.t ?? t, now: now), p,
                                     detail: each.isEmpty ? nil : each.joined(separator: "  \u{00B7}  "))
                             }
                     }

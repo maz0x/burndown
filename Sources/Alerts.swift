@@ -18,6 +18,7 @@ final class UsageAlerts {
     private var opusFired: Set<Int> = []; private var opusCycle: Date??; private var opusLastFire: Date?
     private var sonnetFired: Set<Int> = []; private var sonnetCycle: Date??; private var sonnetLastFire: Date?
     private var forecastFired = false; private var forecastCycle: Date??
+    private var capStates: [String: AlertPctState] = [:]   // one per model cap, keyed by its label
     private var authorized = false
     private var requested = false
     private var soundName = ""                 // which bundled sound to play ("" = system default)
@@ -100,7 +101,7 @@ final class UsageAlerts {
         }
     }
 
-    func check(session: Double, weekly: Double, opus: Double?, sonnet: Double?, sessionReset: Date?, weeklyReset: Date?, burn: Double, forecastMin: Double?, topChat: String? = nil, s: AppSettings, now: Date = Date()) {
+    func check(session: Double, weekly: Double, opus: Double?, sonnet: Double?, caps: [AlertCap] = [], sessionReset: Date?, weeklyReset: Date?, burn: Double, forecastMin: Double?, topChat: String? = nil, s: AppSettings, now: Date = Date()) {
         // No `authorized` gate: attempt posts and let macOS gate delivery. This avoids a stale flag
         // once the user enables notifications in System Settings (we never re-prompt after a denial).
         soundName = s.alertSoundName
@@ -122,6 +123,15 @@ final class UsageAlerts {
         if s.alertSonnet, let sn = sonnet {
             evalPct("Sonnet", sn, weeklyReset, Int((s.alertSonnetAt * 100).rounded()),
                     &sonnetFired, &sonnetCycle, &sonnetLastFire, s.alertRepeatMin, s.alertSound, now)
+        }
+        // Every model with its own weekly cap (Fable, today), each tracked on its own.
+        if s.alertModelCaps {
+            let hits = alertCapsEval(caps: caps, base: Int((s.alertModelCapsAt * 100).rounded()),
+                                     repeatMin: s.alertRepeatMin, now: now, states: &capStates)
+            for hit in hits {
+                let reset = caps.first { $0.label == hit.label }?.reset
+                announce(hit.action, name: hit.label, noun: "\(hit.label) weekly", reset: reset, sound: s.alertSound, now: now)
+            }
         }
         if s.alertBurn { evalBurn(burn, s.alertBurnAt, topChat, s.alertSound) }
         if s.alertOnReset {
@@ -197,6 +207,12 @@ final class UsageAlerts {
         var st = AlertPctState(fired: fired, cycle: cycle, lastFire: lastFire)
         let action = alertPctEval(pct: pct, reset: reset, base: base, repeatMin: repeatMin, now: now, state: &st)
         fired = st.fired; cycle = st.cycle; lastFire = st.lastFire
+        announce(action, name: name, noun: noun(name), reset: reset, sound: sound, now: now)
+    }
+
+    /// Turn one threshold decision into its notification. `name` leads the title ("Session",
+    /// "Fable"); `noun` is how the allowance is called in a sentence ("session", "Fable weekly").
+    private func announce(_ action: AlertPctAction, name: String, noun: String, reset: Date?, sound: Bool, now: Date) {
         switch action {
         case .none: break
         case let .fire(hit, cur):
@@ -206,11 +222,13 @@ final class UsageAlerts {
                     let s = max(0, r.timeIntervalSince(now)); let h = Int(s) / 3600; let m = (Int(s) % 3600) / 60
                     return h > 0 ? "Resets in \(h)h \(m)m." : "Resets in \(m)m."
                 } ?? "A fresh window will start soon."
-                post("\(noun(name).capitalized) limit reached", body, sound)
+                // Only the first letter is raised. `.capitalized` raises every word, which is right
+                // for "session" and wrong for "Fable weekly".
+                post("\(noun.prefix(1).uppercased() + noun.dropFirst()) limit reached", body, sound)
             }
-            else { post("\(name) at \(hit)%", "Usage is at \(cur)% of your \(noun(name)) allowance.", sound) }
+            else { post("\(name) at \(hit)%", "Usage is at \(cur)% of your \(noun) allowance.", sound) }
         case let .repeatOver(cur):
-            post("\(name) still at \(cur)%", "Still over your \(noun(name)) alert level.", sound)
+            post("\(name) still at \(cur)%", "Still over your \(noun) alert level.", sound)
         }
     }
 

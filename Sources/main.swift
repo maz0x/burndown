@@ -899,8 +899,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                 // before any movement is asked for. Starting the clock in the same breath as
                 // `began` charged that render to the first moving frame and reported it as drag
                 // lag, which is the harness measuring itself rather than the gesture.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
-                guard let self else { return }
+                // No capture list: `self` is already held strongly by the closure this one sits in
+                // (its own `guard let self`), and re-declaring it weak here was a compiler warning.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
                 let t0 = Date()
                 var ticks = 0, worstGap = 0.0, driftX = 0.0, driftY = 0.0
                 // The two worst MOVING gaps and the steps they landed on. Two, because a single
@@ -936,15 +937,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                 // Arm the settle exactly the way MenuCard's grip does, on every step, so the sim
                 // measures the app's own timing rather than a second implementation of it.
                 var armSettle: () -> Void = {}
-                armSettle = { [weak self] in
-                    guard let self else { return }
+                armSettle = {
                     settleWork?.cancel()
                     let work = DispatchWorkItem { if self.settings.settleCardResize() { settles += 1 } }
                     settleWork = work
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
                 }
-                Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { [weak self] t in
-                    guard let self else { t.invalidate(); return }
+                Timer.scheduledTimer(withTimeInterval: 1.0 / 60.0, repeats: true) { t in
                     let nowT = Date()
                     // Every gap is attributed to the state the PREVIOUS tick left the sim in, so the
                     // stall that a moving frame caused can never be filed under the pause.
@@ -1071,6 +1070,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         engine.refreshAPISpend()   // developer-API spend, if an Admin key was saved
         engine.logPlanFields()
         engine.publishAccount()
+        refreshInstalledGauge()
         liveActivity.start()
         rescheduleTimers()
         startUsageSampler()
@@ -1576,10 +1576,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
     // so the Usage chart builds a clean ~1/60s, 6-hour curve no matter how fast or slow
     // the live refresh runs. (recordUsage self-throttles, so this never over-samples.)
     private func startUsageSampler() {
-        liveActivity.recordUsage(session: engine.snapshot.sessionPct, weekly: engine.snapshot.weeklyPct)   // seed an immediate point
+        liveActivity.recordUsage(session: engine.snapshot.recordedSessionPct, weekly: engine.snapshot.weeklyPct)   // seed an immediate point
         let t = Timer(timeInterval: 60, repeats: true) { [weak self] _ in
             guard let self else { return }
-            self.liveActivity.recordUsage(session: self.engine.snapshot.sessionPct, weekly: self.engine.snapshot.weeklyPct)
+            self.liveActivity.recordUsage(session: self.engine.snapshot.recordedSessionPct, weekly: self.engine.snapshot.weeklyPct)
             self.engine.liveBurnPerMin = self.liveActivity.rate
         }
         RunLoop.main.add(t, forMode: .common); usageTimer = t
@@ -2095,10 +2095,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
             w.center()
             accountWindow = w
         }
-        // Opening the Account window re-checks the plan + usage, so a plan change (e.g. Pro -> Max)
-        // is picked up without a restart. force bypasses the 20s poll floor.
+        // Opening the Account window re-checks the plan, so a plan change (e.g. Pro -> Max) is
+        // picked up without a restart. The usage numbers are refreshed too when the user's interval
+        // allows it. It used to force a fetch on every open, past the interval and past a 429
+        // backoff, which made opening a window one more way to get rate limited.
         engine.logPlanFields()
-        engine.fetchLive(force: true)
+        engine.fetchLive()
         NSApp.activate(ignoringOtherApps: true)
         accountWindow?.makeKeyAndOrderFront(nil)
         accountWindow?.orderFrontRegardless()
@@ -2136,13 +2138,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         if gaugeInstalled() { removeGauge() } else { installGauge() }
     }
 
-    private func installGauge() {
-        let script = """
+    /// The statusline script, as one constant, so an installed copy can be compared with it.
+    private static let gaugeScript = """
         #!/bin/sh
         # Burndown terminal gauge - your live Claude limits in the Claude Code statusline.
         # Installed by Burndown.app (menu > Install Terminal Gauge). Data: burndown-live.json.
+        # gauge-version: 2
         # Brand-mapped xterm-256. Compose segments with BURNDOWN_STATUSLINE (default bar,pct,resets,week):
-        #   bar,pct,resets,week,cost,rate  ·  BURNDOWN_ASCII=1 swaps the flame for * and cells for # / -.
+        #   bar,pct,resets,week,caps,cost,rate  ·  BURNDOWN_ASCII=1 swaps the flame for * and cells for # / -.
+        # On a plan with a weekly limit and no five-hour session, the week drives the bar and the
+        # percentage, and the separate week segment is dropped because it would repeat it.
         exec /usr/bin/python3 - <<'PY'
         import json, os, datetime
         p = os.path.expanduser("~/.config/burndown/burndown-live.json")
@@ -2153,6 +2158,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         ascii_m = os.environ.get("BURNDOWN_ASCII") == "1"
         s = d.get("sessionPct") or 0.0
         w = d.get("weeklyPct") or 0.0
+        weekly_only = d.get("sessionLimitAbsent") is True
+        if weekly_only: s = w
+        primary = "week" if weekly_only else "session"
         thr = 0.85
         rst = "\\033[0m"; bold = "\\033[1m"; track = "38;5;240"
         def hue():
@@ -2178,12 +2186,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
             if name == "bar": return ("bar", bar())
             if name == "pct":
                 val = paint(hue(), bold + str(int(round(s*100))) + "%")
-                sess = (bold + "session" + rst) if s >= thr else "session"
+                sess = (bold + primary + rst) if s >= thr else primary
                 return ("pct", val + " " + sess)
             if name == "resets":
-                r = left(d.get("sessionResetAt")); return ("resets", "resets " + r) if r else None
+                r = left(d.get("weeklyResetAt" if weekly_only else "sessionResetAt"))
+                return ("resets", "resets " + r) if r else None
             if name == "week":
+                if weekly_only: return None
                 return ("week", "week " + bold + str(int(round(w*100))) + "%" + rst)
+            if name == "caps":
+                caps = [c for c in (d.get("modelLimits") or []) if c.get("label")]
+                if not caps: return None
+                return ("caps", "  ".join(c["label"] + " " + bold + str(int(round((c.get("pct") or 0)*100))) + "%" + rst for c in caps))
             if name == "cost":
                 v = d.get("sessionCost")
                 return ("cost", bold + "$" + str(int(round(v))) + rst) if v else None
@@ -2205,6 +2219,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         print(line)
         PY
         """
+
+    /// The line that says which generation of the script a file is. Raise the number in the
+    /// script AND here whenever the script changes in a way installed copies should receive.
+    private static let gaugeMarker = "# gauge-version: 2"
+
+    /// Bring an INSTALLED gauge up to date with the script this build carries.
+    ///
+    /// The script is copied to disk when the gauge is installed and nothing rewrote it afterwards,
+    /// so a fix to it only reached people who removed the gauge and installed it again. On a plan
+    /// with no session limit that meant "0% session" in the terminal for as long as the old copy
+    /// lived, whatever the app itself showed. Only our own file is touched, only when the gauge is
+    /// installed, and never on a QA run.
+    ///
+    /// Decided by the generation marker, not by comparing text: a copy already on this generation
+    /// is left alone even if someone has edited it by hand, so an edit is replaced at most once
+    /// per generation rather than on every launch. What was there is kept beside it as
+    /// statusline.sh.bak first.
+    private func refreshInstalledGauge() {
+        guard ProcessInfo.processInfo.environment["CUB_SANDBOX"] == nil, gaugeInstalled() else { return }
+        guard let onDisk = try? String(contentsOf: gaugeScriptURL, encoding: .utf8),
+              !onDisk.contains(Self.gaugeMarker) else { return }
+        try? onDisk.write(to: gaugeScriptURL.appendingPathExtension("bak"), atomically: true, encoding: .utf8)
+        do {
+            try Self.gaugeScript.write(to: gaugeScriptURL, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: gaugeScriptURL.path)
+            notifLog("gauge script refreshed to this build's version")
+        } catch { notifLog("gauge script refresh failed: \(error.localizedDescription)") }
+    }
+
+    private func installGauge() {
+        let script = Self.gaugeScript
         do {
             try script.write(to: gaugeScriptURL, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: gaugeScriptURL.path)
@@ -2510,7 +2555,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         g.flameSmoke = settings.flameSmoke
         if !settings.menuShowPct, settings.menuBarStyle == .flame { g.pctText = "" }   // area 2: flame-only
         // Time to reset (fire family only): append a short mono countdown, capped at 5 chars.
-        if settings.menuTimeToReset, [.smolder, .burnfront, .kiln, .flame].contains(settings.menuBarStyle) {
+        if settings.menuTimeToReset, settings.menuBarStyle.supportsTimeToReset {
             let (_, t) = compactTime(s.primaryResetAt, total: s.primaryWindow)
             if !t.isEmpty { g.pctText += " " + String(t.prefix(5)) }
         }
@@ -2698,6 +2743,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         engine.$snapshot.receive(on: RunLoop.main)
             .sink { [weak self] s in
                 guard let self else { return }
+                // A plan with no session limit shows the week alone, and seven styles exist only to
+                // draw session and week together. One of those, left over from before the plan
+                // changed, put the week in the session's slot and its time left where the week
+                // goes. Same correction Settings makes when "Menu bar shows" leaves Both.
+                if s.sessionLimitAbsent, !self.settings.menuBarStyle.supports(.weekly) {
+                    self.settings.menuBarStyle = MenuBarStyle.allCases.first { $0.supports(.weekly) && !$0.isRetired } ?? .pulse
+                }
                 // Detect a change in the live token figure → kick the odometer roll.
                 let t = "≈" + fmtTok(s.sessionFresh)
                 if !self.lastTokText.isEmpty && t != self.lastTokText {
@@ -2714,6 +2766,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                     self.alerts.enable()   // idempotent; prompts for permission the first time
                     self.alerts.check(session: s.sessionPct, weekly: s.weeklyPct,
                                       opus: s.apiOpus?.pct, sonnet: s.apiSonnet?.pct,
+                                      // A cap with no reset time of its own resets with the week.
+                                      caps: s.modelLimits.map { AlertCap(label: $0.label, pct: $0.pct,
+                                                                         reset: $0.resetAt ?? s.weeklyResetAt) },
                                       sessionReset: s.sessionResetAt, weeklyReset: s.weeklyResetAt,
                                       burn: self.liveActivity.rate,
                                       forecastMin: forecastMinutes(self.liveActivity.usageSamples, current: s.sessionPct, resetAt: s.sessionResetAt),
@@ -2780,7 +2835,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
             }
             .store(in: &cancellables)
 
-        settings.$usageAPI.receive(on: RunLoop.main)
+        // dropFirst: a @Published sink is handed the CURRENT value when it subscribes, so this ran at
+        // every launch as if the user had just opted in, and forced a second usage fetch a moment
+        // after the launch fetch. The launch value is applied where the engine is set up.
+        settings.$usageAPI.dropFirst().receive(on: RunLoop.main)
             .sink { [weak self] on in
                 guard let self else { return }
                 self.engine.usageEnabled = on
@@ -2972,8 +3030,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
     // then ramp the interval back up (2s → ~3 → 5 → 8 … → your chosen interval) as things
     // stay quiet - so we update live when it matters but don't keep hitting the usage
     // endpoint when nothing's happening. Smart off = the fixed interval, always.
-    // (The OAuth usage fetch is also self-throttled to ≥20s, so the server is never hit
-    // faster than that even at a 2s UI cadence.)
+    // (That cadence is for the LOCAL readings: burn, tokens, cost. The usage service is asked no
+    // more often than the chosen interval however fast this loop ticks: see FetchSchedule.)
     private func nextLiveInterval() -> Double {
         let base = Double(settings.refreshSeconds)
         if !settings.smartRefresh { return base }
@@ -2985,22 +3043,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         liveTimer?.invalidate()
         engine.refreshPeriod = liveInterval
         engine.refreshAnchor = Date()              // restart the LIVE countdown/fill
-        let t = Timer(timeInterval: max(1, liveInterval), repeats: false) { [weak self] _ in self?.liveTick() }
+        // Land on the moment the usage fetch is allowed again when that comes before the next
+        // ordinary tick. A fetch that went out off the beat (a 429 retry, a manual refresh) would
+        // otherwise leave the next tick a fraction short of the interval, be refused, and cost a
+        // whole extra interval of stale numbers.
+        let wait = engine.liveFetchWait
+        let due = (wait > 0 && wait < liveInterval) ? wait + 0.05 : liveInterval
+        let t = Timer(timeInterval: max(1, due), repeats: false) { [weak self] _ in self?.liveTick() }
         RunLoop.main.add(t, forMode: .common); liveTimer = t
     }
 
     private func liveTick() {
-        engine.fetchLive()                         // OAuth % (self-throttled to ≥20s)
+        engine.fetchLive()                         // usage % (goes out only when the user's interval allows)
         engine.refreshAPISpend()                   // developer-API spend (self-throttled to ≥5m; no-op if no key)
         engine.quickRefresh()                      // local burn / tokens / cost (cheap)
         liveActivity.recordBurn()                  // one Burn point per refresh
-        liveActivity.recordUsage(session: engine.snapshot.sessionPct, weekly: engine.snapshot.weeklyPct)   // Usage point (self-throttled to ~1/min)
+        liveActivity.recordUsage(session: engine.snapshot.recordedSessionPct, weekly: engine.snapshot.weeklyPct)   // Usage point (self-throttled to ~1/min)
         liveInterval = nextLiveInterval()          // gradual backoff
         scheduleLive()
     }
 
     private func rescheduleTimers() {
         fullTimer?.invalidate()
+        // The one place the "Refresh every" setting reaches the usage service's polling rate.
+        engine.autoFetchInterval = FetchSchedule.minInterval(refreshSeconds: settings.refreshSeconds)
         liveInterval = settings.smartRefresh
             ? (liveActivity.active ? min(activePeriod, Double(settings.refreshSeconds)) : Double(settings.refreshSeconds))
             : Double(settings.refreshSeconds)
@@ -3086,7 +3152,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         engine.fetchLive(force: true)
         engine.quickRefresh()
         liveActivity.recordBurn()                  // a manual refresh adds a Burn point too
-        liveActivity.recordUsage(session: engine.snapshot.sessionPct, weekly: engine.snapshot.weeklyPct)
+        liveActivity.recordUsage(session: engine.snapshot.recordedSessionPct, weekly: engine.snapshot.weeklyPct)
         rescheduleTimers()
     }
 }
@@ -3357,7 +3423,15 @@ if CommandLine.arguments.contains("--json") {
         // Null is the contract's "unknown"; the running app writes both into
         // ~/.config/burndown/burndown-live.json, which is what statuslines read.
         burnPerMin: nil,
-        sessionCost: nil
+        sessionCost: nil,
+        sessionLimitAbsent: (root?["session_limit_absent"] as? Bool) == true ? true : nil,
+        modelLimits: (root?["model_limits"] as? [[String: Any]]).flatMap { rows -> [BurndownLiveCap]? in
+            let caps = rows.compactMap { r -> BurndownLiveCap? in
+                guard let label = r["label"] as? String, let p = r["pct"] as? Double else { return nil }
+                return BurndownLiveCap(label: label, pct: min(1.0, max(0.0, p)), resetAt: r["resets_at"] as? String)
+            }
+            return caps.isEmpty ? nil : caps
+        }
     )
     print(encodeBurndownLive(live))
     exit(0)

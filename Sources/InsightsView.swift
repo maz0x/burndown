@@ -417,8 +417,11 @@ struct InsightsView: View {
         // and dividing one default by another produces a confident-looking "about N sessions left"
         // that is arithmetic on two placeholders. When nothing has been learned, the pacing line
         // keeps its verdict and drops the session count.
+        // And dropped on a plan with no session limit at all: "about 4 sessions left" would count
+        // five-hour sessions the plan does not have.
         let capsLearned = snap.sessionCap != UsageSnapshot.defaultSessionCap
             && snap.weeklyCap != UsageSnapshot.defaultWeeklyCap
+            && !snap.sessionLimitAbsent
         let sessionFraction = (capsLearned && snap.weeklyCap > 0)
             ? Double(snap.sessionCap) / Double(snap.weeklyCap) : 0
         return weeklyPacing(fractionUsed: snap.weeklyPct, ratePerHour: ratePerHour,
@@ -426,8 +429,15 @@ struct InsightsView: View {
     }
     private var modelMixLine: String? {
         let snap = engine.snapshot
-        let hr = [ModelHeadroom(family: "Opus", fractionUsed: snap.apiOpus?.pct ?? 0),
-                  ModelHeadroom(family: "Sonnet", fractionUsed: snap.apiSonnet?.pct ?? 0)]
+        // Every model the account really has a number for: the two older fields where the service
+        // still fills them, and every model it caps separately (Fable, today). Feeding only Opus
+        // and Sonnet meant this line could never appear on an account that reports neither.
+        var hr: [ModelHeadroom] = []
+        if let o = snap.apiOpus?.pct { hr.append(ModelHeadroom(family: "Opus", fractionUsed: o)) }
+        if let sn = snap.apiSonnet?.pct { hr.append(ModelHeadroom(family: "Sonnet", fractionUsed: sn)) }
+        for cap in snap.modelLimits where !hr.contains(where: { $0.family == cap.label }) {
+            hr.append(ModelHeadroom(family: cap.label, fractionUsed: cap.pct))
+        }
         let a = modelMixAdvice(hr)
         return a.shouldAdvise ? a.message : nil
     }

@@ -50,7 +50,7 @@ func qaSettingsPaneHeight(_ t: SettingsTab) -> CGFloat {
     case .data:       return 3594
     case .companions: return 436      // nothing to expand until a companion is switched on
     case .appearance: return open ? 1336 : 797
-    case .alerts:     return 1088     // measured with alerts switched on, which is how it is shot
+    case .alerts:     return 1135     // measured with alerts switched on, which is how it is shot
     }
 }
 
@@ -880,6 +880,7 @@ struct DetailCard: View {
                      chartHover: settings.chartHover,
                      plotH: kChartH + CardResize.clampB(settings.cardChartBoost),
                      truncation: settings.chatTruncation, records: records, explain: settings.popoverExplain,
+                     sessionLimitAbsent: snapshot.sessionLimitAbsent,
                      hiddenSeries: Set(settings.hiddenUsageSeries),
                      onToggleSeries: { key in
                          if let i = settings.hiddenUsageSeries.firstIndex(of: key) {
@@ -1422,6 +1423,8 @@ struct ChartSpanMenu: View {
     let kind: ChartKind
     @ObservedObject var settings: AppSettings
     let p: Palette
+    /// So VoiceOver names the chart the way its title row does on a plan with no session limit.
+    var sessionLimitAbsent = false
     @State private var hovering = false
 
     private var usesDays: Bool { kind.usesDays }
@@ -1485,7 +1488,7 @@ struct ChartSpanMenu: View {
         .animation(.easeInOut(duration: 0.15), value: hovering)
         .help(pinnedLabel.map { "How much of the \($0) window this chart shows. Pick a shorter one for a closer look at the recent part of the curve." }
               ?? "Time window for this chart. Charts follow Settings until you change one here.")
-        .accessibilityLabel("Time window for \(kind.label): \(current)")
+        .accessibilityLabel("Time window for \(kind.label(sessionLimitAbsent: sessionLimitAbsent)): \(current)")
     }
 }
 
@@ -1511,6 +1514,8 @@ struct MonitorChart: View {
     var truncation: ChatTruncation = .middle
     var records: [UsageRecord] = []   // per-call usage records (spike attribution on hover)
     var explain = false               // self-explanation layer: each chart's blurb under its title
+    /// Weekly-only plan: no session line, strip or title wording on the charts that would show one.
+    var sessionLimitAbsent = false
     /// The "Session + week %" legend switches, threaded through from settings so a hidden line
     /// stays hidden after the card is closed and rebuilt.
     var hiddenSeries: Set<String> = []
@@ -1586,7 +1591,7 @@ struct MonitorChart: View {
         return ChartCtx(burnSamples: live.burnSamples, usageSamples: live.usageSamples,
                  weeklySamples: live.weeklySamples, records: records,
                  sessionPct: sessionPct, weeklyPct: weeklyPct,
-                 sessionResetAt: sessionResetAt, weeklyResetAt: weeklyResetAt,
+                 sessionResetAt: sessionResetAt, sessionLimitAbsent: sessionLimitAbsent, weeklyResetAt: weeklyResetAt,
                  modelLimits: modelLimits,
                  accent: accent, secondary: secondary, p: p,
                  // While frozen the plot height is held at the value the freeze was taken from, to
@@ -1618,17 +1623,17 @@ struct MonitorChart: View {
                 if i > 0 { Spacer().frame(height: compact ? 5 : 7) }
                 if chrome {
                 HStack(spacing: 5) {
-                    Text(kind.label.uppercased())
+                    Text(kind.label(sessionLimitAbsent: sessionLimitAbsent).uppercased())
                         .font(.system(size: 9.5, weight: .semibold)).tracking(1.0)
                         .foregroundStyle(p.faint)
-                    InfoDot(text: kind.blurb, p: p, accent: accent, on: explain)
+                    InfoDot(text: kind.blurb(sessionLimitAbsent: sessionLimitAbsent), p: p, accent: accent, on: explain)
                     Spacer()
                     // Every chart with a time axis gets the control. For the two burndowns it trims
                     // the visible left edge of their fixed window rather than choosing a rolling
                     // one. The pace gauge and the model caps have no time axis at all, so they
                     // still get nothing: there would be no window for the control to mean.
                     if let settings, kind.usesTimeChip {
-                        ChartSpanMenu(kind: kind, settings: settings, p: p)
+                        ChartSpanMenu(kind: kind, settings: settings, p: p, sessionLimitAbsent: sessionLimitAbsent)
                     }
                     // One trailing slot on EVERY title row, the same width whether it holds
                     // anything or not. The gear used to sit inside the first row's HStack after
@@ -3127,12 +3132,12 @@ struct SettingsView: View {
                 Toggle("", isOn: $settings.usageAPI).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(coral)
             }
             div(p)
-            row("Refresh every", p, info: "How often to check your usage. One minute is plenty: the live burn animation rides a separate fast tracker, so a slower poll costs nothing visually and is gentler on the rate-limited usage API.") {
+            row("Refresh every", p, info: "How often to ask Claude for your limits. One minute is plenty: the live burn animation rides a separate fast tracker, so a slower poll costs nothing visually and is gentler on the rate-limited usage API. Claude is never asked more often than every 20 seconds, whatever is chosen here.") {
                 Segmented(options: [("2s", 2), ("5s", 5), ("10s", 10), ("30s", 30), ("1m", 60), ("5m", 300)],
                           selection: $settings.refreshSeconds, p: p)
             }
             div(p)
-            row("Smart refresh", p, info: "Speeds up to about 2 seconds while tokens are flowing, then settles back to your interval. Off keeps your chosen interval exactly.") {
+            row("Smart refresh", p, info: "Speeds the local readings (burn rate, tokens, cost) up to about 2 seconds while tokens are flowing, then settles back to your interval. Your limits are still fetched from Claude no more often than that interval. Off keeps your chosen interval exactly.") {
                 Toggle("", isOn: $settings.smartRefresh).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(coral)
             }
         }
@@ -3300,7 +3305,7 @@ struct SettingsView: View {
         }
         subhead("Ember line", p)
         card(p) {
-            row("Ember line", p, info: "A quiet ember line along a screen edge, on every display. The bright span is what remains of your 5-hour session; the glowing tip is the burn front, breathing faster as you burn hotter and turning red near the limit.") {
+            row("Ember line", p, info: "A quiet ember line along a screen edge, on every display. The bright span is what remains of your limit (the 5-hour session, or the week on a plan with no session limit); the glowing tip is the burn front, breathing faster as you burn hotter and turning red near the limit.") {
                 Toggle("", isOn: $settings.tideLine).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(coral)
             }
             if settings.tideLine {
@@ -3367,8 +3372,16 @@ struct SettingsView: View {
             // is worth a warning, how the warning arrives, and a way to prove it works.
             // Each trigger is one row: "Off" plus its levels inline; pick a level to enable it.
             subhead("Levels", p)
+            // A level that has nothing to watch says so, instead of offering a setting that can
+            // never fire. Decided from what the account is really reporting, and only once a live
+            // reading has arrived, so nothing is greyed out on a guess.
+            let snap = engine.snapshot
+            let noSession: String? = snap.sessionLimitAbsent ? "No session limit on this plan" : nil
+            let noCaps: String? = (snap.isLive && snap.modelLimits.isEmpty) ? "No model has its own limit on this plan" : nil
+            let noOpus: String? = (snap.isLive && snap.apiOpus == nil) ? "Not reported for your account" : nil
+            let noSonnet: String? = (snap.isLive && snap.apiSonnet == nil) ? "Not reported for your account" : nil
             card(p) {
-                row("Session", p, info: "Alert when the 5-hour session crosses this level, and again at 100%. Off disables it.") {
+                row("Session", p, info: "Alert when the 5-hour session crosses this level, and again at 100%. Off disables it.", locked: noSession) {
                     pctAlertControl(p, on: $settings.alertSession, level: $settings.alertSessionAt, levels: [0.75, 0.9, 0.95])
                 }
                 div(p)
@@ -3376,11 +3389,15 @@ struct SettingsView: View {
                     pctAlertControl(p, on: $settings.alertWeekly, level: $settings.alertWeeklyAt, levels: [0.6, 0.9, 0.95])
                 }
                 div(p)
-                row("Opus (weekly)", p, info: "Alert when Opus weekly usage crosses this level.") {
+                row("Model limits", p, info: "Alert when a model that has its own weekly limit (Fable, for example) crosses this level, and again at 100%. Covers every model your plan caps separately.", locked: noCaps) {
+                    pctAlertControl(p, on: $settings.alertModelCaps, level: $settings.alertModelCapsAt, levels: [0.75, 0.9, 0.95])
+                }
+                div(p)
+                row("Opus (weekly)", p, info: "Alert when Opus weekly usage crosses this level. Claude only reports this number for some accounts; a model with its own limit is covered by Model limits above.", locked: noOpus) {
                     pctAlertControl(p, on: $settings.alertOpus, level: $settings.alertOpusAt, levels: [0.75, 0.9, 0.95])
                 }
                 div(p)
-                row("Sonnet (weekly)", p, info: "Alert when Sonnet weekly usage crosses this level.") {
+                row("Sonnet (weekly)", p, info: "Alert when Sonnet weekly usage crosses this level. Claude only reports this number for some accounts; a model with its own limit is covered by Model limits above.", locked: noSonnet) {
                     pctAlertControl(p, on: $settings.alertSonnet, level: $settings.alertSonnetAt, levels: [0.75, 0.9, 0.95])
                 }
                 div(p)
@@ -3390,7 +3407,7 @@ struct SettingsView: View {
                                                  set: { v in if v < 0 { settings.alertBurn = false } else { settings.alertBurn = true; settings.alertBurnAt = v } }), p: p)
                 }
                 div(p)
-                row("Forecast", p, info: "Alert when you're within this much time of the session limit at the current pace.") {
+                row("Forecast", p, info: "Alert when you're within this much time of the session limit at the current pace.", locked: noSession) {
                     Segmented(options: [("Off", -1.0), ("30m", 30), ("1h", 60), ("2h", 120)],
                               selection: Binding(get: { settings.alertForecast ? settings.alertForecastMin : -1 },
                                                  set: { v in if v < 0 { settings.alertForecast = false } else { settings.alertForecast = true; settings.alertForecastMin = v } }), p: p)
@@ -3406,7 +3423,7 @@ struct SettingsView: View {
                     Toggle("", isOn: $settings.alertRunaway).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(coral)
                 }
                 div(p)
-                row("Window reset", p, info: "Notify when a fresh session or weekly window starts.") {
+                row("Window reset", p, info: engine.snapshot.sessionLimitAbsent ? "Notify when a fresh weekly window starts." : "Notify when a fresh session or weekly window starts.") {
                     Toggle("", isOn: $settings.alertOnReset).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(coral)
                 }
                 div(p)
@@ -3462,16 +3479,19 @@ struct SettingsView: View {
 
     @ViewBuilder private func menuBarPane(_ p: Palette) -> some View {
         header("Menu Bar", p)
+        // A plan with no session limit always shows the week (see updateStatusItem), so the picker
+        // is drawn on Weekly and locked rather than left holding a choice the menu bar ignores.
+        let weeklyOnly = engine.snapshot.sessionLimitAbsent
         card(p) {
-            row("Menu bar shows", p) {
+            row("Menu bar shows", p, locked: weeklyOnly ? "This plan has only the weekly limit" : nil) {
                 Segmented(options: [("Session", MenuBarShow.session), ("Weekly", .weekly), ("Both", .both)],
-                          selection: $settings.menuBarShow, p: p)
+                          selection: weeklyOnly ? .constant(MenuBarShow.weekly) : $settings.menuBarShow, p: p)
             }
         }
         // The curated Core set is the visible layer; the rest of the library lives one click
         // down in "All styles". Nothing is cut, and the drawer opens itself when the style in
         // use is one of the deeper ones, so a choice already made is never hidden.
-        let show = settings.menuBarShow
+        let show: MenuBarShow = weeklyOnly ? .weekly : settings.menuBarShow
         let core = MenuBarStyle.allCases.filter { $0.isCore && !$0.isRetired && $0.supports(show) }
         HStack(spacing: 6) {
             subhead("Style", p)
@@ -3493,8 +3513,8 @@ struct SettingsView: View {
             }
         }
         AdvancedCard(title: "Digits and format", p: p, spacing: 0) {
-            row("Number format", p, info: "How the menu-bar number reads: with a percent sign, bare, or S/W-labeled.") {
-                Segmented(options: MenuNumberFormat.allCases.map { ($0.label, $0) }, selection: $settings.menuNumberFormat, p: p)
+            row("Number format", p, info: "How the menu-bar number reads: with a percent sign, or bare.") {
+                Segmented(options: MenuNumberFormat.offered.map { ($0.label, $0) }, selection: $settings.menuNumberFormat, p: p)
             }
             div(p)
             row("Percentage", p, info: "Show the percent number. Off makes the Flame style flame-only (the glyph carries the tier).") {
@@ -3505,7 +3525,8 @@ struct SettingsView: View {
                 Segmented(options: [("Regular", false), ("Semibold", true)], selection: $settings.menuBoldDigits, p: p)
             }
             div(p)
-            row("Time to reset", p, info: "Append a short reset countdown to the fire styles (Hearth, Burnfront, Flame).") {
+            row("Time to reset", p, info: "Append a short reset countdown to the fire styles (Hearth, Burnfront, Flame).",
+                locked: settings.menuBarStyle.supportsTimeToReset ? nil : "Only the Hearth, Burnfront and Flame icons show it") {
                 Toggle("", isOn: $settings.menuTimeToReset).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(Color(hex: settings.accentHex))
             }
         }
@@ -3738,7 +3759,7 @@ struct SettingsView: View {
         }
         subhead("Numbers", p)
         card(p) {
-            row("Number animation", p, info: "How numbers transition when they change (session %, cost, tokens). The chart is unaffected. Tap Shuffle below to preview.") {
+            row("Number animation", p, info: "How numbers transition when they change (percentages, cost, tokens). The chart is unaffected. Tap Shuffle below to preview.") {
                 DropPicker(options: NumberStyle.allCases.map { ($0.label, $0) }, selection: $settings.numberStyle, p: p)
             }
             div(p)
@@ -3767,17 +3788,22 @@ struct SettingsView: View {
         // Per-element visibility: grouped eye toggles. Each hides one popover element and
         // the card content-hugs to a shorter height with no gaps.
         subhead("Session", p)
+        // A plan with no session limit draws no Session section on the card, so nothing in this
+        // group can change anything. Each row says so instead of offering a switch that is ignored.
+        let noSession: String? = engine.snapshot.sessionLimitAbsent ? "No session limit on this plan" : nil
         card(p) {
-            row("Estimated cost", p, info: "Show the estimated pay-as-you-go API price of this session's tokens (what it would cost without a subscription) on the Session line. An estimate, not a bill.") {
+            row("Estimated cost", p, info: "Show the estimated pay-as-you-go API price of this session's tokens (what it would cost without a subscription) on the Session line. An estimate, not a bill.", locked: noSession) {
                 Toggle("", isOn: $settings.showCost).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(coral)
             }
             div(p)
-            row("Token rate", p, info: "Show the live tokens-per-minute burn rate beside the cost on the Session line.") {
+            row("Token rate", p, info: "Show the live tokens-per-minute burn rate beside the cost on the Session line.", locked: noSession) {
                 Toggle("", isOn: $settings.showTokens).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(coral)
             }
             div(p)
-            visRow("Time ring", $settings.showTimeRing, "The reset-countdown ring beside the session number.", p, coral); div(p)
-            visRow("Forecast line", $settings.showForecastLine, "The time-to-limit / status line under the session number.", p, coral)
+            visRow("Time ring", $settings.showTimeRing, "The reset-countdown ring beside the session number.", p, coral,
+                   locked: noSession); div(p)
+            visRow("Forecast line", $settings.showForecastLine, "The time-to-limit / status line under the session number.", p, coral,
+                   locked: noSession)
         }
         subhead("This week", p)
         card(p) {
@@ -3809,8 +3835,8 @@ struct SettingsView: View {
     }
 
     // One eye/switch visibility row for the Popover pane.
-    @ViewBuilder private func visRow(_ label: String, _ bind: Binding<Bool>, _ info: String, _ p: Palette, _ coral: Color) -> some View {
-        row(label, p, info: info) {
+    @ViewBuilder private func visRow(_ label: String, _ bind: Binding<Bool>, _ info: String, _ p: Palette, _ coral: Color, locked: String? = nil) -> some View {
+        row(label, p, info: info, locked: locked) {
             Toggle("", isOn: bind).labelsHidden().toggleStyle(.switch).controlSize(.mini).tint(coral)
         }
     }
@@ -3823,7 +3849,9 @@ struct SettingsView: View {
             return ChartCtx(burnSamples: live.burnSamples, usageSamples: live.usageSamples,
                             weeklySamples: live.weeklySamples, records: engine.records,
                             sessionPct: engine.snapshot.sessionPct, weeklyPct: engine.snapshot.weeklyPct,
-                            sessionResetAt: engine.snapshot.sessionResetAt, weeklyResetAt: engine.snapshot.weeklyResetAt,
+                            sessionResetAt: engine.snapshot.sessionResetAt,
+                            sessionLimitAbsent: engine.snapshot.sessionLimitAbsent,
+                            weeklyResetAt: engine.snapshot.weeklyResetAt,
                             modelLimits: engine.snapshot.modelLimits,
                             accent: accent, secondary: kSlate, p: p, style: settings.chartStyle,
                             window: settings.burnSpan.seconds, days: settings.chartDays, hover: false,
@@ -3839,6 +3867,10 @@ struct SettingsView: View {
                                       ScopedLimit(label: "Opus", pct: 0.18, resetAt: nil, active: false, severity: "normal")],
                         accent: accent, secondary: kSlate, p: p, style: settings.chartStyle,
                         window: 6 * 3600, days: 14, hover: false, currentRate: 54_000)
+            // The sample numbers have a session, the card on a weekly-only account does not. The
+            // gallery is where the card's charts are chosen, so it draws and names them the way the
+            // card will, not the way the sample data could.
+            .with(sessionLimitAbsent: engine.snapshot.sessionLimitAbsent)
     }
 
     private static let kMaxPopoverCharts = 6
@@ -3852,18 +3884,24 @@ struct SettingsView: View {
         // nothing about it: the plus sign still invited a click and the click did nothing at all.
         // A control that refuses silently reads as broken, so it says why instead.
         let atLimit = !on && settings.chartKinds.count >= Self.kMaxPopoverCharts
+        // The card never draws the session burndown on a plan with no session limit (chartSection
+        // filters it out), so adding it here would be a choice with no effect. It can still be
+        // removed if it was chosen before the plan changed. This is about the PLAN, so it holds
+        // for the sample preview too: the sample has a session, the card on this account does not.
+        let noSession = k == .sessionBurndown && engine.snapshot.sessionLimitAbsent
         return Button {
             if let i = settings.chartKinds.firstIndex(of: k) {
                 guard settings.chartKinds.count > 1 else { return }   // the popover always shows at least one
                 settings.chartKinds.remove(at: i)
             } else {
+                guard !noSession else { return }
                 guard settings.chartKinds.count < Self.kMaxPopoverCharts else { return }
                 settings.chartKinds.append(k)
             }
         } label: {
             VStack(alignment: .leading, spacing: 6) {
                 HStack(spacing: 6) {
-                    Text(k.label).font(.system(size: 12, weight: .semibold)).foregroundStyle(p.ink)
+                    Text(k.label(sessionLimitAbsent: ctx.sessionLimitAbsent)).font(.system(size: 12, weight: .semibold)).foregroundStyle(p.ink)
                         .lineLimit(1).minimumScaleFactor(0.85)
                     Spacer(minLength: 4)
                     if let i = slot {
@@ -3874,11 +3912,13 @@ struct SettingsView: View {
                             .background(Circle().fill(coral))
                             .help("Shown in the popover, position \(i + 1). Click to remove.")
                     } else {
-                        Image(systemName: atLimit ? "nosign" : "plus")
+                        Image(systemName: atLimit || noSession ? "nosign" : "plus")
                             .font(.system(size: 9, weight: .semibold)).foregroundStyle(p.faint)
                             .frame(width: 16, height: 16)
                             .background(Circle().stroke(p.divider, lineWidth: 1))
-                            .help(atLimit
+                            .help(noSession
+                                  ? "Your plan has no session limit, so the card has nothing to draw here."
+                                  : atLimit
                                   ? "The card is showing the most charts it can (\(Self.kMaxPopoverCharts)). Remove one to add this."
                                   : "Click to show this chart in the popover.")
                     }
@@ -3891,7 +3931,8 @@ struct SettingsView: View {
                     .padding(.top, 6)   // room for top axis labels and the avg annotation
                     .frame(height: 104, alignment: .top)
                     .clipped()
-                Text(k.blurb)
+                Text(noSession ? "Your plan has no session limit, so the card leaves this chart out."
+                               : k.blurb(sessionLimitAbsent: ctx.sessionLimitAbsent))
                     // Was 9.5pt in `faint`, which is the palette's lowest-contrast tone: too pale
                     // to read comfortably at that size, and the audit in docs/contrast-audit.csv
                     // shows it failing 4.5:1 outright. `sub` at 10 is the informative-text pairing.
@@ -3904,16 +3945,16 @@ struct SettingsView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             .padding(10)
-            .opacity(atLimit ? 0.55 : 1)
+            .opacity(atLimit || (noSession && !on) ? 0.55 : 1)
             .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(p.track.opacity(on ? 0.55 : 0.3)))
             .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(on ? coral.opacity(0.75) : p.divider, lineWidth: on ? 1.5 : 0.5))
             .contentShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
         .buttonStyle(.plain).focusable(false)
-        .accessibilityLabel(k.label)
-        .accessibilityValue(on ? "Shown in the popover" : "Not shown")
-        .accessibilityHint(k.blurb)
+        .accessibilityLabel(k.label(sessionLimitAbsent: ctx.sessionLimitAbsent))
+        .accessibilityValue(noSession ? "Not drawn: your plan has no session limit" : on ? "Shown in the popover" : "Not shown")
+        .accessibilityHint(k.blurb(sessionLimitAbsent: ctx.sessionLimitAbsent))
     }
 
     @ViewBuilder private func dataPane(_ p: Palette) -> some View {
@@ -3987,11 +4028,11 @@ struct SettingsView: View {
             .background(RoundedRectangle(cornerRadius: 11).fill(p.track.opacity(0.45)))
             .overlay(RoundedRectangle(cornerRadius: 11).stroke(p.divider, lineWidth: 0.5))
     }
-    private func row<C: View>(_ title: String, _ p: Palette, @ViewBuilder _ control: @escaping () -> C) -> some View {
-        SettingRow(title: title, accent: Color(hex: settings.accentHex), p: p, control: control)
+    private func row<C: View>(_ title: String, _ p: Palette, locked: String? = nil, @ViewBuilder _ control: @escaping () -> C) -> some View {
+        SettingRow(title: title, lockedReason: locked, accent: Color(hex: settings.accentHex), p: p, control: control)
     }
-    private func row<C: View>(_ title: String, _ p: Palette, info: String, @ViewBuilder _ control: @escaping () -> C) -> some View {
-        SettingRow(title: title, info: info, accent: Color(hex: settings.accentHex), p: p, control: control)
+    private func row<C: View>(_ title: String, _ p: Palette, info: String, locked: String? = nil, @ViewBuilder _ control: @escaping () -> C) -> some View {
+        SettingRow(title: title, info: info, lockedReason: locked, accent: Color(hex: settings.accentHex), p: p, control: control)
     }
     private func div(_ p: Palette) -> some View { Rectangle().fill(p.divider).frame(height: 1) }
 
@@ -4083,13 +4124,21 @@ struct SettingsView: View {
             ForEach(settings.sectionOrder, id: \.self) { raw in
                 if let sec = CardSection(rawValue: raw) {
                     let hidden = settings.isHidden(sec)
+                    // The card draws no Session section on a plan with no session limit, whatever
+                    // the eye says. The row stays (its place in the order still matters if the plan
+                    // changes) and says why it is not on the card.
+                    let absent = sec == .session && engine.snapshot.sessionLimitAbsent
                     HStack(spacing: 10) {
                         Image(systemName: "line.3.horizontal").font(.system(size: 11)).foregroundStyle(p.faint)
-                        Text(sec.label).font(.system(size: 13)).foregroundStyle(hidden ? p.faint : p.ink)
+                        Text(sec.label).font(.system(size: 13)).foregroundStyle(hidden || absent ? p.faint : p.ink)
+                        if absent {
+                            Text("No session limit on this plan").font(.system(size: 11.5)).foregroundStyle(p.sub)
+                        }
                         Spacer()
                         Button { settings.toggleHidden(sec) } label: {
                             Image(systemName: hidden ? "eye.slash.circle" : "eye.circle.fill").font(.system(size: 16))
-                        }.buttonStyle(.plain).foregroundStyle(hidden ? p.faint : coral)
+                        }.buttonStyle(.plain).foregroundStyle(hidden || absent ? p.faint : coral)
+                            .disabled(absent).opacity(absent ? 0.45 : 1)
                     }
                     .listRowInsets(EdgeInsets(top: 5, leading: 10, bottom: 5, trailing: 10))
                     .listRowBackground(Color.clear)
@@ -4132,19 +4181,22 @@ struct SettingsView: View {
             }
             g.tokText = "≈" + fmtTok(s.sessionFresh)
             g.needle = min(1, live.rate / LiveActivity.RATE_FULL); g.active = live.active; g.rollPhase = 1
-            g.hasSecondary = (settings.menuBarShow == .both)
+            g.hasSecondary = (!s.sessionLimitAbsent && settings.menuBarShow == .both)
             if let r = s.weeklyResetAt { g.weekLeftText = weekLeftString(r) }
             g.spark = live.history.isEmpty ? [0.1, 0.2, 0.15, 0.3, 0.25, 0.4] : live.history
             g.accent = accent; g.beacon = 1   // the chip shows Beacon mid-wink; resting it is just system ink
             return g
         }
-        switch settings.menuBarShow {
+        // The sample chips show what this account's menu bar can show: the week alone on a plan
+        // with no session limit, whatever the (locked) picker above was last left on.
+        let sampleShow: MenuBarShow = engine.snapshot.sessionLimitAbsent ? .weekly : settings.menuBarShow
+        switch sampleShow {
         case .session: g = GlyphData(pct: 0.46, pctText: "46%", primary: uc(0.46), secFrac: 0.9, secText: "4h31m", secondary: sec, pLabel: "", sLabel: "")
         case .weekly:  g = GlyphData(pct: 0.13, pctText: "13%", primary: uc(0.13), secFrac: 0.6, secText: "3d", secondary: sec, pLabel: "", sLabel: "")
         case .both:    g = GlyphData(pct: 0.46, pctText: "46%", primary: uc(0.46), secFrac: 0.13, secText: "13%", secondary: sec, pLabel: "S", sLabel: "W")
         }
         g.tokText = "≈3.0M"; g.needle = 0.62; g.active = true; g.rollPhase = 1
-        g.hasSecondary = (settings.menuBarShow == .both)
+        g.hasSecondary = (sampleShow == .both)
         g.weekLeftText = "3d 4h"
         g.spark = [0.05, 0.12, 0.08, 0.22, 0.18, 0.4, 0.32, 0.55, 0.6, 0.5, 0.78, 0.7]
         g.accent = accent; g.beacon = 1   // the chip shows Beacon mid-wink; resting it is just system ink
@@ -4196,6 +4248,10 @@ struct SettingRow<C: View>: View {
     let title: String
     var desc: String? = nil
     var info: String? = nil
+    /// Set when the switch cannot do anything right now (a style or plan it does not apply to).
+    /// The reason takes the `desc` line, the title quietens and the control is dimmed and disabled,
+    /// so the row says why it is inert instead of silently doing nothing. Keep it to one line.
+    var lockedReason: String? = nil
     var accent: Color = Color(hex: kDefaultAccent)
     let p: Palette
     @ViewBuilder let control: () -> C
@@ -4204,15 +4260,17 @@ struct SettingRow<C: View>: View {
         HStack(alignment: .center, spacing: 6) {
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: 5) {
-                    Text(title).font(.system(size: 13.5, weight: .medium)).foregroundStyle(p.ink)
+                    Text(title).font(.system(size: 13.5, weight: .medium)).foregroundStyle(lockedReason == nil ? p.ink : p.sub)
                     if let info { InfoDot(text: info, p: p, accent: accent) }
                 }
-                if let desc {
-                    Text(desc).font(.system(size: 11.5)).foregroundStyle(p.sub).fixedSize(horizontal: false, vertical: true)
+                if let line = lockedReason ?? desc {
+                    Text(line).font(.system(size: 11.5)).foregroundStyle(p.sub).fixedSize(horizontal: false, vertical: true)
                 }
             }
             Spacer(minLength: 8)
             control().environment(\.settingRowTitle, title)
+                .disabled(lockedReason != nil)
+                .opacity(lockedReason != nil ? 0.45 : 1)
         }
         .frame(minHeight: 46)
         .contentShape(Rectangle())

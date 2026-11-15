@@ -130,9 +130,9 @@ totals:
 - **Weekly pacing.** Plain-language projections like "At this pace you
   reach the weekly cap in ~14h, before the reset" or "On pace to finish
   the week with headroom, about 3 sessions left".
-- **Model-mix advice.** When Opus crosses 75% of its weekly cap, a gentle
-  nudge: "You are at 80% of your Opus weekly limit, shift routine work to
-  Sonnet". Quiet otherwise.
+- **Model-mix advice.** When a model with its own weekly cap crosses 75%
+  of it, a gentle nudge: "You are at 80% of your Opus weekly limit, shift
+  routine work to Sonnet". Quiet otherwise.
 - **Pace gauge.** A chart of your current pace against the pace that
   would last exactly to the reset. Past 1.0x you are overspending.
 
@@ -140,8 +140,10 @@ totals:
 
 Everything here is off by default and opt-in per alert.
 
-- **Thresholds** for session, weekly, Opus, and Sonnet, each at your own
-  percentage, plus window-reset notices.
+- **Thresholds** for session, weekly, and every model your plan caps
+  separately (Fable, for example), each at your own percentage, plus
+  window-reset notices. A threshold your plan has nothing to measure
+  against is greyed out and says why.
 - **The forecast alert** fires when the projected time to your session
   limit drops under a threshold you set: "about 25 min to your session
   limit", while there is still time to wrap up.
@@ -335,12 +337,12 @@ backed up once before the first install, and Remove Terminal Gauge
 deletes only the statusline entry Burndown added, leaving any statusline
 you wrote yourself untouched.
 
-The line is yours to compose. Six segments exist and one environment
+The line is yours to compose. Seven segments exist and one environment
 variable picks and orders them; a second strips the line down for
 terminals without emoji or block glyphs:
 
 ```bash
-export BURNDOWN_STATUSLINE=bar,pct,resets,week,cost,rate  # default: bar,pct,resets,week
+export BURNDOWN_STATUSLINE=bar,pct,resets,week,caps,cost,rate  # default: bar,pct,resets,week
 export BURNDOWN_ASCII=1   # plain * and # / - instead of the flame and block cells
 ```
 
@@ -350,9 +352,11 @@ rewritten on every refresh, so Raycast scripts, Stream Deck buttons, and
 custom statuslines can read it with no process to spawn. Both speak the
 same documented, versioned contract: `schemaVersion` (bumped only on a
 breaking change), your plan, session and weekly usage as fractions
-between 0 and 1, per-model fractions where your plan has them, both
-reset times in ISO 8601, and, while the app is running, the current burn
-rate and session cost. Keys are sorted and
+between 0 and 1, every model your plan caps separately (`modelLimits`),
+both reset times in ISO 8601, and, while the app is running, the current
+burn rate and session cost. On a plan with a weekly limit and no
+five-hour session, `sessionLimitAbsent` is `true` and the gauge shows the
+week instead. Keys are sorted and
 the output is byte-stable, so it diffs and caches cleanly; a missing
 optional field means "unknown", never zero. The contract has its own
 headless test suite, so it will not drift under you.
@@ -612,7 +616,7 @@ about it, or say what you would change in
 ## Development
 
 - `bash build.sh`, then look for `✓ Built`.
-- Twenty-one headless test suites: `run-tests.sh` plus `run-*-tests.sh`
+- Twenty-three headless test suites: `run-tests.sh` plus `run-*-tests.sh`
   (forecast, parsing, alerts, formats, chart data, pricing, aggregation,
   budget, runaway, pacing, model mix, export, recap, live contract, burn
   clock, update logic, contrast, card resize, scan cache, titles). `run-update-e2e.sh` additionally builds an

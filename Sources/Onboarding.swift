@@ -162,7 +162,7 @@ struct WelcomeView: View {
         VStack(alignment: .leading, spacing: 14) {
             pageTitle("Find your way", p)
             tourRow(p, icon: "flame.fill", tint: p.session,
-                    text: "The menu bar flame burns with your session. Click it for the full picture.")
+                    text: "The menu bar flame burns with your usage. Click it for the full picture.")
             tourRow(p, icon: "questionmark.circle", tint: p.sub,
                     text: "Everything explains itself: click any of the small info marks. In the Settings and Account windows you can hover a label as well. Plain English, no manual.")
             tourRow(p, icon: "chart.bar", tint: p.sub,

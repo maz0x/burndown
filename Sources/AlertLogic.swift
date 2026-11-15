@@ -45,6 +45,30 @@ func alertPctEval(pct: Double, reset: Date?, base: Int, repeatMin: Double, now: 
     return .none
 }
 
+// MARK: - Per-model caps: the same threshold rule, one state per cap.
+
+/// A model with its own weekly limit, as the usage service reports it (Fable, today).
+struct AlertCap { let label: String; let pct: Double; let reset: Date? }
+
+/// Run the threshold rule over every per-model cap, each against its OWN state, keyed by label.
+///
+/// The alerts used to know two models by name, Opus and Sonnet, read from two fields the service
+/// has stopped sending. The cap an account really has now arrives as a list, so the rule runs over
+/// the list: a model nobody had heard of when this was written gets its alert without a release.
+/// A state is kept when its cap is missing from one reading, so a cap that drops out of a single
+/// answer and comes back does not announce the same level twice.
+func alertCapsEval(caps: [AlertCap], base: Int, repeatMin: Double, now: Date,
+                   states: inout [String: AlertPctState]) -> [(label: String, action: AlertPctAction)] {
+    var out: [(label: String, action: AlertPctAction)] = []
+    for cap in caps {
+        var st = states[cap.label] ?? AlertPctState()
+        let action = alertPctEval(pct: cap.pct, reset: cap.reset, base: base, repeatMin: repeatMin, now: now, state: &st)
+        states[cap.label] = st
+        if action != .none { out.append((cap.label, action)) }
+    }
+    return out
+}
+
 // MARK: - Burn-rate spike: fire once past the threshold, re-arm only after falling well below (hysteresis).
 
 /// Returns true exactly when a burn alert should fire; flips `armed` per the hysteresis rule

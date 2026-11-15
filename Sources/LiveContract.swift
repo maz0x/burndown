@@ -11,6 +11,19 @@ import Foundation
 //   date strings (generatedAt, sessionResetAt, weeklyResetAt) are ISO8601.
 //   optional fields are omitted only when nil per the Codable default; consumers should treat a missing
 //   optional as "unknown", not zero.
+//   sessionLimitAbsent is present (and true) only on a plan with a weekly limit and no five-hour
+//   session. sessionPct is 0 and sessionResetAt is missing there, and without this field a consumer
+//   could not tell that from a real 0%: read weeklyPct as the one limit instead.
+//   modelLimits lists every model the plan caps separately (Fable, for example). opusPct and
+//   sonnetPct are the older per-model fields; the service only fills them for some accounts.
+//   Both fields are additions to schema 1: a consumer written before them keeps working.
+
+/// One model with its own weekly cap, as the contract reports it.
+struct BurndownLiveCap: Codable, Equatable {
+    let label: String
+    let pct: Double
+    let resetAt: String?
+}
 
 /// The documented, versioned snapshot of Burndown's live numbers that the JSON API emits.
 struct BurndownLive: Codable, Equatable {
@@ -29,6 +42,10 @@ struct BurndownLive: Codable, Equatable {
     /// sessionCost does not break a consumer written against the original shape.
     let burnPerMin: Double?
     let sessionCost: Double?
+    /// True on a plan with no five-hour session limit; omitted on every other plan.
+    var sessionLimitAbsent: Bool? = nil
+    /// The models this plan caps separately; omitted when there are none.
+    var modelLimits: [BurndownLiveCap]? = nil
 }
 
 /// Encode a BurndownLive to a pretty-printed, sorted-keys UTF8 JSON string. Sorted keys make the output

@@ -24,7 +24,7 @@ insights.png               2472x3061  display width 1236
 menubar-styles.png         1812x2032  display width 906
 popover-dark.png           528x1068  display width 264
 popover.png                528x1068  display width 264
-settings-alerts.png        1440x2360  display width 720
+settings-alerts.png        1440x2454  display width 720
 settings-appearance-open.png 1440x2856  display width 720
 settings-appearance.png    1440x1778  display width 720
 settings-companions.png    1440x1056  display width 720
@@ -33,6 +33,6 @@ settings-menubar-open.png  1440x2704  display width 720
 settings-menubar.png       1440x1556  display width 720
 settings-popover-open.png  1440x3112  display width 720
 settings-popover.png       1440x2784  display width 720
-themes.png                 1470x2326  display width 735
+themes.png                 1470x2327  display width 735
 welcome.png                2968x1036  display width 1484
 widgets.png                780x720  display width 390

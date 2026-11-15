@@ -134,6 +134,9 @@ struct UsageSnapshot {
     // The menu bar, the ember line, the burn clock and the badge key on these, so a plan with
     // weekly limits only reads its week everywhere the session used to be, and a plan with both
     // reads exactly what it always did.
+    /// The session reading worth keeping in the history: nil on a plan with no session limit,
+    /// where `sessionPct` is a placeholder 0 rather than a measurement.
+    var recordedSessionPct: Double? { sessionLimitAbsent ? nil : sessionPct }
     var primaryPct: Double { sessionLimitAbsent ? weeklyPct : sessionPct }
     var primaryResetAt: Date? { sessionLimitAbsent ? weeklyResetAt : sessionResetAt }
     var primaryOver: Bool { sessionLimitAbsent ? weeklyOver : over }

@@ -21,7 +21,7 @@ struct ModelMixAdvice {
     let recommendedFamily: String
 }
 
-/// Advise conserving Opus when it is the most-used family and has crossed adviseThreshold.
+/// Advise conserving the tightest capped model when it has crossed adviseThreshold.
 /// tightest = the headroom with the highest fractionUsed (ties broken by family ascending for
 /// determinism). We only nudge when that tightest family is Opus, since Opus is the tighter-capped
 /// model worth conserving; for any other tightest family we stay quiet. Empty input is safe:
@@ -33,12 +33,17 @@ func modelMixAdvice(_ headrooms: [ModelHeadroom], adviseThreshold: Double = 0.75
         return ModelMixAdvice(shouldAdvise: false, tightestFamily: "", message: "", recommendedFamily: "")
     }
 
-    let advise = tightest.fractionUsed >= adviseThreshold && tightest.family == "Opus"
-    let recommended = advise ? "Sonnet" : tightest.family
+    // Sonnet is the one family that never prompts a nudge: it is the model routine work is sent
+    // TO. Opus keeps its own sentence. Any other family here is a model the plan caps separately
+    // (Fable, today), and running low on it is worth saying even though this file cannot know
+    // which model is the cheaper stand-in, so it says "another model" rather than naming one.
+    let advise = tightest.fractionUsed >= adviseThreshold && tightest.family != "Sonnet"
+    let isOpus = tightest.family == "Opus"
+    let recommended = advise ? (isOpus ? "Sonnet" : "") : tightest.family
     let percent = Int((tightest.fractionUsed * 100).rounded())
-    let message = advise
-        ? "You are at \(percent)% of your Opus weekly limit, shift routine work to Sonnet"
-        : ""
+    let message = !advise ? ""
+        : isOpus ? "You are at \(percent)% of your Opus weekly limit, shift routine work to Sonnet"
+        : "You are at \(percent)% of your \(tightest.family) weekly limit, shift routine work to another model"
 
     return ModelMixAdvice(
         shouldAdvise: advise,

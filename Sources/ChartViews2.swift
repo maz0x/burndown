@@ -97,7 +97,8 @@ struct PaceGaugeChart: View {
                 chartPlaceholder("Waiting for a full window", p, height: ctx.plotH)
             } else {
                 VStack(alignment: .leading, spacing: 7) {
-                    paceStrip("Session", rS, p)
+                    // A weekly-only plan has no session window, so there is no strip to draw.
+                    if !ctx.sessionLimitAbsent { paceStrip("Session", rS, p) }
                     paceStrip("Week", rW, p)
                 }
                 .frame(height: ctx.plotH, alignment: .top)

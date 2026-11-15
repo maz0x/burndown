@@ -127,6 +127,10 @@ enum MenuNumberFormat: String, CaseIterable, Identifiable {
     case sign, bare, labeled
     var id: String { rawValue }
     var label: String { switch self { case .sign: return "46%"; case .bare: return "46"; case .labeled: return "S46 W13" } }
+    /// What the picker offers. `labeled` ("S46 W13") was on offer from the first build and no
+    /// glyph ever drew the letters, so choosing it gave the same menu bar as the percent sign.
+    /// The case stays so a stored choice still decodes; it reads as `sign`, which is what it drew.
+    static let offered: [MenuNumberFormat] = [.sign, .bare]
 }
 
 // FLAME ADJUST: a deliberate deviation from the original spark policy. "Redline" is that
@@ -295,7 +299,7 @@ enum LiveColor: String, CaseIterable, Identifiable {
     }
 }
 let kAppName = "Burndown"           // app name (floating window title + About). Tagline: "usage monitor for Claude"
-let kAppVersion = "0.9.10"          // bump on release builds; 1.0 is reserved for Developer ID signing + multi-provider
+let kAppVersion = "0.9.11"          // bump on release builds; 1.0 is reserved for Developer ID signing + multi-provider
 let kMinWindowAlpha = 0.45          // most see-through the windows go at 100% transparency (keeps text legible)
 
 // ── When the card stops having a surface (see AppSettings.surfaceIsVisible) ──
@@ -429,6 +433,12 @@ enum MenuBarStyle: String, CaseIterable, Identifiable {
         if bothOnly { return .both }
         if isLive { return .live }
         switch self { case .stack, .mini: return .text; default: return .gauge }
+    }
+    /// Whether the "Time to reset" switch can change this style's menu bar text. Only the
+    /// burning-number styles append the countdown. The glyph builder and the Settings row both
+    /// ask here, so the row can never offer a switch the glyph would ignore.
+    var supportsTimeToReset: Bool {
+        switch self { case .smolder, .burnfront, .kiln, .flame: return true; default: return false }
     }
     /// The curated core set the design surfaces first: one strong, legible template per family.
     /// Beacon joined 2026-07-31 (it became the daily driver); nothing was demoted to make room.
@@ -1005,6 +1015,10 @@ final class AppSettings: ObservableObject {
     @Published var alertOpusAt: Double { didSet { d.set(alertOpusAt, forKey: "alertOpusAt") } }
     @Published var alertSonnet: Bool { didSet { d.set(alertSonnet, forKey: "alertSonnet") } }
     @Published var alertSonnetAt: Double { didSet { d.set(alertSonnetAt, forKey: "alertSonnetAt") } }
+    /// Alert on any model that has its own weekly cap (the service's `limits[]`: Fable today).
+    /// On by default like Session and Weekly, because it is a limit that stops work the same way.
+    @Published var alertModelCaps: Bool { didSet { d.set(alertModelCaps, forKey: "alertModelCaps") } }
+    @Published var alertModelCapsAt: Double { didSet { d.set(alertModelCapsAt, forKey: "alertModelCapsAt") } }
     @Published var alertForecast: Bool { didSet { d.set(alertForecast, forKey: "alertForecast") } }
     @Published var alertForecastMin: Double { didSet { d.set(alertForecastMin, forKey: "alertForecastMin") } }   // alert when ≤ this many minutes to the session limit
     /// Daily background update check (the check itself is a version lookup; nothing is sent).
@@ -1176,7 +1190,8 @@ final class AppSettings: ObservableObject {
         floatingChrome = (d.object(forKey: "floatingChrome") as? Bool) ?? false   // clean borderless card by default
         glassMaterial = GlassMaterial(rawValue: d.string(forKey: "glassMaterial") ?? "") ?? .popover
         numberStyle = NumberStyle(rawValue: d.string(forKey: "numberStyle") ?? "") ?? .roll
-        menuNumberFormat = MenuNumberFormat(rawValue: d.string(forKey: "menuNumberFormat") ?? "") ?? .sign
+        let storedFormat = MenuNumberFormat(rawValue: d.string(forKey: "menuNumberFormat") ?? "") ?? .sign
+        menuNumberFormat = storedFormat == .labeled ? .sign : storedFormat   // never drawn; see `offered`
         menuTimeToReset = d.object(forKey: "menuTimeToReset") as? Bool ?? false
         menuBoldDigits = d.object(forKey: "menuBoldDigits") as? Bool ?? true
         showDockIcon = d.object(forKey: "showDockIcon") as? Bool ?? false
@@ -1235,6 +1250,8 @@ final class AppSettings: ObservableObject {
         alertOpusAt = (d.object(forKey: "alertOpusAt") as? Double) ?? 0.9
         alertSonnet = d.object(forKey: "alertSonnet") as? Bool ?? false
         alertSonnetAt = (d.object(forKey: "alertSonnetAt") as? Double) ?? 0.9
+        alertModelCaps = d.object(forKey: "alertModelCaps") as? Bool ?? true
+        alertModelCapsAt = (d.object(forKey: "alertModelCapsAt") as? Double) ?? 0.9
         alertForecast = d.object(forKey: "alertForecast") as? Bool ?? false
         alertForecastMin = (d.object(forKey: "alertForecastMin") as? Double) ?? 30
         budgetEnabled = d.object(forKey: "budgetEnabled") as? Bool ?? false

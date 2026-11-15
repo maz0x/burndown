@@ -1,5 +1,73 @@
 # What's new in Burndown
 
+## 0.9.11
+
+Two things in this release. Burndown asked Claude for your limits far more often than you told it
+to, and that is fixed. And plans with a weekly limit and no five-hour session (verified Ultra) got
+a full pass: an alert they were missing, and everything that still talked about a session that is
+not there.
+
+### Fetching your limits
+
+- **"Refresh every" now means what it says.** With Smart refresh on, the app speeds up to a
+  2 second beat while tokens are flowing, and every beat also asked Claude's usage service for your
+  limits. The only brake was a fixed 20 seconds, so a "1m" setting was really a 20 second poll
+  whenever a chat was running. The service rate limits that: on the machine where this was
+  measured, about one request in seven was refused, which is where the "Limited" badge came from.
+  Your limits are now fetched no more often than the interval you chose (and never more often than
+  every 20 seconds). The fast beat still drives the local readings: burn rate, tokens and cost.
+- **A refused request no longer adds a request.** After a rate limit the app waits 30, 60, then
+  120 seconds, as before, but the retry now takes the place of the next regular fetch instead of
+  going out on top of it, and it never comes sooner than your interval.
+- **Opening the Account window, and starting the app, no longer force an extra fetch.** Clicking
+  the LIVE badge is still an immediate refresh.
+
+### Alerts
+
+- **New: an alert for models with their own weekly limit.** Alerts knew Session, Weekly, Opus and
+  Sonnet by name. The limit many accounts really have now is a different one (Fable, today), and
+  nothing warned as it filled. "Model limits" in Settings, Alerts covers every model your plan
+  caps separately, at 75, 90 or 95 percent and again at 100. It is on at 90% wherever alerts are
+  on.
+- **Alert levels that can never fire say so.** Session and Forecast have nothing to watch on a
+  plan with no session limit, and Claude no longer reports the separate Opus and Sonnet numbers
+  for most accounts. Those rows are greyed out with the reason, instead of offering a level that
+  would sit there silently.
+- **The model nudge in Insights works again.** It only looked at Opus and Sonnet, so it could not
+  appear on an account that reports neither. It now also speaks up when a separately capped model
+  passes 75%.
+
+### Plans with no session limit
+
+- **The Terminal Gauge shows the week.** It printed an empty bar and "0% session". It now leads
+  with the week: bar, percentage and time to the weekly reset. An installed gauge updates itself
+  the next time Burndown starts; there is nothing to reinstall. A new optional segment, `caps`,
+  prints each separately capped model ("Fable 63%").
+- **The JSON contract can tell "no session" from "0%".** `sessionLimitAbsent` is `true` on these
+  plans, and `modelLimits` lists every separately capped model. Both are additions; nothing a
+  script already reads has changed.
+- **"Session + week %" stops drawing a session that is not there.** The chart drew a flat Session
+  line at 0% and listed Session in its legend. It now draws the week and the models and is titled
+  "Week %", in the card and in the chart gallery. The Pace chart drops its empty Session strip.
+- **Settings stops offering things the card cannot show.** Greyed out, each with its reason:
+  "Menu bar shows" (it is always the week), the four Session switches in Settings, Popover
+  (Estimated cost, Token rate, Time ring, Forecast line), the Session row in the sections list,
+  and Session burndown in the chart gallery.
+- **Insights no longer counts "sessions left"** in its weekly pacing line, and the usage history
+  (and its CSV export) no longer records a session series of zeros.
+- **A leftover two-number menu bar style is replaced.** The seven styles built to show session and
+  week together cannot draw a plan with one number. If one was still selected from before the plan
+  changed, the menu bar switches to the default style.
+
+### Everywhere
+
+- **"Time to reset" (Settings, Menu Bar) is greyed out on icons that never show it.** It only ever
+  worked on Hearth, Burnfront and Flame; on every other icon the switch silently did nothing.
+- **The "S46 W13" number format is gone from the picker.** It had been offered since the first
+  build and no icon ever drew it: choosing it gave the same menu bar as the percent sign.
+
+Cards on plans with both limits look exactly as they did.
+
 ## 0.9.10
 
 One change, for plans with a weekly limit and no five-hour session (verified Ultra).

@@ -85,10 +85,43 @@ final class UsageEngine: ObservableObject {
     /// for the next poll TICK to line up with the expiry, so the numbers sat stale for minutes
     /// after the service was ready again and only a manual click brought them back.
     private var liveRetryWork: DispatchWorkItem? = nil
-    /// A remembered 429 is only worth resuming while it is recent.
-    private let rateLimitMemory: TimeInterval = 900
     private var lastLiveFetch = Date(timeIntervalSince1970: 0)
-    private let minLiveInterval: TimeInterval = 20   // never poll the OAuth endpoint faster than this
+    /// Seconds between two AUTOMATIC usage fetches: the user's "Refresh every" setting, never
+    /// under 20 seconds. The app sets it (`rescheduleTimers`). It used to be a fixed 20 seconds
+    /// here, which is what the 2 second live loop was really polling at while a chat was burning,
+    /// whatever the setting said. The whole rule is in FetchSchedule.swift.
+    var autoFetchInterval: TimeInterval = FetchSchedule.minInterval(refreshSeconds: 60)
+    /// True while the last fetch ended in a failure that was NOT a rate limit. The next automatic
+    /// try then waits only the floor, not the whole interval (FetchSchedule.wait(after:interval:)).
+    private var lastFetchFailed = false
+    private var fetchWait: TimeInterval { FetchSchedule.wait(after: lastFetchFailed, interval: autoFetchInterval) }
+    /// How long until an automatic fetch may go out again (0 when it already may). The live loop
+    /// reads it to land its next tick on that moment instead of one whole tick after it.
+    var liveFetchWait: TimeInterval {
+        FetchSchedule.waitForInterval(now: Date(), lastFetch: lastLiveFetch, interval: fetchWait)
+    }
+
+    /// QA (CUB_QA_FETCH=ok,429,ok ..., sandbox only): answer the usage call from this script instead
+    /// of the network, and print one line per fetch with the gap since the previous one.
+    ///
+    /// The question "how often does the app really call the usage service" could only be answered
+    /// by running the real loop, and running the real loop means spending the owner's own rate
+    /// limit and touching his token and his cache. With the script the loop, the gate and the 429
+    /// retry all run for real and nothing leaves the machine: no token is read, no request is
+    /// sent, the cache and the debug log are not written. "ok" replays the cached reading, so the
+    /// numbers on screen do not change either. The last entry repeats.
+    static let qaFetchScript: [String]? = {
+        guard let raw = ProcessInfo.processInfo.environment["CUB_QA_FETCH"] else { return nil }
+        guard ProcessInfo.processInfo.environment["CUB_SANDBOX"] != nil else {
+            fatalError("CUB_QA_FETCH replaces the usage call and must be run with CUB_SANDBOX set.")
+        }
+        let steps = raw.split(separator: ",").map { String($0).trimmingCharacters(in: .whitespaces) }
+        return steps.isEmpty ? ["ok"] : steps
+    }()
+    private var qaFetchCount = 0
+    private var qaFetchRefused = 0     // times the live loop asked and the gate said "not yet"
+    private var qaFetchPrev: Date? = nil
+    private let qaFetchStart = Date()
 
     init() {
         let home = FileManager.default.homeDirectoryForCurrentUser
@@ -676,14 +709,43 @@ final class UsageEngine: ObservableObject {
 
     func fetchLive(force: Bool = false, completion: ((Bool) -> Void)? = nil) {
         guard usageEnabled else { completion?(false); return }   // user has not opted into the live usage API
-        if !force, let until = liveBackoffUntil, Date() < until { completion?(false); return }   // honor 429 backoff (manual bypasses)
-        // Decouple the OAuth poll from the (possibly 2s) UI refresh - the endpoint
-        // rate-limits hard. Manual refresh (force) bypasses the floor.
-        if !force, Date().timeIntervalSince(lastLiveFetch) < minLiveInterval { completion?(false); return }
-        lastLiveFetch = Date()
+        // One gate for every automatic fetch: not sooner than the user's interval after the last
+        // one, and not inside a 429 backoff. The live loop calls this every 2 seconds while tokens
+        // flow, so this line IS the polling rate. A manual refresh (force) passes it.
+        let now = Date()
+        guard FetchSchedule.mayFetch(now: now, lastFetch: lastLiveFetch, interval: fetchWait,
+                                     backoffUntil: liveBackoffUntil, force: force) else {
+            if Self.qaFetchScript != nil { qaFetchRefused += 1 }
+            completion?(false); return
+        }
+        lastLiveFetch = now
+        // QA: the scripted answer for this fetch, and the line that says when it went out.
+        var scripted: String? = nil
+        if let script = Self.qaFetchScript {
+            let step = script[min(qaFetchCount, script.count - 1)]
+            scripted = step
+            qaFetchCount += 1
+            let gap = qaFetchPrev.map { String(format: "%.1f", now.timeIntervalSince($0)) } ?? "-"
+            print("CUB_FETCH n=\(qaFetchCount) t=\(String(format: "%.1f", now.timeIntervalSince(qaFetchStart)))s "
+                  + "gap=\(gap)s answer=\(step) force=\(force) setting=\(Int(autoFetchInterval))s "
+                  + "asked_and_refused_since_last=\(qaFetchRefused)")
+            fflush(stdout)
+            qaFetchPrev = now; qaFetchRefused = 0
+        }
+        let cacheURL = self.cacheURL
         Task.detached(priority: .utility) { [weak self] in
             guard let self else { return }
-            let result = await Self.queryUsageAPI()
+            let result: Result<APIUsage, LiveError>
+            if let scripted {
+                if scripted == "429" { result = .failure(LiveError(text: "rate limited")) }
+                else if scripted == "fail" { result = .failure(LiveError(text: "http 0")) }
+                else if let data = try? Data(contentsOf: cacheURL),
+                        let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    result = .success(decodeLiveCache(obj))
+                } else { result = .failure(LiveError(text: "no cached reading to replay")) }
+            } else {
+                result = await Self.queryUsageAPI()
+            }
             let freshPlan = Self.planFromClaudeJson()   // live plan/tier, independent of the token
             DispatchQueue.main.async {
                 var s = self.snapshot
@@ -699,22 +761,32 @@ final class UsageEngine: ObservableObject {
                     s.liveError = nil
                     s.liveRetryAt = nil
                     self.clearLiveBackoff()
-                    self.writeLiveCache(api)
+                    self.lastFetchFailed = false
+                    if Self.qaFetchScript == nil { self.writeLiveCache(api) }
                     ok = true
                 case .failure(let e):
                     s.liveError = e.text       // keep last-good apiSession/Weekly visible
+                    self.lastFetchFailed = e.text != "rate limited"
                     if e.text == "rate limited" {
                         let now = Date()
                         // A step is only carried forward while the last 429 is recent. Otherwise
                         // this is a new incident and it starts at the bottom of the ladder again.
-                        let recent = self.lastRateLimitAt.map { now.timeIntervalSince($0) <= self.rateLimitMemory } ?? false
-                        self.liveBackoffStep = recent ? min(self.liveBackoffStep + 1, 3) : 1
+                        self.liveBackoffStep = FetchSchedule.backoffStep(previous: self.liveBackoffStep,
+                                                                         lastRateLimitAt: self.lastRateLimitAt, now: now)
                         self.lastRateLimitAt = now
-                        let delay = 30.0 * pow(2.0, Double(self.liveBackoffStep - 1))  // 30,60,120s
-                        let until = now.addingTimeInterval(delay)
+                        // The ladder (30, 60, 120s), and never sooner than the next fetch would have
+                        // gone out anyway: the retry takes that fetch's place, it is not an extra.
+                        let until = FetchSchedule.retryAt(now: now, lastFetch: self.lastLiveFetch,
+                                                          interval: self.autoFetchInterval, step: self.liveBackoffStep)
+                        let delay = until.timeIntervalSince(now)
                         self.liveBackoffUntil = until
                         s.liveRetryAt = until
-                        Self.dbg("429 rate limited: step \(self.liveBackoffStep), retrying in \(Int(delay))s")
+                        if Self.qaFetchScript == nil {
+                            Self.dbg("429 rate limited: step \(self.liveBackoffStep), retrying in \(Int(delay.rounded()))s")
+                        } else {
+                            print("CUB_FETCH 429 step=\(self.liveBackoffStep) ladder=\(Int(FetchSchedule.backoffDelay(step: self.liveBackoffStep)))s "
+                                  + "retry_in=\(String(format: "%.1f", delay))s"); fflush(stdout)
+                        }
                         self.scheduleLiveRetry(after: delay)
                     }
                 }
@@ -1124,7 +1196,11 @@ actor RefreshGate {
             sessionResetAt: snapshot.sessionResetAt.map { iso.string(from: $0) },
             weeklyResetAt: snapshot.weeklyResetAt.map { iso.string(from: $0) },
             burnPerMin: liveBurnPerMin > 0 ? liveBurnPerMin : nil,
-            sessionCost: snapshot.sessionCost > 0 ? snapshot.sessionCost : nil
+            sessionCost: snapshot.sessionCost > 0 ? snapshot.sessionCost : nil,
+            sessionLimitAbsent: snapshot.sessionLimitAbsent ? true : nil,
+            modelLimits: snapshot.modelLimits.isEmpty ? nil : snapshot.modelLimits.map {
+                BurndownLiveCap(label: $0.label, pct: $0.pct, resetAt: $0.resetAt.map { iso.string(from: $0) })
+            }
         )
         let url = cacheURL.deletingLastPathComponent().appendingPathComponent("burndown-live.json")
         // Carries the current chat's name, so it is owner-only like everything else here.
