@@ -314,12 +314,11 @@ struct InsightsView: View {
                 if scanned && allSessions.isEmpty && records.isEmpty {
                     emptyState(p).modifier(InsightsCard(p: p))
                 } else {
-                    chats(p).modifier(InsightsCard(p: p))
-                    projects(p).modifier(InsightsCard(p: p))
+                    chatsAndProjects(p)
                 }
                 history(p).modifier(InsightsCard(p: p))
-                budgetControls(p)
-                exportRow(p)
+                budgetControls(p).modifier(InsightsCard(p: p))
+                exportRow(p).modifier(InsightsCard(p: p))
                 Text("Token counts are exact, read from your local ~/.claude logs. On a subscription you do not pay these dollar figures: cost is an estimate of what the same usage would cost on Anthropic's pay-as-you-go API at current list prices.")
                     .font(.caption2).foregroundStyle(p.faint).fixedSize(horizontal: false, vertical: true)
             }
@@ -389,7 +388,11 @@ struct InsightsView: View {
         return VStack(alignment: .leading, spacing: 8) {
             sectionTitle("Recap \u{00B7} \(scope.suffix)", p,
                          info: "A plain-English summary of the period selected above. Tokens are counted exactly from the logs Claude Code writes on this Mac. The cost is an estimate of what those same tokens would cost at pay-as-you-go API prices; on a subscription you do not pay it, so treat it as a measure of how much work you got, not a bill.")
-            Text(recapText(r)).font(.callout).foregroundStyle(p.ink).fixedSize(horizontal: false, vertical: true)
+            // Only what the plaques below do not say. The full sentence (recapText) repeated the
+            // tokens, the cost and the top model right above the three boxes that show them.
+            // All time has no fixed length, so it counts active days without an "of M".
+            Text(recapSubtitle(r, windowDays: scope == .all ? 0 : scopeDayCount))
+                .font(.callout).foregroundStyle(p.ink).fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 8) {
                 StatPlaque(value: fmtTok(agg.tokens), label: "Tokens burned", p: p)
                 StatPlaque(value: usd(agg.cost), label: "Est. compute", p: p)
@@ -474,7 +477,7 @@ struct InsightsView: View {
                 Text("No active block of work right now.").font(.callout).foregroundStyle(p.sub)
             } else {
                 Text("By model").font(.caption).foregroundStyle(p.sub)
-                rollupBars(rollupByModelFamily(blockRecs), p)
+                rollupBars(rollupByModelFamily(blockRecs), p, hue: { modelHue($0, p).opacity(0.88) })
             }
         }
     }
@@ -488,16 +491,69 @@ struct InsightsView: View {
     // conversations underneath. And when it is the ONLY row, the project table is not a table at
     // all, so the section becomes "By chat" outright rather than showing a one-row bar chart that
     // says "100% of your work happened somewhere".
-    private func projects(_ p: Palette) -> some View {
-        let rows = memo.value("projects", dataKey) { () -> [(key: String, tokens: Int, cost: Double)] in
+    /// The project rows for the scope, biggest first. Its own property because the layout above
+    /// needs to know whether the section has turned into "By chat" before it draws anything.
+    private var projectRows: [(key: String, tokens: Int, cost: Double)] {
+        memo.value("projects", dataKey) { () -> [(key: String, tokens: Int, cost: Double)] in
             var by: [String: (tokens: Int, cost: Double)] = [:]
             for s in scopedSessions { var e = by[s.project] ?? (0, 0); e.tokens += s.tokens; e.cost += s.cost; by[s.project] = e }
             return by.map { (key: $0.key, tokens: $0.value.tokens, cost: $0.value.cost) }.sorted { $0.tokens > $1.tokens }
         }
+    }
+    /// True when the Home folder is the only project, which is when the section lists chats.
+    private var projectsOnlyHome: Bool {
+        let rows = projectRows
+        return rows.count == 1 && rows[0].key == kHomeProject
+    }
+
+    /// Biggest chats and By project side by side when the window has room, stacked when it does
+    /// not. Each list is a column of short rows with a bar about a thousand points long when it
+    /// has the whole width to itself, which is mostly empty track.
+    ///
+    /// The ideal width is pinned so ViewThatFits judges the columns by the width they need, not by
+    /// the single-line length of their footnotes: measured unwrapped, a footnote is wider than any
+    /// window and the side-by-side layout would never be chosen. At the minimum window width, or
+    /// once the text size is raised far enough, the pair no longer fits and the stacked layout
+    /// takes over by itself.
+    ///
+    /// When By project has turned into "By chat" (only the Home folder), both columns would list
+    /// the same conversations next to each other, so it stays stacked.
+    @ViewBuilder private func chatsAndProjects(_ p: Palette) -> some View {
+        let stacked = VStack(alignment: .leading, spacing: 22) {
+            chats(p).modifier(InsightsCard(p: p))
+            projects(p).modifier(InsightsCard(p: p))
+        }
+        if projectsOnlyHome {
+            stacked
+        } else {
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .top, spacing: ts(18)) {
+                    sideColumn(chats(p), p)
+                    sideColumn(projects(p), p)
+                }
+                // Asks for the taller column's height and gives it to both, so the two boxes end
+                // on the same line instead of one stopping short of the other.
+                .fixedSize(horizontal: false, vertical: true)
+                stacked
+            }
+        }
+    }
+
+    /// One card of the side-by-side pair. The height frame sits inside the card so its background
+    /// stretches with it; the width frame sits outside.
+    private func sideColumn<V: View>(_ content: V, _ p: Palette) -> some View {
+        content
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            .modifier(InsightsCard(p: p))
+            .frame(minWidth: ts(470), idealWidth: ts(470), maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    }
+
+    private func projects(_ p: Palette) -> some View {
+        let rows = projectRows
         let maxT = max(1, rows.map { $0.tokens }.max() ?? 1)
         let totalTok = rows.reduce(0) { $0 + $1.tokens }
         let totalCost = rows.reduce(0.0) { $0 + $1.cost }
-        let onlyHome = rows.count == 1 && rows[0].key == kHomeProject
+        let onlyHome = projectsOnlyHome
         return VStack(alignment: .leading, spacing: 8) {
             sectionTitle(onlyHome ? "By chat \u{00B7} \(scope.suffix)" : "By project \u{00B7} \(scope.suffix)", p,
                          info: onlyHome
@@ -566,7 +622,7 @@ struct InsightsView: View {
         let maxT = max(1, rows.map(\.tokens).max() ?? 1)
         if rows.isEmpty {
             Text("No conversations in this window.").font(.caption).foregroundStyle(p.faint)
-                .padding(.leading, indent)
+                .padding(.leading, ts(indent))
         } else {
             ForEach(Array(rows.enumerated()), id: \.element.id) { i, s in
                 let shown = chatNames.display(s.title)
@@ -587,8 +643,10 @@ struct InsightsView: View {
                                 if !on, renamingProjectChat == s.title { renamingProjectChat = nil }
                             }
                     } else {
+                        // The indent scales with the name column, so the shortened column still
+                        // ends exactly under the project name column above it at every text size.
                         Text(shown).font(.system(size: ts(11.5))).foregroundStyle(p.ink)
-                            .frame(width: 110 - indent, alignment: .leading).lineLimit(1).truncationMode(.middle)
+                            .frame(width: ts(110 - indent), alignment: .leading).lineLimit(1).truncationMode(.middle)
                         GeometryReader { g in
                             ZStack(alignment: .leading) {
                                 Capsule().fill(p.track)
@@ -607,7 +665,7 @@ struct InsightsView: View {
                         .opacity(hovered ? 1 : 0)
                         .allowsHitTesting(hovered && !isGeneratedTitle(shown))
                 }
-                .padding(.leading, indent)
+                .padding(.leading, ts(indent))
                 .contentShape(Rectangle())
                 .onHover { inside in
                     if inside { hoverProjectChat = s.title }
@@ -802,7 +860,7 @@ struct InsightsView: View {
         if isPreview {
             HStack(spacing: 2) {
                 ForEach(Scope.allCases) { s in
-                    Text(s.label).font(.system(size: 11, weight: s == scope ? .semibold : .regular))
+                    Text(s.label).font(.system(size: ts(11), weight: s == scope ? .semibold : .regular))
                         .foregroundStyle(s == scope ? p.ink : p.sub)
                         .padding(.horizontal, 10).padding(.vertical, 4)
                         .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(s == scope ? p.bg : .clear))
@@ -959,7 +1017,9 @@ struct InsightsView: View {
     }
 
     // MARK: Shared bits
-    private func rollupBars(_ rollups: [UsageRollup], _ p: Palette, label: @escaping (String) -> String = { $0 }) -> some View {
+    private func rollupBars(_ rollups: [UsageRollup], _ p: Palette, label: @escaping (String) -> String = { $0 },
+                            // Bar colour by row key; the default keeps the single session colour.
+                            hue: ((String) -> Color)? = nil) -> some View {
         let maxT = max(1, rollups.map { $0.tokens }.max() ?? 1)
         return VStack(alignment: .leading, spacing: 6) {
             ForEach(Array(rollups.prefix(8).enumerated()), id: \.offset) { _, r in
@@ -969,7 +1029,7 @@ struct InsightsView: View {
                     GeometryReader { g in
                         ZStack(alignment: .leading) {
                             Capsule().fill(p.track)
-                            Capsule().fill(p.session.opacity(0.85))
+                            Capsule().fill(hue?(r.key) ?? p.session.opacity(0.85))
                                 .frame(width: max(2, g.size.width * CGFloat(Double(r.tokens) / Double(maxT))))
                         }
                     }.frame(height: 10)

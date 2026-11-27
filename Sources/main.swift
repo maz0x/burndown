@@ -267,6 +267,9 @@ extension Notification.Name {
     static let burndownDidSignIn = Notification.Name("com.maz.burndown.didSignIn")
     static let burndownDidSignOut = Notification.Name("com.maz.burndown.didSignOut")
     static let showWelcomeTour = Notification.Name("com.maz.burndown.showWelcomeTour")
+    /// Open a document bundled with the app in the reader window. userInfo: "name" (the file,
+    /// without .md) and "title" (the window title).
+    static let showBundledDoc = Notification.Name("com.maz.burndown.showBundledDoc")
     /// The Insights window closed, so it can hand back the full history it was holding.
     static let insightsClosed = Notification.Name("com.maz.burndown.insightsClosed")
     /// An explanation bubble in the card opened (object: true) or closed (object: false).
@@ -602,8 +605,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         keyDismissMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] e in
             guard let self, let win = NSApp.keyWindow,
                   [self.settingsWindow, self.accountWindow, self.insightsWindow,
-                   self.aboutWindow, self.welcomeWindow].contains(where: { $0 === win }) else { return e }
-            let esc = e.keyCode == 53 && !(win.firstResponder is NSTextView)
+                   self.aboutWindow, self.welcomeWindow, self.docWindow].contains(where: { $0 === win }) else { return e }
+            // The document reader has nothing to edit, but selecting text in it makes a text view
+            // the first responder, which the editing exception below would read as "still typing"
+            // and Escape would stop closing the window. So the reader always closes on Escape.
+            let esc = e.keyCode == 53 && (win === self.docWindow || !(win.firstResponder is NSTextView))
             let cmdW = e.keyCode == 13 && e.modifierFlags.contains(.command)
             if esc || cmdW { win.performClose(nil); return nil }
             return e
@@ -722,6 +728,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                 // seed to the shot: the burn line read the operator's real tokens per minute, and an
                 // idle moment turned the card's live indicator to "paused".
                 self.liveActivity.stop()
+                // The once-a-minute usage sampler too: it starts after this seed, so the first
+                // re-seed tick stops it. It would append demo points to the chart series every
+                // minute of a long QA run.
+                self.usageTimer?.invalidate(); self.usageTimer = nil
                 var s = UsageSnapshot()
                 s.apiSession = WindowState(pct: 0.46, resetAt: Date().addingTimeInterval(4 * 3600 + 31 * 60))
                 s.apiWeekly = WindowState(pct: 0.13, resetAt: Date().addingTimeInterval(3 * 86400 + 4 * 3600))
@@ -746,6 +756,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                     history: [0.05, 0.12, 0.08, 0.22, 0.18, 0.4, 0.32, 0.55,
                               0.6, 0.5, 0.78, 0.7, 0.62, 0.84, 0.7, 0.9],
                     rate: 14_000, active: true)
+            }
+            // The sample account is a live-mode account, and Settings > General shows that switch.
+            // It used to come out "on" only because the owner's own files made the wiped suite
+            // look like an existing install; a QA run no longer inherits that (see AppSettings), so
+            // the demo says it outright. No request follows: a sandboxed fetch is refused.
+            // CUB_DEFAULTS still wins when a run sets usageAPI itself.
+            if !(ProcessInfo.processInfo.environment["CUB_DEFAULTS"] ?? "").contains("usageAPI=") {
+                settings.usageAPI = true
             }
             seedDemo()
             let tick = Timer(timeInterval: 0.1, repeats: true) { _ in seedDemo() }
@@ -1065,6 +1083,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         NotificationCenter.default.addObserver(forName: .showWelcomeTour, object: nil, queue: .main) { [weak self] _ in
             self?.showWelcome()
         }
+        NotificationCenter.default.addObserver(forName: .showBundledDoc, object: nil, queue: .main) { [weak self] n in
+            guard let name = n.userInfo?["name"] as? String else { return }
+            self?.showBundledDoc(name, title: n.userInfo?["title"] as? String ?? kAppName)
+        }
         engine.fullScan()
         engine.fetchLive()
         engine.refreshAPISpend()   // developer-API spend, if an Admin key was saved
@@ -1083,11 +1105,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                 case "account":  self.showAccount()
                 case "insights": self.showInsights()
                 case "popover":  self.togglePopover()
+                case "doc-notes":   self.showBundledDoc("RELEASE_NOTES", title: "What's new")
+                case "doc-privacy": self.showBundledDoc("PRIVACY", title: "Privacy")
                 default:         self.openSettings()
                 }
                 let w = (o == "account") ? self.accountWindow
                       : (o == "insights") ? self.insightsWindow
                       : (o == "popover") ? self.menuPanel
+                      : (o.hasPrefix("doc-")) ? self.docWindow
                       : self.settingsWindow
                 // CUB_TALL=<points> grows the window for documentation captures, so a long
                 // settings pane can be photographed whole instead of scrolled.
@@ -1097,9 +1122,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                 if ProcessInfo.processInfo.environment["CUB_ONSCREEN"] == nil {
                     w?.setFrameOrigin(NSPoint(x: -4000, y: 300))   // QA: render off the user's screen
                 }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                    if let n = w?.windowNumber { print("CUB_WINID=\(n)"); fflush(stdout) }
+                // Photograph an INACTIVE window, every time. Opening a window activates the app and
+                // makes the window key, and whether that lands before the capture was a race: a key
+                // window is drawn with a red close button and a blue focus ring, so the same command
+                // gave two different pictures. Here the app is sent to the background, the window
+                // gives up key and keyboard focus, and CUB_WINID is printed only once that state has
+                // held for a few checks in a row. A late activation is undone the same way, so it
+                // cannot slip in between the id and the capture. QA only: openSettings() itself is
+                // unchanged. The menu card (popover) is left alone: it has no title bar or focus
+                // ring, and it is built to close when it stops being key.
+                // CUB_ONSCREEN means someone is going to look at the window and click in it, so it
+                // has to be allowed to become key: with the calming on, a menu could not be opened.
+                let interactive = ProcessInfo.processInfo.environment["CUB_ONSCREEN"] != nil
+                let calm: () -> Void = {
+                    guard o != "popover", !interactive else { return }
+                    if NSApp.isActive { NSApp.deactivate() }
+                    w?.makeFirstResponder(nil)
+                    if w?.isKeyWindow == true { w?.resignKey() }
                 }
+                if o != "popover" {
+                    _ = NotificationCenter.default.addObserver(forName: NSApplication.didBecomeActiveNotification,
+                                                               object: nil, queue: .main) { _ in calm() }
+                }
+                var steady = 0, tries = 0
+                func waitThenPrint() {
+                    calm()
+                    let settled = o == "popover" || interactive || (!NSApp.isActive && w?.isKeyWindow != true)
+                    steady = settled ? steady + 1 : 0
+                    tries += 1
+                    // Three calm checks 0.1 s apart, or give up after 5 s and print anyway with the
+                    // measured state, so the script can refuse the shot instead of hanging.
+                    if steady < 3 && tries < 50 {
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { waitThenPrint() }
+                        return
+                    }
+                    if let n = w?.windowNumber {
+                        print("CUB_WINID=\(n) key=\(w?.isKeyWindow == true ? 1 : 0) active=\(NSApp.isActive ? 1 : 0)")
+                        fflush(stdout)
+                    }
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { waitThenPrint() }
             }
         }
         // Show/hide the docked edge widget the instant Claude Desktop activates/deactivates.
@@ -1755,6 +1817,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
             // window on every live tick. They are rebuilt on demand instead; both are cheap.
             w?.contentViewController = nil
             if w === aboutWindow { aboutWindow = nil } else { accountWindow = nil }
+        } else if w === docWindow {
+            // Same reasoning as About: rebuilt on the next open rather than kept attached.
+            w?.contentViewController = nil
+            docWindow = nil
         } else if w === insightsWindow {
             // Hand back the full history. The window is kept alive so reopening it is instant, and
             // the price of that was holding every record ever parsed, tens of megabytes of them,
@@ -1783,6 +1849,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         settingsWindow?.appearance = a
         floatingPanel?.appearance = a
         aboutWindow?.appearance = a
+        docWindow?.appearance = a
         welcomeWindow?.appearance = a
         edgePanel?.appearance = a
         accountWindow?.appearance = a
@@ -2093,6 +2160,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
             w.isReleasedWhenClosed = false
             w.appearance = themeAppearance()
             w.center()
+            w.delegate = self   // so windowWillClose lets the content go instead of redrawing it unseen
             accountWindow = w
         }
         // Opening the Account window re-checks the plan, so a plan change (e.g. Pro -> Max) is
@@ -2416,11 +2484,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
             w.setContentSize(NSSize(width: 300, height: 360))
             w.appearance = themeAppearance()
             w.center()
+            w.delegate = self   // so windowWillClose lets the content go instead of redrawing it unseen
             aboutWindow = w
         }
         NSApp.activate(ignoringOtherApps: true)
         aboutWindow?.makeKeyAndOrderFront(nil)
         aboutWindow?.orderFrontRegardless()
+    }
+
+    /// The reader for the documents bundled with the app ("What's new", "Privacy" in About).
+    /// One window, reused: opening the other document while it is up swaps what it shows.
+    private var docWindow: NSWindow?
+    func showBundledDoc(_ name: String, title: String) {
+        let view = BundledDocView(name: name)
+        if let w = docWindow {
+            // A fresh controller, not a new rootView on the old one: the scroll position belongs
+            // to the document that was showing, and the new one should start at its top.
+            // Keep the frame across the swap: AppKit resizes the window to the new view's ideal
+            // size, which is the SwiftUI minimum, and clears the minimum size, so without this the
+            // reader shrank to 380x320 every time a document was opened while it was up.
+            let f = w.frame
+            w.contentViewController = NSHostingController(rootView: view)
+            w.setFrame(f, display: true)
+            w.contentMinSize = NSSize(width: 380, height: 320)
+            w.title = title
+        } else {
+            let w = NSWindow(contentViewController: NSHostingController(rootView: view))
+            w.styleMask = [.titled, .closable, .resizable]
+            w.title = title
+            w.isReleasedWhenClosed = false
+            w.delegate = self   // so windowWillClose lets the content go
+            w.setContentSize(NSSize(width: 460, height: 520))
+            w.contentMinSize = NSSize(width: 380, height: 320)
+            w.center()   // only when new: a reader the user moved or resized stays where they put it
+            docWindow = w
+        }
+        guard let w = docWindow else { return }
+        w.appearance = themeAppearance()
+        NSApp.activate(ignoringOtherApps: true)
+        w.makeKeyAndOrderFront(nil)
+        w.orderFrontRegardless()
     }
 
     /// First-run welcome tour. Reopenable from the About window, so it is never a one-shot trap.

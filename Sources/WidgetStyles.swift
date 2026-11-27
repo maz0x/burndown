@@ -11,8 +11,8 @@ enum WidgetStyle: String, CaseIterable, Identifiable {
         case .bigTile:   return "Big numbers"
         case .rings:     return "Rings"
         case .arcs:      return "Twin arcs"
-        case .twinTanks: return "Twin tanks (legacy)"
-        case .pills:     return "Pills (legacy)"
+        case .twinTanks: return "Twin tanks"
+        case .pills:     return "Pills"
         }
     }
 }

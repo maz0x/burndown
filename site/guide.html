@@ -202,7 +202,7 @@ know something, it says so rather than guessing.</p>
   <li><b>Use my Claude Code sign-in.</b> If Claude Code is already signed in on this Mac,
   Burndown can borrow that credential, with your explicit permission. It only ever uses the
   access token while it is still valid and never spends Claude Code's refresh token, so it
-  cannot invalidate your CLI login.</li>
+  cannot invalidate your CLI login. On newer versions of Claude Code the saved sign-in is empty, so this may not work. If it does not, use Sign in with Claude, which works either way.</li>
 </ul>
 <p><b>Signing out really signs out.</b> It deletes the stored token, revokes permission to
 borrow the Claude Code sign-in, clears the diagnostic log, and turns live mode off. Nothing
@@ -273,15 +273,15 @@ restarts, and every banner carries a Snooze button.</p>
 <p>Right-click the menu bar item, then Insights. It scans your full history, so it takes a
 moment on first open.</p>
 <ul>
-  <li><b>This week</b> in words, with tokens, estimated cost, and active days.</li>
-  <li><b>Current session by model.</b></li>
+  <li><b>This week</b>: tokens, estimated cost and top model, with a one-line summary of active days, top project and busiest day.</li>
+  <li><b>Current session by model</b>, with each model in its own colour.</li>
   <li><b>Biggest chats, all time.</b> One row per conversation, labeled with its own title.</li>
   <li><b>Every project, ranked</b>, with lifetime totals.</li>
   <li><b>Last 14 days</b>, and advisory lines for pacing, model mix, and budget when they have
   something worth saying.</li>
-  <li><b>Export</b> every usage record as CSV, JSON, or Markdown, saved to Downloads.</li>
+  <li><b>Export</b> every usage record as CSV, JSON, or Markdown, saved wherever you choose.</li>
 </ul>
-<img src="screenshots/insights.png" width="640" alt="The Burndown Insights window: weekly recap, current session by model, biggest chats all time, projects ranked, and history">
+<img src="screenshots/insights.png" width="640" alt="The Burndown Insights window: a short recap line with three figures, current session by model in model colours, biggest chats and projects side by side, history, budget, and export">
 
 <h2 id="appearance">Themes and appearance</h2>
 <p>Settings, Appearance. One palette choice recolors the card, charts, widget, and Settings

@@ -161,24 +161,29 @@ struct Palette {
     /// Corrected palettes, cached. `of` is called from inside view bodies, so it has to be free
     /// after the first call for a given theme.
     private static var tuned: [String: Palette] = [:]
-    static func of(_ s: ColorScheme) -> Palette {
-        let key = "\(current.rawValue)|\(s == .dark)"
+    static func of(_ s: ColorScheme) -> Palette { of(current, s) }
+
+    /// Any preset's palette, not only the selected one, through the same correction and cache.
+    /// The Color palette menu draws a swatch for every preset it lists, and a swatch made from
+    /// the uncorrected table would show colours the app never actually draws.
+    static func of(_ preset: PalettePreset, _ s: ColorScheme) -> Palette {
+        let key = "\(preset.rawValue)|\(s == .dark)"
         if let hit = tuned[key] { return hit }
-        let v = legible(raw(s), dark: s == .dark)
+        let v = legible(raw(preset, s), dark: s == .dark)
         tuned[key] = v
         return v
     }
 
     /// The palettes as written, before the legibility correction. Audit-only, so the "before"
     /// half of docs/ can be regenerated rather than trusted.
-    static func uncorrected(_ s: ColorScheme) -> Palette { raw(s) }
+    static func uncorrected(_ s: ColorScheme) -> Palette { raw(current, s) }
 
-    private static func raw(_ s: ColorScheme) -> Palette {
+    private static func raw(_ preset: PalettePreset, _ s: ColorScheme) -> Palette {
         let dark = s == .dark
         // pal(bg, ink, sub, faint, track, divider, live, SESSION, WEEKLY, WARNING, OVERLIMIT). session +
         // weekly are the two hero metric colors; warning + overLimit are the threshold + over-limit roles,
         // no longer borrowed from the accent ramp. All 11 roles are defined per theme, light and dark.
-        switch current {
+        switch preset {
         case .stoneClay:       return dark ? pal("1A1917", "F2EFE8", "9C958A", "726B60", "2E2C28", "2E2C28", "5FB585", "DB7551", "8696AC", "E0A23F", "D2553A", "211F1C") : pal("F6F3ED", "211F1B", "6E685F", "938C81", "E5E0D6", "E5E0D6", "4E9E6E", "C25A35", "5E7186", "B8801C", "A0341A", "EEEAE1")
         case .clayLedger:      return dark ? pal("1B1A18", "F3EFE7", "A9A294", "6F695D", "2C2A26", "34312C", "E08A6B", "E08A6B", "8C9BB0", "E0A23F", "D2553A") : pal("F4F2EC", "1F1E1D", "6F6A60", "A39C8E", "E4DFD4", "DAD4C8", "C75D3C", "C75D3C", "5E7186", "B8801C", "A0341A")
         case .graphiteSlate:   return dark ? pal("161B21", "E8ECF2", "97A4B5", "5E6B7C", "242C35", "2D3640", "8FA3C0", "DE8158", "8FA3C0", "E0A23F", "DE6A4A") : pal("F2F4F7", "1C2530", "5E6B7C", "9AA6B5", "E1E6EC", "D5DBE3", "4F6B92", "C2633E", "4F6B92", "B8801C", "A33A1E")
@@ -2219,11 +2224,13 @@ struct AboutView: View {
             .onHover { kindled = $0 }
             .animation(.easeOut(duration: 0.28), value: kindled)
             // Links row: middle-dot separated, accent, hover underline. Every link works:
-            // What's new + Privacy open docs bundled with the app; the tour reopens onboarding.
+            // What's new + Privacy open the docs bundled with the app in the app's own reader
+            // window (handing them to the system opened a code editor, or nothing); the tour
+            // reopens onboarding.
             HStack(spacing: 6) {
-                aboutLink("What's new") { openBundledDoc("RELEASE_NOTES") }
+                aboutLink("What's new") { openBundledDoc("RELEASE_NOTES", title: "What's new") }
                 Text("·").foregroundStyle(p.faint)
-                aboutLink("Privacy") { openBundledDoc("PRIVACY") }
+                aboutLink("Privacy") { openBundledDoc("PRIVACY", title: "Privacy") }
                 Text("·").foregroundStyle(p.faint)
                 aboutLink("Welcome tour") { NotificationCenter.default.post(name: .showWelcomeTour, object: nil) }
             }.font(.system(size: 11)).padding(.top, 10)
@@ -2241,11 +2248,11 @@ struct AboutView: View {
         .noFocusRing()
     }
 
-    /// Open a markdown doc shipped inside the app bundle (Resources/<name>.md).
-    private func openBundledDoc(_ name: String) {
-        if let u = Bundle.main.url(forResource: name, withExtension: "md") {
-            NSWorkspace.shared.open(u)
-        }
+    /// Open a markdown doc shipped inside the app bundle (Resources/<name>.md) in the reader
+    /// window. The app delegate owns that window, reached the same way as the welcome tour.
+    private func openBundledDoc(_ name: String, title: String) {
+        NotificationCenter.default.post(name: .showBundledDoc, object: nil,
+                                        userInfo: ["name": name, "title": title])
     }
 }
 
@@ -3658,7 +3665,8 @@ struct SettingsView: View {
         header("Appearance", p)
         card(p) {
             row("Color palette", p, info: "Recolors the whole app. Pick one that suits your desktop or matches Claude.") {
-                DropPicker(options: PalettePreset.allCases.map { ($0.label, $0) }, selection: $settings.palette, p: p)
+                DropPicker(options: PalettePreset.allCases.map { ($0.label, $0) }, selection: $settings.palette, p: p,
+                           swatch: { [scheme] in PaletteSwatch.image($0, scheme) })
             }
             div(p)
             row("Theme", p) {
@@ -3842,7 +3850,8 @@ struct SettingsView: View {
     }
 
     /// The chart gallery data context: sample data (deterministic, always looks alive) or the user's
-    /// real data, per the toggle. Hover is off so previews stay calm.
+    /// real data, per the toggle. Hover is off so previews stay calm, and `preview` tells the charts
+    /// they are in a fixed-height tile (hover alone cannot say that: it is also a user setting).
     private func galleryCtx(_ p: Palette) -> ChartCtx {
         let accent = Color(hex: settings.accentHex)
         if galleryLive {
@@ -3855,7 +3864,7 @@ struct SettingsView: View {
                             modelLimits: engine.snapshot.modelLimits,
                             accent: accent, secondary: kSlate, p: p, style: settings.chartStyle,
                             window: settings.burnSpan.seconds, days: settings.chartDays, hover: false,
-                            currentRate: live.rate)
+                            preview: true, currentRate: live.rate)
         }
         let series = StyleSheet.qaSampleSeries()
         return ChartCtx(burnSamples: series.burn, usageSamples: series.usage, weeklySamples: series.weekly,
@@ -3866,7 +3875,7 @@ struct SettingsView: View {
                         modelLimits: [ScopedLimit(label: "Fable", pct: 0.74, resetAt: nil, active: true, severity: "warning"),
                                       ScopedLimit(label: "Opus", pct: 0.18, resetAt: nil, active: false, severity: "normal")],
                         accent: accent, secondary: kSlate, p: p, style: settings.chartStyle,
-                        window: 6 * 3600, days: 14, hover: false, currentRate: 54_000)
+                        window: 6 * 3600, days: 14, hover: false, preview: true, currentRate: 54_000)
             // The sample numbers have a session, the card on a weekly-only account does not. The
             // gallery is where the card's charts are chosen, so it draws and names them the way the
             // card will, not the way the sample data could.
@@ -4555,13 +4564,34 @@ struct DropPicker<T: Hashable>: View {
     @Binding var selection: T
     var p: Palette
     var recommended: T? = nil    // appends "· Recommended" to this option in the menu
+    /// A small picture drawn beside each option's name in the open menu, never instead of it.
+    /// nil (the default) leaves the menu exactly as every other picker has it.
+    var swatch: ((T) -> NSImage)? = nil
     private var current: String { options.first { $0.1 == selection }?.0 ?? "-" }
     var body: some View {
         Menu {
-            ForEach(options, id: \.1) { opt in
-                Button { selection = opt.1 } label: {
-                    let label = opt.1 == recommended ? "\(opt.0)  ·  Recommended" : opt.0
-                    if opt.1 == selection { Label(label, systemImage: "checkmark") } else { Text(label) }
+            if let swatch {
+                // An inline Picker, not hand-made buttons: the hand-made version marks the chosen
+                // item by putting a checkmark where the icon goes, and with a swatch in that place
+                // there would be no room left for the tick. The Picker gives the native tick in
+                // its own column, so the swatch and the mark are both visible.
+                Picker(selection: $selection) {
+                    ForEach(options, id: \.1) { opt in
+                        Label {
+                            Text(opt.1 == recommended ? "\(opt.0)  ·  Recommended" : opt.0)
+                        } icon: {
+                            Image(nsImage: swatch(opt.1)).renderingMode(.original)
+                        }
+                        .tag(opt.1)
+                    }
+                } label: { EmptyView() }
+                .pickerStyle(.inline).labelsHidden()
+            } else {
+                ForEach(options, id: \.1) { opt in
+                    Button { selection = opt.1 } label: {
+                        let label = opt.1 == recommended ? "\(opt.0)  ·  Recommended" : opt.0
+                        if opt.1 == selection { Label(label, systemImage: "checkmark") } else { Text(label) }
+                    }
                 }
             }
         } label: {
@@ -4573,6 +4603,41 @@ struct DropPicker<T: Hashable>: View {
             .background(RoundedRectangle(cornerRadius: 7).fill(p.track))
         }
         .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+    }
+}
+
+/// The swatch beside each name in the Color palette menu: one rounded pill in three bands, the
+/// preset's background, session and weekly colours, as the app really draws them in this scheme.
+/// A hairline outline keeps a near-white background visible on a white menu, and the image is
+/// not a template, so the menu shows its colours instead of tinting it grey. Cached, because the
+/// menu asks for all of them every time it opens.
+enum PaletteSwatch {
+    private static var cache: [String: NSImage] = [:]
+    static func image(_ preset: PalettePreset, _ scheme: ColorScheme) -> NSImage {
+        let key = "\(preset.rawValue)|\(scheme == .dark)"
+        if let hit = cache[key] { return hit }
+        let pal = Palette.of(preset, scheme)
+        let bands = [NSColor(pal.bg), NSColor(pal.session), NSColor(pal.weekly)]
+        let outline = scheme == .dark ? NSColor.white.withAlphaComponent(0.35) : NSColor.black.withAlphaComponent(0.25)
+        let size = NSSize(width: 30, height: 12)
+        let img = NSImage(size: size, flipped: false) { r in
+            let pill = NSBezierPath(roundedRect: r.insetBy(dx: 0.5, dy: 0.5), xRadius: 5.5, yRadius: 5.5)
+            NSGraphicsContext.saveGraphicsState()
+            pill.addClip()
+            let w = r.width / CGFloat(bands.count)
+            for (i, c) in bands.enumerated() {
+                c.setFill()
+                NSRect(x: r.minX + CGFloat(i) * w, y: r.minY, width: w, height: r.height).fill()
+            }
+            NSGraphicsContext.restoreGraphicsState()
+            outline.setStroke()
+            pill.lineWidth = 0.5
+            pill.stroke()
+            return true
+        }
+        img.isTemplate = false
+        cache[key] = img
+        return img
     }
 }
 

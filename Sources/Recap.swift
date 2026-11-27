@@ -95,7 +95,7 @@ func recapText(_ r: RecapSummary) -> String {
     // guard testing a string the app no longer produces, so "top project No folder recorded"
     // could reach the sentence: the one bucket that means "we could not tell" presented as a
     // finding about the reader's week.
-    if r.topProject != "(none)", r.topProject != kHomeProject, r.topProject != kUnknownProject {
+    if recapNamesProject(r.topProject) {
         details.append("top project \(r.topProject)")
     }
     if r.topModelFamily != "(none)" { details.append("mostly \(r.topModelFamily)") }
@@ -103,4 +103,32 @@ func recapText(_ r: RecapSummary) -> String {
 
     if !details.isEmpty { line += "; " + details.joined(separator: ", ") }
     return line
+}
+
+/// Whether a top-project key is worth naming in a sentence. One guard for both lines below, so
+/// the "Home folder" and "No folder recorded" buckets cannot drift back into one of them the way
+/// the old "(unknown)" spelling once did.
+func recapNamesProject(_ key: String) -> Bool {
+    key != "(none)" && key != kHomeProject && key != kUnknownProject
+}
+
+/// The short line under the Recap heading in Insights. It says only what the three stat plaques
+/// beside it do not: the tokens, the cost and the top model are already on the plaques, so
+/// repeating them in the sentence made the card say everything twice.
+///
+/// windowDays is the length of the period in days. With 1 or less (Today, or a period with no
+/// fixed length such as All time) there is nothing honest to count against, so the line says
+/// "Active N days" instead of "N of M". "Busiest" needs at least two active days to compare.
+func recapSubtitle(_ r: RecapSummary, windowDays: Int) -> String {
+    if r.totalTokens == 0 { return "No recorded activity in this period." }
+    let dayWord = r.dayCount == 1 ? "day" : "days"
+    var parts: [String] = []
+    if windowDays > 1 {
+        parts.append("Active \(min(r.dayCount, windowDays)) of \(windowDays) days")
+    } else {
+        parts.append("Active \(r.dayCount) \(dayWord)")
+    }
+    if recapNamesProject(r.topProject) { parts.append("top project \(r.topProject)") }
+    if r.dayCount > 1, !r.busiestDay.isEmpty { parts.append("busiest \(prettyDayKey(r.busiestDay))") }
+    return parts.joined(separator: " \u{00B7} ")
 }

@@ -144,6 +144,9 @@ final class LiveActivity: ObservableObject {
     func resetHistory() {
         burnSamples = []; usageSamples = []; weeklySamples = []; history = []
         lastUsageAt = .distantPast
+        // A QA run clears its own memory only. Deleting the file would erase the owner's real
+        // history from a run that is not his.
+        guard !UsageEngine.sandboxed else { return }
         let url = storeURL
         q.async { try? FileManager.default.removeItem(at: url) }
     }
@@ -156,6 +159,9 @@ final class LiveActivity: ObservableObject {
 
     // ── Disk persistence (compact [epoch, value] pairs) ──
     private func persist() {
+        // A QA run holds sample series (the demo seed puts fake ones in memory). Writing them would
+        // replace up to 35 days of the owner's real chart history.
+        guard !UsageEngine.sandboxed else { return }
         let b = burnSamples, u = usageSamples, w = weeklySamples, url = storeURL
         q.async {
             let obj: [String: Any] = ["burn":   b.map { [$0.t.timeIntervalSince1970, $0.v] },

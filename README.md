@@ -103,21 +103,23 @@ Most monitors tell you that you are at 80%. Burndown tells you what got
 you there. The Insights window attributes usage where other tools stop at
 totals:
 
-- **Current session, by model.** What the active 5-hour block is made of.
+- **Current session, by model.** What the active 5-hour block is made of,
+  with each model drawn in its own colour.
 - **Biggest chats, all time.** Each row is one conversation, labeled with
   its own title, with tokens and estimated cost. The conversation that
   quietly ate your week has a name here.
 - **Every project, ranked.** All-time tokens and cost per project, with
   lifetime totals underneath.
-- **A weekly recap in words**, a 14-day history, and advisory lines for
+- **A short weekly recap** with tokens, cost and a one-line summary of your
+  active days, a 14-day history, and advisory lines for
   pacing, model mix, and budget when they have something worth saying.
 - **One-click export** of every usage record to CSV or JSON, or a per-day
   Markdown table,
-  saved to Downloads. Deterministic output, stable columns, ready for a
+  saved wherever you choose. Deterministic output, stable columns, ready for a
   spreadsheet or an expense note.
 
 <p align="center">
-  <img src="site/screenshots/insights.png" width="420" alt="The Insights window: weekly recap, current session by model, biggest chats, projects, history, budget, and export">
+  <img src="site/screenshots/insights.png" width="420" alt="The Insights window: a short recap line with three figures, the current session by model in model colours, biggest chats and projects side by side, history, budget, and export">
 </p>
 
 ## It sees the wall before you hit it
@@ -616,10 +618,10 @@ about it, or say what you would change in
 ## Development
 
 - `bash build.sh`, then look for `✓ Built`.
-- Twenty-three headless test suites: `run-tests.sh` plus `run-*-tests.sh`
+- Twenty-four headless test suites: `run-tests.sh` plus `run-*-tests.sh`
   (forecast, parsing, alerts, formats, chart data, pricing, aggregation,
   budget, runaway, pacing, model mix, export, recap, live contract, burn
-  clock, update logic, contrast, card resize, scan cache, titles). `run-update-e2e.sh` additionally builds an
+  clock, update logic, contrast, card resize, scan cache, titles, doc reader). `run-update-e2e.sh` additionally builds an
   intentionally old copy and lets it update itself from the live release.
 - QA renders (no screen needed): `CUB_SNAP_POP`, `CUB_SNAP_CHARTS` +
   `CUB_PART=0..3`, `CUB_SNAP_SETTINGS` + `CUB_TAB=...`,

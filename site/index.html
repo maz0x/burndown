@@ -38,7 +38,7 @@
   "url": "https://burndown-app.pages.dev/",
   "downloadUrl": "https://github.com/maz0x/burndown/releases/latest",
   "installUrl": "https://github.com/maz0x/burndown/releases/latest",
-  "softwareVersion": "0.9.11",
+  "softwareVersion": "0.9.12",
   "license": "https://www.apache.org/licenses/LICENSE-2.0",
   "isAccessibleForFree": true,
   "offers": {"@type": "Offer", "price": "0", "priceCurrency": "USD"},
@@ -64,13 +64,13 @@
   "@context": "https://schema.org",
   "@type": "FAQPage",
   "mainEntity": [
-    {"@type":"Question","name":"Is Burndown really free?","acceptedAnswer":{"@type":"Answer","text":"Yes. Free, open source, and Apache 2.0 licensed. There is no paid tier, no premium build, no subscription, no account to create, and nothing is sent anywhere. Every feature described on this page is in the free download. The license covers the code; the Burndown name and flame mark are not granted with it, so a fork needs its own name."}},
+    {"@type":"Question","name":"Is Burndown really free?","acceptedAnswer":{"@type":"Answer","text":"Yes. Free, open source, and Apache 2.0 licensed. There is no paid tier, no premium build, no subscription, no account to create, and no telemetry. Every feature on this page is in the free download."}},
     {"@type":"Question","name":"Do I have to sign in to use it?","acceptedAnswer":{"@type":"Answer","text":"No. A fresh install runs in estimate mode, which reads the session logs Claude Code already keeps on your Mac and makes no network requests at all. Signing in is a separate, explicit opt-in that switches on live mode, where the numbers come from Claude's own usage service."}},
     {"@type":"Question","name":"Is my data safe?","acceptedAnswer":{"@type":"Answer","text":"Everything stays on your Mac. There is no telemetry and no server operated by the project. In live mode the only hosts contacted are Anthropic's own. The updater contacts GitHub for a version number and, if you choose to install, the release file. Local state lives in ~/.config/burndown with owner-only permissions, and signing out deletes the stored token and clears the diagnostic log."}},
     {"@type":"Question","name":"Will it slow my Mac down?","acceptedAnswer":{"@type":"Answer","text":"No. The card tears its whole view tree down when you close it, so it costs almost nothing while hidden, and the app idles at a couple of percent of one core with an animated menu bar style. Choose a static style and even that goes away."}},
-    {"@type":"Question","name":"Why does macOS warn me the first time I open it?","acceptedAnswer":{"@type":"Answer","text":"Releases are ad-hoc signed because the project does not yet have a paid Apple Developer ID certificate, so macOS quarantines a downloaded copy and Gatekeeper blocks the first open. There are four ways past it. Install through Homebrew, then run xattr -d com.apple.quarantine /Applications/Burndown.app; Homebrew no longer skips quarantine itself. After a manual download, run the same xattr command: xattr -d com.apple.quarantine /Applications/Burndown.app. Without the Terminal, let the launch be blocked, then open System Settings, Privacy and Security, scroll to Security and click Open Anyway; that button only appears for about an hour after a blocked launch. Or build from source, which is never quarantined at all. macOS 15 removed the old right-click Open shortcut, so that no longer works."}},
+    {"@type":"Question","name":"Why does macOS warn me the first time I open it?","acceptedAnswer":{"@type":"Answer","text":"Releases are ad-hoc signed because the project does not yet have a paid Apple Developer ID certificate, so macOS quarantines a downloaded copy and Gatekeeper blocks the first open. Four ways past it, in order of least friction: Install with Homebrew, then clear the flag in the same line: brew install --cask maz0x/tap/burndown && xattr -d com.apple.quarantine /Applications/Burndown.app. After a manual download, run xattr -d com.apple.quarantine /Applications/Burndown.app. Without the Terminal: let the launch get blocked, then open System Settings, Privacy & Security, scroll down to Security, and click Open Anyway, entering your login password. That button only shows up for about an hour after a blocked launch, so try opening the app again if you do not see it. Build from source with ./build.sh. An app you compiled locally is never quarantined, so Gatekeeper never appears at all. macOS 15 removed the old right-click, Open shortcut, and Homebrew stopped skipping quarantine in 2026 (both --no-quarantine and HOMEBREW_CASK_OPTS), so any guide still recommending those is out of date."}},
     {"@type":"Question","name":"Could using Burndown get my Claude account banned?","acceptedAnswer":{"@type":"Answer","text":"Burndown is a read-only monitor. It never runs inference with your token and never spends your subscription; it only asks how much you have used. Anthropic's February 2026 enforcement targeted a different class of tool, third-party coding clients that spend subscriptions through OAuth. Read-only monitors continue to operate publicly without known enforcement. The call remains Anthropic's, which is exactly why live mode is opt-in and the mechanism is documented in plain English."}},
-    {"@type":"Question","name":"Does it work on Claude Pro, or only Max?","acceptedAnswer":{"@type":"Answer","text":"Both. Burndown does not hardcode plan shapes. It shows whatever limits your account reports, including any per-model caps, and the Account window can re-read your plan on the spot after an upgrade."}},
+    {"@type":"Question","name":"Does it work on Claude Pro, Max, and Ultra?","acceptedAnswer":{"@type":"Answer","text":"Yes, all three. Burndown does not hardcode plan shapes. It shows whatever limits your account reports, including any per-model caps, and the Account window can re-read your plan on the spot after an upgrade. Pro and Max have a five-hour session and a weekly limit, so the card shows both. A verified Ultra account has no session limit, so the card leads with the week and the menu bar shows the weekly percentage."}},
     {"@type":"Question","name":"I only use Claude in the browser or the desktop app. Does it still work?","acceptedAnswer":{"@type":"Answer","text":"Live mode, yes. Your limits are account-wide server-side numbers, so percentages, resets, forecasts and alerts all work no matter where you use Claude. Estimate mode and the attribution features are built from the logs Claude Code writes, so those cover Claude Code sessions."}},
     {"@type":"Question","name":"Does it run on Intel Macs?","acceptedAnswer":{"@type":"Answer","text":"Yes. Releases are universal binaries covering Apple Silicon and Intel, and macOS 13 or later is required."}},
     {"@type":"Question","name":"How do updates work?","acceptedAnswer":{"@type":"Answer","text":"Burndown checks GitHub for a newer version on the schedule you choose in Settings, General: every launch, once a day (the default), once a week, or only when you ask. It tells you in the menu when one exists. One click installs it: the download is checked against its published SHA-256 checksum and its code signature is checked for integrity, the app is replaced in place, and it restarts. Both catch a corrupted download; neither proves origin the way notarization would, because the signature is still ad hoc. Set \"When one is found\" to \"Install it for me\" and Burndown does the download, the checks and the install on its own, waiting while chats are actively burning."}}
@@ -278,7 +278,7 @@
         same work would have cost at API list prices.</p>
       </div>
       <div class="card illus">
-        <img src="screenshots/f-chats.png" width="330" alt="The Insights window listing the biggest chats all time, each with its tokens and estimated cost">
+        <img src="screenshots/f-chats.png" width="330" alt="The Insights window with the biggest chats all time and the projects side by side, each with its tokens and estimated cost">
         <h3>Which chat spent it</h3>
         <p>Per-conversation and per-project attribution. The chat that quietly ate your week
         has a name, a token count, and an estimated cost.</p>
@@ -318,12 +318,12 @@
     <p class="narrow" style="margin-left:0">
       Most monitors tell you that you are at 80 percent. The more useful question is what got
       you there. The Insights window keeps a running answer: your biggest conversations of all
-      time by name, every project ranked, a weekly recap in words, a 14-day history, and one
+      time by name, every project ranked, a weekly recap with tokens, cost and a one-line summary of your active days, a 14-day history, and one
       click to export the lot as CSV, JSON, or Markdown.
     </p>
     <figure>
-      <img src="screenshots/insights.png" width="640" alt="The Burndown Insights window showing a weekly recap, the current session by model, the biggest chats all time with tokens and cost, projects ranked, and a 14-day history">
-      <figcaption>Insights: the weekly recap, current session by model, biggest chats, and projects.</figcaption>
+      <img src="screenshots/insights.png" width="640" alt="The Burndown Insights window showing a short recap line with three figures, the current session by model in model colours, the biggest chats all time and the projects ranked side by side, a 14-day history, budget, and export">
+      <figcaption>Insights: the recap line, current session by model, and biggest chats and projects side by side.</figcaption>
     </figure>
   </div>
 </section>
@@ -417,7 +417,7 @@
     </div>
     <h3 style="margin-top:40px">And in your terminal</h3>
     <p class="narrow" style="margin-left:0">
-      One click installs a live gauge into the Claude Code statusline, composable from six
+      One click installs a live gauge into the Claude Code statusline, composable from seven
       segments. Every number is also available to your own scripts through a documented,
       versioned JSON contract, so Raycast scripts, Stream Deck buttons, and custom statuslines
       can read it without scraping anything.
@@ -601,7 +601,7 @@
     <details><summary>Why does macOS warn me the first time I open it?</summary>
       <p>Releases are ad-hoc signed because the project does not yet have a paid Apple Developer
       ID certificate, so macOS quarantines a downloaded copy and Gatekeeper blocks the first
-      open. Three ways past it, in order of least friction:</p>
+      open. Four ways past it, in order of least friction:</p>
       <ul>
         <li>Install with Homebrew, then clear the flag in the same line:
         <code>brew install --cask maz0x/tap/burndown &amp;&amp; xattr -d com.apple.quarantine /Applications/Burndown.app</code>.</li>
@@ -626,10 +626,12 @@
       enforcement. The call remains Anthropic's, which is exactly why live mode is opt-in and the
       mechanism is documented in plain English.</p></details>
 
-    <details><summary>Does it work on Claude Pro, or only Max?</summary>
-      <p>Both. Burndown does not hardcode plan shapes. It shows whatever limits your account
-      reports, including any per-model caps, and the Account window can re-read your plan on the
-      spot after an upgrade.</p></details>
+    <details><summary>Does it work on Claude Pro, Max, and Ultra?</summary>
+      <p>Yes, all three. Burndown does not hardcode plan shapes. It shows whatever limits your
+      account reports, including any per-model caps, and the Account window can re-read your plan
+      on the spot after an upgrade. Pro and Max have a five-hour session and a weekly limit, so
+      the card shows both. A verified Ultra account has no session limit, so the card leads with
+      the week and the menu bar shows the weekly percentage.</p></details>
 
     <details><summary>I only use Claude in the browser or the desktop app. Does it still work?</summary>
       <p>Live mode, yes. Your limits are account-wide server-side numbers, so percentages,
@@ -674,7 +676,7 @@
       </div>
       <div class="card">
         <h3><a href="https://github.com/maz0x/burndown">Read the source</a></h3>
-        <p>Every line is public, under the Apache License 2.0. Twenty-three test suites come with it, so you can
+        <p>Every line is public, under the Apache License 2.0. Twenty-four test suites come with it, so you can
         verify rather than trust.</p>
       </div>
     </div>

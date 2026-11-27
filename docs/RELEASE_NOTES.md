@@ -1,5 +1,83 @@
 # What's new in Burndown
 
+## 0.9.12
+
+This release comes out of an outside review of the whole app. Every finding was checked against
+the code before anything changed, and then everything that changed was reviewed again. That
+second pass found the two most important fixes here: one about privacy, one about memory. It is
+mostly fixes, with two new things: a reader window for What's new and Privacy, and a side by side
+layout in Insights.
+
+### Privacy
+
+- **Burndown no longer looks at Claude Code's saved sign-in unless you asked it to.** Burndown
+  promises to read the sign-in Claude Code keeps on your Mac only after you choose "Use my Claude
+  Code sign-in". One code path did not keep that promise: when Burndown could not find your plan
+  name in Claude Code's own account file, it read that saved sign-in to look up the plan name, both
+  at launch and whenever the Account window opened. Only the plan name was used. The sign-in was
+  never stored, logged or sent anywhere. It still should not have been read, and now it is not.
+  If you never gave that consent, the one thing you may notice is a missing plan name until you
+  sign in.
+
+### Memory
+
+- **Launching no longer spikes memory.** While reading your Claude Code logs, Burndown held on to
+  every file it had read until the whole pass was finished. On a large log folder that added up to
+  about 7.7 GB at the peak (measured on a 7.8 GB folder). It now lets go of each file as it moves
+  to the next one, and the same scan peaks at about 0.35 GB. The first scan the Insights window
+  ever makes dropped from about 10.8 GB to about 0.35 GB. Nothing got slower.
+
+### Insights
+
+- **The same logs now always give the same totals.** When a conversation was resumed, Claude Code
+  copied part of it into a new log file, and which copy Burndown kept depended on an order that
+  changed from launch to launch. Totals and the number of chats could shift slightly between two
+  launches with nothing new in the logs. The order is now fixed, so the original conversation
+  keeps its history and a resumed one counts only what is new.
+- **The recap line stops repeating the numbers under it.** It used to spell out the tokens, the
+  cost and the top model, which the three large figures directly below already show. It now says
+  what they do not: how many days you were active, your top project and your busiest day.
+- **Biggest chats and By project sit side by side** when the window is wide enough, instead of
+  two full-width lists with very long bars. On a narrow window or at a large text size, they
+  stack as before.
+- **Budget and Export are in cards** like every other section, and the By model bars use each
+  model's own colour, the same colours as the charts on the card.
+
+### The card and its charts
+
+- **By project is readable again.** The longest bar's number was drawn on top of the bar, and the
+  last row was cut in half. It is now plain rows: name, bar, number.
+- **The pace caption shows the whole sentence.** "at this pace the session limit arrives 3h..."
+  was cut off before "before the reset", which changed its meaning. It now wraps onto a second
+  line.
+- **Hour of day** reads "avg at 2p, peak hour" instead of being cut off when it was the last
+  chart on the card.
+- **Model limits explains its dot in plain words.** The caption "dot = binding cap" was jargon
+  and was cut off as well. A line under the rows now says what the dot marks: the tightest limit
+  right now.
+- The model names that are greyed out on a time window shorter than a day are easier to read.
+
+### Windows
+
+- **What's new and Privacy open inside Burndown.** The two links in the About window used to
+  hand a file to whatever app opens Markdown on your Mac, which for many people is a code editor.
+  They now open in a small reader window of Burndown's own.
+- **Welcome is honest about "Use my Claude Code sign-in".** Newer versions of Claude Code no
+  longer save a sign-in Burndown can read, so that button often cannot work, and it no longer
+  says "Nothing new to approve". If it does fail, Burndown now switches live mode back off
+  instead of leaving it on with nothing behind it.
+- **Closing the About or Account window now really closes it.** Both kept updating in the
+  background after they were closed.
+- **The colour palette menu shows each palette's colours** beside its name.
+- The two older widget styles are named "Twin tanks" and "Pills", without "(legacy)".
+
+### Site and docs
+
+- The site said the status line has six segments; it has seven. Two places said exports are
+  saved to Downloads; they are saved wherever you choose. The FAQ now covers Pro, Max and Ultra.
+- The dark hero picture had a bright box in its menu bar, and the card's pointer aimed at empty
+  space instead of the icon. Both are fixed.
+
 ## 0.9.11
 
 Two things in this release. Burndown asked Claude for your limits far more often than you told it

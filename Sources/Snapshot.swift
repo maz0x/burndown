@@ -894,6 +894,27 @@ enum StyleSheet {
         // that row, so one of them is relabelled, for this hook only. The published screenshot
         // set never sets the variable and is untouched.
         var recs = qaChartRecords()
+        // A second conversation in three of the four projects. The shared sample gives every
+        // project exactly one chat, so "Biggest chats" and "By project" came out as the same four
+        // numbers, which reads as a mistake once the two lists sit side by side. Every third
+        // record of a project's work, counted in the sample's own order, moves to its second
+        // chat: the project totals, the recap and the 14-day bars are unchanged, only the split
+        // between chats is new. "writing" keeps one chat, so the lists still agree where they
+        // should. Done here, not in qaChartRecords, because that sample also draws the card's own
+        // chart previews.
+        // Counted by position, not by the hour on the clock: the hour of a record depends on the
+        // time zone and on when the picture is made, so the chat sizes and order changed from run
+        // to run, and a project could even end up with no second chat at all.
+        let secondChat = ["website": "Fix the pricing page",
+                          "research": "Summarize the survey results",
+                          "api-server": "Add request rate limits"]
+        var seen: [String: Int] = [:]
+        for i in recs.indices {
+            guard let title = secondChat[recs[i].project] else { continue }
+            let n = seen[recs[i].project, default: 0]
+            seen[recs[i].project] = n + 1
+            if n % 3 == 2 { recs[i].session = title }
+        }
         if ProcessInfo.processInfo.environment["CUB_QA_INSIGHTS_HOVER"] != nil {
             for i in recs.indices where recs[i].project == "writing" { recs[i].project = kHomeProject }
         }
@@ -933,11 +954,12 @@ enum StyleSheet {
         // column sliced off mid-word. Rendering at the window's ideal width keeps the two in step.
         let shotW: CGFloat = 1160
         let view = InsightsView(engine: engine, settings: settings, preview: (recs, sessions))
-            .frame(width: shotW, height: 1500, alignment: .topLeading)
+            .frame(width: shotW, alignment: .topLeading)
+            .fixedSize(horizontal: false, vertical: true)
             .background(p.bg)
             .environment(\.colorScheme, dark ? .dark : .light)
         let renderer = ImageRenderer(content: view)
-        renderer.proposedSize = ProposedViewSize(width: shotW, height: 1500)
+        renderer.proposedSize = ProposedViewSize(width: shotW, height: nil)
         renderer.scale = 2
         guard let img = renderer.nsImage, let tiff = img.tiffRepresentation,
               let rep = NSBitmapImageRep(data: tiff),

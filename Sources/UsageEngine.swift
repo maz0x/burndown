@@ -110,6 +110,12 @@ final class UsageEngine: ObservableObject {
     /// retry all run for real and nothing leaves the machine: no token is read, no request is
     /// sent, the cache and the debug log are not written. "ok" replays the cached reading, so the
     /// numbers on screen do not change either. The last entry repeats.
+    /// True for a QA run (CUB_SANDBOX set). Such a run shows sample numbers, so nothing it holds
+    /// may reach the owner's real files: the live cache, the statusline contract, the token and
+    /// the chart history are not written, and no real usage request is sent unless the scripted
+    /// replay below answers it. Without the variable this is false and none of those paths change.
+    static let sandboxed = ProcessInfo.processInfo.environment["CUB_SANDBOX"] != nil
+
     static let qaFetchScript: [String]? = {
         guard let raw = ProcessInfo.processInfo.environment["CUB_QA_FETCH"] else { return nil }
         guard ProcessInfo.processInfo.environment["CUB_SANDBOX"] != nil else {
@@ -410,69 +416,75 @@ final class UsageEngine: ObservableObject {
         var reused = 0, parsed = 0
         var foundTitles: [String: String] = [:]
 
+        // Each file gets its own autorelease pool. Reading a log hands back autoreleased buffers, and
+        // without a pool per file nothing drains them until this whole pass ends, so every file's
+        // bytes pile up at once: that is the cold-start peak recorded in BACKLOG.md. Inside the pool
+        // `return` leaves the closure, which is the same as moving on to the next file.
         for case let url as URL in walker {
-            guard url.pathExtension == "jsonl" else { continue }
-            let vals = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
-            guard let modDate = vals?.contentModificationDate else { continue }
-            let mod = modDate.timeIntervalSince1970
-            let size = UInt64(vals?.fileSize ?? 0)
-            let path = url.path
-            let sid = url.deletingPathExtension().lastPathComponent
+            autoreleasepool {
+                guard url.pathExtension == "jsonl" else { return }
+                let vals = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+                guard let modDate = vals?.contentModificationDate else { return }
+                let mod = modDate.timeIntervalSince1970
+                let size = UInt64(vals?.fileSize ?? 0)
+                let path = url.path
+                let sid = url.deletingPathExtension().lastPathComponent
 
-            if let c = cache[path], c.mod == mod, c.size == size {
-                reused += 1
-                // A cached PLACEHOLDER is not accepted on this path either, and this is the path
-                // that matters: an unchanged file never reaches the parse below, so a title
-                // captured before Claude Code had written one would be served forever. Re-reading
-                // a head costs 256 KB and only happens while the name is still missing; the healed
-                // title is written back so the next launch does not repeat it.
-                if isGeneratedTitle(c.title) {
-                    let fresh = Self.resolvedTitle(sid: sid, url: url)
-                    next[path] = CachedFile(mod: c.mod, size: c.size, offset: c.offset,
-                                            project: c.project, title: fresh, records: c.records)
-                    foundTitles[sid] = fresh
-                } else {
-                    next[path] = c
-                    foundTitles[sid] = c.title
+                if let c = cache[path], c.mod == mod, c.size == size {
+                    reused += 1
+                    // A cached PLACEHOLDER is not accepted on this path either, and this is the path
+                    // that matters: an unchanged file never reaches the parse below, so a title
+                    // captured before Claude Code had written one would be served forever. Re-reading
+                    // a head costs 256 KB and only happens while the name is still missing; the healed
+                    // title is written back so the next launch does not repeat it.
+                    if isGeneratedTitle(c.title) {
+                        let fresh = Self.resolvedTitle(sid: sid, url: url)
+                        next[path] = CachedFile(mod: c.mod, size: c.size, offset: c.offset,
+                                                project: c.project, title: fresh, records: c.records)
+                        foundTitles[sid] = fresh
+                    } else {
+                        next[path] = c
+                        foundTitles[sid] = c.title
+                    }
+                    return
                 }
-                continue
+
+                // Grown since last time: keep what was parsed and read only the new bytes. Anything
+                // else (new file, shrank, rewritten) is read from the start.
+                let prior = cache[path]
+                let canAppend = prior != nil && size >= prior!.size && size >= prior!.offset
+                let base = canAppend ? prior!.offset : 0
+                guard let h = try? FileHandle(forReadingFrom: url) else { return }
+                try? h.seek(toOffset: base)
+                let data = h.readDataToEndOfFile()
+                try? h.close()
+
+                // The project and the title come from the head of the file, so they are only worth
+                // reading when this file has never been parsed before.
+                let project = prior?.project ?? Self.resolvedProject(url: url, home: home)
+                // A cached PLACEHOLDER is not accepted. The scan cache keeps the title it captured when
+                // a file was first parsed, and a file that has not changed since is never re-read, so a
+                // chat scanned before Claude Code had written its title kept "Untitled chat, 2:03 PM"
+                // in the cache for good, and the parsed records carried that string with them. Purging
+                // the title index alone would not have reached these. Re-reading a head is cheap
+                // (256 KB) and only happens while the name is still missing.
+                let cachedTitle = (canAppend ? prior?.title : nil).flatMap { isGeneratedTitle($0) ? nil : $0 }
+                let title = cachedTitle ?? Self.resolvedTitle(sid: sid, url: url)
+                foundTitles[sid] = title
+
+                let (items, consumed) = Self.parseUsageBytes(data, project: project, session: title,
+                                                             iso, isoNoFrac)
+                var recs = canAppend ? (prior?.records ?? []) : []
+                recs.append(contentsOf: items.map {
+                    CachedRecord(ts: $0.0.ts.timeIntervalSince1970, model: $0.0.model,
+                                 input: $0.0.input, output: $0.0.output, cache5m: $0.0.cache5m,
+                                 cache1h: $0.0.cache1h, cacheRead: $0.0.cacheRead,
+                                 key: ScanCache.keyHash($0.1))
+                })
+                next[path] = CachedFile(mod: mod, size: size, offset: base + consumed,
+                                        project: project, title: title, records: recs)
+                parsed += 1
             }
-
-            // Grown since last time: keep what was parsed and read only the new bytes. Anything
-            // else (new file, shrank, rewritten) is read from the start.
-            let prior = cache[path]
-            let canAppend = prior != nil && size >= prior!.size && size >= prior!.offset
-            let base = canAppend ? prior!.offset : 0
-            guard let h = try? FileHandle(forReadingFrom: url) else { continue }
-            try? h.seek(toOffset: base)
-            let data = h.readDataToEndOfFile()
-            try? h.close()
-
-            // The project and the title come from the head of the file, so they are only worth
-            // reading when this file has never been parsed before.
-            let project = prior?.project ?? Self.resolvedProject(url: url, home: home)
-            // A cached PLACEHOLDER is not accepted. The scan cache keeps the title it captured when
-            // a file was first parsed, and a file that has not changed since is never re-read, so a
-            // chat scanned before Claude Code had written its title kept "Untitled chat, 2:03 PM"
-            // in the cache for good, and the parsed records carried that string with them. Purging
-            // the title index alone would not have reached these. Re-reading a head is cheap
-            // (256 KB) and only happens while the name is still missing.
-            let cachedTitle = (canAppend ? prior?.title : nil).flatMap { isGeneratedTitle($0) ? nil : $0 }
-            let title = cachedTitle ?? Self.resolvedTitle(sid: sid, url: url)
-            foundTitles[sid] = title
-
-            let (items, consumed) = Self.parseUsageBytes(data, project: project, session: title,
-                                                         iso, isoNoFrac)
-            var recs = canAppend ? (prior?.records ?? []) : []
-            recs.append(contentsOf: items.map {
-                CachedRecord(ts: $0.0.ts.timeIntervalSince1970, model: $0.0.model,
-                             input: $0.0.input, output: $0.0.output, cache5m: $0.0.cache5m,
-                             cache1h: $0.0.cache1h, cacheRead: $0.0.cacheRead,
-                             key: ScanCache.keyHash($0.1))
-            })
-            next[path] = CachedFile(mod: mod, size: size, offset: base + consumed,
-                                    project: project, title: title, records: recs)
-            parsed += 1
         }
 
         ScanCache.save(next)
@@ -491,14 +503,26 @@ final class UsageEngine: ObservableObject {
         // duplicates all land on the same conversation. The live path has always de-duped this way;
         // this one silently did not, so the card and Insights disagreed about the same day.
         //
-        // Files are visited in a dictionary's arbitrary order, so which copy is kept is arbitrary
-        // too. That is fine, because the copies are identical by construction: same message id,
-        // same request id, same token counts.
+        // The FIRST copy of each message wins, so the order the files are visited in decides the
+        // totals. A dictionary's order changes with every launch, and the copies are not always
+        // identical (the real logs hold a few whose token counts differ), so the same logs gave
+        // different Insights totals and chat counts from one launch to the next. The files are
+        // therefore walked oldest conversation first: by each file's earliest record, then by the
+        // file's last change (a resumed copy can start with the very same first message, and the
+        // original is the one that stopped being written first), then by path, which never ties.
+        // The original conversation keeps its history and a resumed copy counts only what is new.
         var records: [UsageRecord] = []
         var sessions: [SessionUsage] = []
         var seen = Set<UInt64>()
         records.reserveCapacity(next.values.reduce(0) { $0 + $1.records.count })
-        for (path, f) in next {
+        let firstTs = next.mapValues { f in f.records.lazy.map(\.ts).min() ?? .infinity }
+        let ordered = next.sorted { a, b in
+            let ta = firstTs[a.key] ?? .infinity, tb = firstTs[b.key] ?? .infinity
+            if ta != tb { return ta < tb }
+            if a.value.mod != b.value.mod { return a.value.mod < b.value.mod }
+            return a.key < b.key
+        }
+        for (path, f) in ordered {
             guard !f.records.isEmpty else { continue }
             var tokens = 0
             var cost = 0.0
@@ -571,7 +595,8 @@ final class UsageEngine: ObservableObject {
     func reauthenticate(completion: @escaping (Bool) -> Void) {
         let url = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".config/burndown/token.json")
-        try? FileManager.default.removeItem(at: url)
+        // A click in a QA window must not delete the owner's real sign-in.
+        if !Self.sandboxed { try? FileManager.default.removeItem(at: url) }
         clearLiveBackoff()
         lastLiveFetch = Date(timeIntervalSince1970: 0)
         logPlanFields()                       // refresh the plan name from the credential too
@@ -594,8 +619,11 @@ final class UsageEngine: ObservableObject {
     /// CLI-borrow consent (via .burndownDidSignOut → settings), truncates the diagnostic log, and
     /// clears the published identity, so signing out actually stops everything and stays stopped.
     func signOut() {
-        try? FileManager.default.removeItem(at: Self.tokenStore())
-        try? FileManager.default.removeItem(at: cacheURL)
+        // A click in a QA window signs that run out in memory only; the owner's files stay.
+        if !Self.sandboxed {
+            try? FileManager.default.removeItem(at: Self.tokenStore())
+            try? FileManager.default.removeItem(at: cacheURL)
+        }
         Self.cliBootstrapAllowed = false
         Self.truncateDebugLog()
         var s = snapshot
@@ -709,6 +737,11 @@ final class UsageEngine: ObservableObject {
 
     func fetchLive(force: Bool = false, completion: ((Bool) -> Void)? = nil) {
         guard usageEnabled else { completion?(false); return }   // user has not opted into the live usage API
+        // A QA run never sends a real request: it would spend the owner's rate limit with the
+        // owner's token. Only the scripted replay (CUB_QA_FETCH) may stand in for the service.
+        // The snapshot is left exactly as it is, so a demo seed keeps its LIVE badge and numbers,
+        // and the caller hears "no" so a waiting button does not spin for ever.
+        if Self.sandboxed && Self.qaFetchScript == nil { completion?(false); return }
         // One gate for every automatic fetch: not sooner than the user's interval after the last
         // one, and not inside a 429 backoff. The live loop calls this every 2 seconds while tokens
         // flow, so this line IS the polling rate. A manual refresh (force) passes it.
@@ -834,6 +867,8 @@ final class UsageEngine: ObservableObject {
     // Private to the user (0600) and size-capped: past ~2 MB the file is cut back to its last
     // quarter, so it can never grow without bound on a user's machine.
     private static func dbg(_ s: String) {
+        // A QA run's lines would sit among the owner's real ones and mislead whoever reads them.
+        guard !sandboxed else { return }
         let url = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".config/burndown/live-debug.log")
         try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
@@ -863,6 +898,7 @@ final class UsageEngine: ObservableObject {
 
     /// Empty the diagnostic log (sign-out, or the Settings reset).
     static func truncateDebugLog() {
+        guard !sandboxed else { return }   // a QA click must not wipe the owner's real log
         let url = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".config/burndown/live-debug.log")
         writePrivate(Data(), to: url)
@@ -925,6 +961,8 @@ final class UsageEngine: ObservableObject {
     }
 
     private static func saveStored(_ t: Tok) {
+        // A QA run must never replace the owner's real token file with whatever it got hold of.
+        guard !sandboxed else { return }
         var o: [String: Any] = ["access_token": t.access, "refresh_token": t.refresh,
                                 "expires_at": t.expMs, "scopes": t.scopes]
         if let e = t.email { o["email"] = e }
@@ -991,6 +1029,9 @@ final class UsageEngine: ObservableObject {
     /// Consent gate for borrowing Claude Code's credential. Set from settings.borrowCLI at startup
     /// and on change. When false, the app NEVER reads ~/.claude/.credentials.json or the CLI's
     /// Keychain item, so sign-out sticks and a fresh install touches nothing without permission.
+    /// The only readers are readKeychainCreds' two callers, ensureAccessToken and logPlanFields,
+    /// and both check this first. cliSignInPresent only asks whether the file or the item EXISTS
+    /// (no -w, the secret is not read), so the welcome screen can offer the choice at all.
     static var cliBootstrapAllowed = false
 
     /// Why the last attempt to borrow Claude Code's credential produced nothing, for the onboarding
@@ -1142,12 +1183,20 @@ actor RefreshGate {
                    scopes: (inner["scopes"] as? [String]) ?? [], plan: plan)
     }
 
-    /// One-shot: read the Keychain credential for the plan name (no rotation) and publish it.
+    /// One-shot: work out the plan name and publish it. The Claude Code credential is read only
+    /// when the user has consented to borrowing it (cliBootstrapAllowed).
     func logPlanFields() {
+        // A QA run shows a sample plan; it reads nothing from the owner's account files.
+        guard !Self.sandboxed else { return }
+        // Read on the calling thread, which is the main thread for every caller, so the value is
+        // the consent in force right now and the background read below cannot race a change.
+        let mayReadCredential = Self.cliBootstrapAllowed
         DispatchQueue.global(qos: .utility).async { [weak self] in
-            // Prefer the live account record; fall back to the Keychain credential only if absent.
+            // Prefer the live account record. Fall back to the Claude Code credential only when it
+            // is absent AND the user said yes to borrowing it: without that consent the credential
+            // file and the Keychain item are never opened, which is what PRIVACY.md promises.
             let jsonPlan = Self.planFromClaudeJson()
-            let plan = jsonPlan ?? Self.readKeychainCreds()?.plan
+            let plan = jsonPlan ?? (mayReadCredential ? Self.readKeychainCreds()?.plan : nil)
             Self.dbg("logPlanFields plan=\(plan ?? "nil") json=\(jsonPlan ?? "nil")")
             guard let plan else { return }
             DispatchQueue.main.async {
@@ -1160,6 +1209,9 @@ actor RefreshGate {
     // MARK: - Live cache (percentages only, for resilience + instant first paint)
 
     private func writeLiveCache(_ api: APIUsage) {
+        // A QA run's snapshot may be sample data; it must not land in the owner's real cache
+        // (or, through the call at the end, in the statusline contract).
+        guard !Self.sandboxed else { return }
         var root = encodeLiveCache(api)
         root["updated"] = ISO8601DateFormatter().string(from: Date())
         // Persist the account identity too (no secrets) so the menu + Account window are instant on
@@ -1184,6 +1236,8 @@ actor RefreshGate {
     /// statuslines): mirrors the live numbers into ~/.config/burndown/burndown-live.json
     /// using the versioned BurndownLive shape (Sources/LiveContract.swift).
     private func writeBurndownContract() {
+        // The statusline and other tools read this file; sample numbers from a QA run must not.
+        guard !Self.sandboxed else { return }
         let iso = ISO8601DateFormatter()
         let live = BurndownLive(
             schemaVersion: 1,
@@ -1441,44 +1495,49 @@ actor RefreshGate {
         let iso = ISO8601DateFormatter(); iso.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let isoNoFrac = ISO8601DateFormatter(); isoNoFrac.formatOptions = [.withInternetDateTime]
         var live = Set<String>()
+        // One autorelease pool per file, for the same reason as in scanFilesSync: otherwise the
+        // buffers read from every file live until the whole pass ends (the measured cold-start peak
+        // is in BACKLOG.md). `return` inside the pool moves on to the next file.
         for case let url as URL in walker {
-            guard url.pathExtension == "jsonl" else { continue }
-            let vals = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
-            guard let mod = vals?.contentModificationDate else { continue }
-            let size = UInt64(vals?.fileSize ?? 0)
-            let path = url.path; live.insert(path)
-            let cached = entryCache[path]
-            if let c = cached, c.mod == mod, c.size == size { continue }   // unchanged → reuse cache
-            if mod < since, cached == nil { continue }                     // old + never parsed → skip
-            let project = Self.projectDisplayName(url, home: FileManager.default.homeDirectoryForCurrentUser.path)
-            let sid = url.deletingPathExtension().lastPathComponent
-            // The file is named after a UUID and the conversation's title lives inside it. Naming
-            // records by the filename is what put raw session ids in front of the reader wherever
-            // this path feeds a chart. Look the title up once per session and remember it.
-            let session = Self.resolvedTitle(sid: sid, url: url)
-            // Read only the appended bytes when the file only grew; otherwise (new / shrank / rotated)
-            // read the whole thing.
-            // Appending is only safe when the file has GROWN. Comparing against the parse offset
-            // alone misses the case where a log was rewritten shorter and then grew again past that
-            // offset: the bytes before it are different bytes now, and reading from there splices
-            // the middle of a new file onto entries from an old one. The scan path already tests
-            // both; this one is the same rule, written the same way.
-            let canAppend = cached != nil && size >= cached!.size && size >= cached!.offset
-            let base = canAppend ? cached!.offset : 0
-            var items = canAppend ? cached!.items : []
-            guard let h = try? FileHandle(forReadingFrom: url) else {
-                // Leave the cache entry exactly as it was. Stamping the file's CURRENT date and
-                // size onto an entry we failed to read makes it look freshly parsed, so the
-                // unchanged check skips it from then on and that conversation's usage is frozen
-                // for the life of the process. A file we could not open is a file we know nothing
-                // new about; the next pass should try again.
-                continue
+            autoreleasepool {
+                guard url.pathExtension == "jsonl" else { return }
+                let vals = try? url.resourceValues(forKeys: [.contentModificationDateKey, .fileSizeKey])
+                guard let mod = vals?.contentModificationDate else { return }
+                let size = UInt64(vals?.fileSize ?? 0)
+                let path = url.path; live.insert(path)
+                let cached = entryCache[path]
+                if let c = cached, c.mod == mod, c.size == size { return }     // unchanged → reuse cache
+                if mod < since, cached == nil { return }                       // old + never parsed → skip
+                let project = Self.projectDisplayName(url, home: FileManager.default.homeDirectoryForCurrentUser.path)
+                let sid = url.deletingPathExtension().lastPathComponent
+                // The file is named after a UUID and the conversation's title lives inside it. Naming
+                // records by the filename is what put raw session ids in front of the reader wherever
+                // this path feeds a chart. Look the title up once per session and remember it.
+                let session = Self.resolvedTitle(sid: sid, url: url)
+                // Read only the appended bytes when the file only grew; otherwise (new / shrank / rotated)
+                // read the whole thing.
+                // Appending is only safe when the file has GROWN. Comparing against the parse offset
+                // alone misses the case where a log was rewritten shorter and then grew again past that
+                // offset: the bytes before it are different bytes now, and reading from there splices
+                // the middle of a new file onto entries from an old one. The scan path already tests
+                // both; this one is the same rule, written the same way.
+                let canAppend = cached != nil && size >= cached!.size && size >= cached!.offset
+                let base = canAppend ? cached!.offset : 0
+                var items = canAppend ? cached!.items : []
+                guard let h = try? FileHandle(forReadingFrom: url) else {
+                    // Leave the cache entry exactly as it was. Stamping the file's CURRENT date and
+                    // size onto an entry we failed to read makes it look freshly parsed, so the
+                    // unchanged check skips it from then on and that conversation's usage is frozen
+                    // for the life of the process. A file we could not open is a file we know nothing
+                    // new about; the next pass should try again.
+                    return
+                }
+                try? h.seek(toOffset: base)
+                let data = h.readDataToEndOfFile(); try? h.close()
+                let (newItems, consumed) = Self.parseUsageBytes(data, project: project, session: session, iso, isoNoFrac)
+                items.append(contentsOf: newItems)
+                entryCache[path] = FileEntries(mod: mod, size: size, offset: base + consumed, items: items)
             }
-            try? h.seek(toOffset: base)
-            let data = h.readDataToEndOfFile(); try? h.close()
-            let (newItems, consumed) = Self.parseUsageBytes(data, project: project, session: session, iso, isoNoFrac)
-            items.append(contentsOf: newItems)
-            entryCache[path] = FileEntries(mod: mod, size: size, offset: base + consumed, items: items)
         }
         // Drop deleted files, and also files that have fallen entirely out of the window. Only the
         // first of those used to happen, so every log ever touched kept its parsed entries in
@@ -1490,9 +1549,20 @@ actor RefreshGate {
             guard let newest = fe.items.last?.entry.ts else { return true }   // parsed, nothing in it
             return newest >= retain
         }
-        // Merge cached items, de-duped by message id (identical copies, so order is irrelevant), filtered by `since`.
+        // Merge cached items, de-duped by message id, filtered by `since`. The first copy wins, so
+        // the files are walked in a fixed order, the same rule as scanFilesSync: earliest entry
+        // first, then the file's last change, then path. Dictionary order changes with every
+        // launch and the copies are not always identical, so without this the same logs could
+        // give different numbers.
         var seen = Set<String>(); var out: [Entry] = []
-        for (_, fe) in entryCache {
+        let firstTs = entryCache.mapValues { fe in fe.items.lazy.map(\.entry.ts).min() ?? .distantFuture }
+        let ordered = entryCache.sorted { a, b in
+            let ta = firstTs[a.key] ?? .distantFuture, tb = firstTs[b.key] ?? .distantFuture
+            if ta != tb { return ta < tb }
+            if a.value.mod != b.value.mod { return a.value.mod < b.value.mod }
+            return a.key < b.key
+        }
+        for (_, fe) in ordered {
             for (e, key) in fe.items where e.ts >= since {
                 if !key.isEmpty { if seen.contains(key) { continue }; seen.insert(key) }
                 out.append(e)

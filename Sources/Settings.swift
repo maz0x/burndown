@@ -299,7 +299,7 @@ enum LiveColor: String, CaseIterable, Identifiable {
     }
 }
 let kAppName = "Burndown"           // app name (floating window title + About). Tagline: "usage monitor for Claude"
-let kAppVersion = "0.9.11"          // bump on release builds; 1.0 is reserved for Developer ID signing + multi-provider
+let kAppVersion = "0.9.12"          // bump on release builds; 1.0 is reserved for Developer ID signing + multi-provider
 let kMinWindowAlpha = 0.45          // most see-through the windows go at 100% transparency (keeps text legible)
 
 // ── When the card stops having a surface (see AppSettings.surfaceIsVisible) ──
@@ -1085,9 +1085,14 @@ final class AppSettings: ObservableObject {
         // Opt-in gate for the OAuth usage API. Existing installs (a live.json cache already exists) keep it
         // on so nothing breaks; a brand-new / freshly distributed install starts off so the app never calls
         // Claude's usage endpoint with your token until you explicitly turn it on.
+        // A QA run (CUB_SANDBOX) is never an existing install, whatever files this Mac holds: its
+        // suite is wiped on every launch, so inheriting "on" from the owner's files would have every
+        // screenshot run call the usage service and consent to borrowing the owner's Claude Code sign-in
+        // without anyone saying yes. CUB_DEFAULTS can still switch either on for a run that needs it.
+        let sandboxed = UsageEngine.sandboxed
         if d.object(forKey: "usageAPI") == nil {
             let cache = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".config/burndown/live.json")
-            let existingInstall = FileManager.default.fileExists(atPath: cache.path)
+            let existingInstall = !sandboxed && FileManager.default.fileExists(atPath: cache.path)
             usageAPI = existingInstall
             d.set(existingInstall, forKey: "usageAPI")
         } else {
@@ -1101,11 +1106,14 @@ final class AppSettings: ObservableObject {
         let establishedInstall = FileManager.default.fileExists(atPath: tokenFile.path)
             || FileManager.default.fileExists(atPath: liveFile.path)
         if d.object(forKey: "borrowCLI") == nil {
-            borrowCLI = establishedInstall
-            d.set(establishedInstall, forKey: "borrowCLI")
+            let consent = establishedInstall && !sandboxed
+            borrowCLI = consent
+            d.set(consent, forKey: "borrowCLI")
         } else {
             borrowCLI = d.bool(forKey: "borrowCLI")
         }
+        // The tour flag still follows the files in a QA run: it only decides whether the welcome
+        // window opens, it reads nothing, and the pictures are taken without it in the way.
         if d.object(forKey: "onboarded") == nil {
             onboarded = establishedInstall
             d.set(establishedInstall, forKey: "onboarded")

@@ -35,6 +35,11 @@ struct ChartCtx {
     var window: TimeInterval = 3600
     var days: Int = 14
     var hover: Bool = true
+    /// True only for the Settings gallery's small preview tiles, which clip every chart at a fixed
+    /// height. It is its own flag because `hover` is a user setting ("Hover readout"): a chart that
+    /// treated "no hover" as "this is a preview" cut rows from the real card for anyone who had
+    /// switched the readout off.
+    var preview: Bool = false
     /// The live tokens-per-minute reading, so the burn chart's headline and the Session line
     /// cannot disagree. They used to: the Session line read the last 60 seconds while the chart
     /// read its most recent SAMPLE, so the card showed "0 tok/min" directly above "1k / min".
@@ -913,8 +918,10 @@ struct UsageLinesChart: View {
                             Text(item.key).font(.system(size: 9.5)).foregroundStyle(p.sub).fixedSize()
                         }
                         // The fade stays, but it is no longer the only signal: a hollow
-                        // swatch says "off" where a shade only says "quiet".
-                        .opacity(item.gated ? 0.4 : (shown(item.key) ? 1 : 0.45))
+                        // swatch says "off" where a shade only says "quiet". A gated name is at
+                        // 0.55, not 0.4: at 0.4 the names could hardly be read at all, and the
+                        // hollow swatch already says they are unavailable.
+                        .opacity(item.gated ? 0.55 : (shown(item.key) ? 1 : 0.45))
                         // Item 64: these rows hit-test about 12pt tall in a stack 3pt
                         // apart, so the pointer lands between two toggles as often as on
                         // one. A contiguous 18pt band per row fixes that without moving
@@ -1017,53 +1024,93 @@ struct ByModelChart: View {
 
 struct ByProjectChart: View {
     let ctx: ChartCtx
-    @State private var sel: CatValue?
+    // The hovered project's NAME, not a copy of its row. A copy kept showing the old figure after
+    // a data refresh, and once the ranking moved, the highlight (matched by rank) and the stat
+    // line named two different projects. The row is looked up fresh from the current data on
+    // every render, so a project that leaves the window simply stops being selected.
+    @State private var selName: String?
     @State private var memo = ChartMemo()
     var body: some View {
         let p = ctx.p
         let now = ctx.tick
         let lower = ctx.lower(ctx.records.first?.date, now: now)
         let rows = memo.value(ctx.dataKey) { topProjects(ctx.records, from: lower) }
-        let total = rows.reduce(0) { $0 + $1.v }
+        // The Settings gallery clips every preview tile at a fixed height, so it shows four rows.
+        // Only the gallery: the real card shows every row whether or not hover is on.
+        let shown = ctx.preview ? Array(rows.prefix(4)) : rows
+        let sel = ctx.hover ? shown.first { $0.name == selName } : nil
+        let total = shown.reduce(0) { $0 + $1.v }
+        // In the gallery the stat line counts what the tile draws, so four bars never sit above
+        // "across 5 projects" and a total that includes a fifth.
+        let across = shown.count < rows.count
+            ? "\u{00B7} top \(shown.count) of \(rows.count) projects"
+            : "\u{00B7} across \(rows.count) project\(rows.count == 1 ? "" : "s")"
         return VStack(alignment: .leading, spacing: 5) {
             if rows.isEmpty {
                 chartPlaceholder("No usage in this window", p, height: ctx.plotH)
             } else {
-                Chart {
-                    ForEach(rows) { r in
-                        BarMark(x: .value("tokens", r.v), y: .value("project", r.name), height: .ratio(kBarFill))
-                            .foregroundStyle(ctx.accent.opacity(sel == nil || sel?.id == r.id ? 0.8 : 0.35))
-                            .cornerRadius(2)
-                            .barValueLabel {
-                                Text(fmtTok(Int(r.v))).font(.system(size: 8.5, design: .monospaced))
-                                    .foregroundStyle(p.sub).monospacedDigit()
-                            }
-                    }
-                }
-                .chartXAxis(.hidden)
-                .chartYAxis {
-                    AxisMarks(position: .leading) { v in
-                        AxisValueLabel {
-                            if let s = v.as(String.self) {
-                                Text(s).font(.system(size: 9)).foregroundStyle(p.sub).lineLimit(1).truncationMode(.middle)
-                            }
+                // Plain rows, built the way ModelCapsChart and TopChatsChart are. As a Swift Charts bar
+                // chart the longest bar's value label landed on top of its own bar and the last row
+                // was cut in half by the fixed frame. A row is a name, a bar and a number in fixed
+                // columns, so none of that can happen, and the card grows with the row count.
+                let peak = max(1, shown.map(\.v).max() ?? 1)
+                // No spacing between rows: each row carries half the old 7pt gap above and below
+                // as padding inside its hit area, so the hover bands touch. With a gap between
+                // them, moving down the list left every row for a moment and the stat line
+                // flickered back to the total between each pair.
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(shown) { r in
+                        HStack(spacing: 8) {
+                            // A Settings gallery tile can be as narrow as about 130pt inside (By model's
+                            // legend takes the rest of that row), far narrower than the card. A row may
+                            // never need more than that: when its minimum widths added up to 172pt the
+                            // tile could not shrink, the whole Charts pane grew wider than its window
+                            // and slid 22pt off both edges. So in a preview the name has no minimum,
+                            // the bar's is small and the number's column is tight; the card keeps the
+                            // roomier columns.
+                            Text(r.name).font(.system(size: 11)).foregroundStyle(p.sub)
+                                .lineLimit(1).truncationMode(.middle)
+                                .frame(minWidth: ctx.preview ? 0 : 44, maxWidth: ctx.preview ? 64 : 80, alignment: .leading)
+                                // In the narrow tile the name is served first, so it is the bar that
+                                // gives way, down to its small minimum, before a name is cut.
+                                .layoutPriority(ctx.preview ? 1 : 0)
+                                .help(r.name)
+                            HBar(pct: r.v / peak,
+                                 color: ctx.accent.opacity(sel == nil || sel?.name == r.name ? 0.8 : 0.35),
+                                 track: p.track, height: kRowBarHeight)
+                                .frame(minWidth: ctx.preview ? 20 : 40)
+                            Text(fmtTok(Int(r.v)))
+                                .font(.system(size: 11, weight: .medium, design: .monospaced))
+                                .foregroundStyle(p.sub).monospacedDigit()
+                                .frame(width: ctx.preview ? 36 : kRowValueWidth, alignment: .trailing)
+                        }
+                        .padding(.vertical, 3.5)
+                        .contentShape(Rectangle())
+                        .onHover { inside in
+                            guard ctx.hover else { return }
+                            if inside { selName = r.name } else if selName == r.name { selName = nil }
                         }
                     }
                 }
-                .chartPlot()
-                .transaction { $0.animation = nil }
-                .frame(height: ctx.plotH)
-                .hoverCatcher { pt, proxy, geo in
-                    guard ctx.hover else { return }
-                    guard let pt, let name: String = proxy.value(atY: pt.y - geo[proxy.plotAreaFrame].minY) else { sel = nil; return }
-                    sel = rows.first { $0.name == name }
-                }
+                // Take the outer half-gaps back, so the rows sit exactly where they did with a 7pt
+                // spacing; the first and last hit bands just reach 3.5pt past the rows.
+                .padding(.vertical, -3.5)
+                // Take all the width on offer, as the Swift Charts version did. The gallery puts two
+                // tiles in a row and shares the width by how much each wants; without this the
+                // tile shrank to its minimum and its neighbour took the rest.
+                .frame(maxWidth: .infinity, alignment: .leading)
+                // Natural height (at least the base plot height), then the grip's boost as extra
+                // space below. The drag-resize freeze assumes every chart grows by exactly the
+                // boost; a min-height of plotH grew by less once the rows were taller than it.
+                .frame(minHeight: kChartH, alignment: .top)
+                .padding(.bottom, max(0, ctx.plotH - kChartH))
+                .padding(.trailing, 8)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("Tokens by project")
-                .accessibilityValue(rows.map { "\($0.name) \(fmtTok(Int($0.v)))" }.joined(separator: ", "))
+                .accessibilityValue(shown.map { "\($0.name) \(fmtTok(Int($0.v)))" }.joined(separator: ", "))
             }
             statLine(sel.map { fmtTok(Int($0.v)) } ?? fmtTok(Int(total)),
-                     sel.map { "· \($0.name)" } ?? "· across \(rows.count) projects", p)
+                     sel.map { "\u{00B7} \($0.name)" } ?? across, p)
         }
     }
 }
@@ -1175,7 +1222,7 @@ struct HourProfileChart: View {
                 .accessibilityValue("Busiest around \(hourLabel(busiest?.id ?? 0))")
             }
             statLine(sel.map { fmtTok(Int($0.v)) } ?? fmtTok(Int(busiest?.v ?? 0)),
-                     sel.map { "· avg at \(hourLabel($0.id))" } ?? "· avg at \(hourLabel(busiest?.id ?? 0)), your peak hour", p)
+                     sel.map { "· avg at \(hourLabel($0.id))" } ?? "· avg at \(hourLabel(busiest?.id ?? 0)), peak hour", p)
         }
     }
 }
@@ -1302,19 +1349,6 @@ extension ChartContent {
                             spacing: 2, content: content)
         }
     }
-
-    /// A bar's value label, kept inside the chart. The longest bar reaches the plot's edge, so its
-    /// trailing label was always the one that got cut off.
-    @ChartContentBuilder
-    func barValueLabel<V: View>(@ViewBuilder _ content: @escaping () -> V) -> some ChartContent {
-        if #available(macOS 14.0, *) {
-            self.annotation(position: .trailing, spacing: 3,
-                            overflowResolution: .init(x: .fit(to: .chart), y: .disabled),
-                            content: content)
-        } else {
-            self.annotation(position: .trailing, spacing: 3, content: content)
-        }
-    }
 }
 
 extension View {
@@ -1328,10 +1362,8 @@ extension View {
     /// (owner's screenshot). That particular bug is fixed at the source in BurndownChart, where it
     /// belongs; this makes sure the next one is a chart drawn wrong rather than a card drawn over.
     ///
-    /// It clips MARKS only. Annotations, which is what hoverCallout and barValueLabel are, are laid
-    /// out against the chart rather than the plot and survive: verified by rendering the Breakdown
-    /// contact sheet before and after, where By project's value labels sit past the trailing edge
-    /// of the plot and are pixel-identical. That is why the clip is here and not on the chart's
+    /// It clips MARKS only. Annotations, which is what hoverCallout is, are laid out against the
+    /// chart rather than the plot and survive. That is why the clip is here and not on the chart's
     /// frame: on macOS 13 hoverCallout has no overflowResolution and may sit above the chart's top
     /// edge, so a frame-level clip would eat the callout on the oldest supported system.
     func chartPlot() -> some View { chartPlotStyle { $0.background(Color.clear).clipped() } }

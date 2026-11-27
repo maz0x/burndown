@@ -104,5 +104,32 @@ homeTop = RecapSummary(label: "7 days", totalTokens: 1000, costUSD: 5, dayCount:
                        topProject: "Fine Print Doctor", topModelFamily: "Opus", busiestDay: "2026-06-02")
 check(recapText(homeTop).contains("top project Fine Print Doctor"), "a real project still gets named")
 
+print("recapSubtitle (the Insights line under the plaques):")
+check(recapSubtitle(empty, windowDays: 7) == "No recorded activity in this period.",
+      "no tokens -> the plain no-activity line")
+check(recapSubtitle(r1, windowDays: 1) == "Active 1 day \u{00B7} top project solo",
+      "one-day window: no 'of M', singular day, no busiest with nothing to compare")
+let sub = recapSubtitle(r, windowDays: 7)
+check(sub == "Active 3 of 7 days \u{00B7} top project alpha \u{00B7} busiest Tue Jun 2",
+      "a week: N of M days, the real top project, the busiest day as a human date")
+check(!sub.contains("tokens") && !sub.contains("$") && !sub.contains("Opus"),
+      "says nothing the plaques already show (tokens, cost, top model)")
+check(recapSubtitle(r, windowDays: 0).hasPrefix("Active 3 days \u{00B7}"),
+      "a period with no fixed length drops the 'of M'")
+let homeSub = RecapSummary(label: "7 days", totalTokens: 1000, costUSD: 5, dayCount: 3,
+                           topProject: kHomeProject, topModelFamily: "Opus", busiestDay: "2026-06-02")
+check(!recapSubtitle(homeSub, windowDays: 7).contains("top project"), "the home bucket is never named")
+let unknownSub = RecapSummary(label: "7 days", totalTokens: 1000, costUSD: 5, dayCount: 3,
+                              topProject: kUnknownProject, topModelFamily: "Opus", busiestDay: "2026-06-02")
+check(!recapSubtitle(unknownSub, windowDays: 7).contains("top project"), "the unknown bucket is never named")
+let namedSub = RecapSummary(label: "7 days", totalTokens: 1000, costUSD: 5, dayCount: 3,
+                            topProject: "garden-planner", topModelFamily: "Opus", busiestDay: "2026-06-02")
+check(recapSubtitle(namedSub, windowDays: 7).contains("top project garden-planner"), "a real project is named")
+let enDash = Character(UnicodeScalar(0x2013)!)
+for s in [sub, recapSubtitle(empty, windowDays: 7), recapSubtitle(r1, windowDays: 1),
+          recapSubtitle(namedSub, windowDays: 30)] {
+    check(!s.contains(emDash) && !s.contains(enDash), "no em or en dash in: \(s)")
+}
+
 print(failures == 0 ? "\nALL RECAP TESTS PASSED" : "\n\(failures) FAILURE(S)")
 exit(failures == 0 ? 0 : 1)

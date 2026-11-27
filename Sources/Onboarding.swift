@@ -104,8 +104,18 @@ struct WelcomeView: View {
                                  : borrowing ? "Connecting\u{2026}" : "Use my Claude Code sign-in",
                           caption: borrowed ? "Live usage is on. You can disconnect any time from the Account window."
                                  : borrowError ?? (borrowing ? "Asking Claude for your current limits."
-                                            : "Borrows the sign-in Claude Code already has on this Mac. Nothing new to approve; disconnect any time.")) {
-                    guard !borrowed else { return }
+                                            : "Uses the sign-in Claude Code saved on this Mac. Newer versions of Claude Code no longer save one Burndown can read, so this may not work. Sign in with Claude works either way.")) {
+                    // Ignore taps while an attempt is running. A second click would save the values
+                    // the first click had already switched on as its "before" state, and its own
+                    // rollback would then put them back on after the first one had turned them off.
+                    guard !borrowed, !borrowing else { return }
+                    // Remember what this click is about to switch on, so a failed attempt can put it
+                    // back. Leaving it on after a failure kept the app half connected: borrow consent
+                    // and live mode set, no token behind them, and every later fetch asking the
+                    // Keychain again for a sign-in that was already known not to work.
+                    let hadBorrowCLI = settings.borrowCLI
+                    let hadUsageAPI = settings.usageAPI
+                    let hadUsageEnabled = engine.usageEnabled
                     settings.borrowCLI = true
                     if !settings.usageAPI { settings.usageAPI = true }
                     engine.usageEnabled = true
@@ -115,17 +125,38 @@ struct WelcomeView: View {
                     // or no network, was told it was connected and then showed local estimates
                     // while claiming to be live.
                     borrowing = true
+                    // The flag is only cleared by a good Claude Code read, so without this a failure
+                    // from an earlier click (or an earlier fetch) would decide what this one means.
+                    UsageEngine.lastBootstrapFailure = nil
                     engine.fetchLive(force: true) { ok in
                         borrowing = false
                         borrowed = ok
                         if !ok {
+                            // Put the switches back only when the sign-in itself was the problem
+                            // (missing, empty or expired). A fetch that failed for another reason,
+                            // such as no network or a rate limit, had a usable sign-in behind it and
+                            // the next regular fetch will succeed without a second click.
+                            if UsageEngine.lastBootstrapFailure != nil {
+                                settings.borrowCLI = hadBorrowCLI
+                                // A stored sign-in now exists, for example from Sign in with Claude
+                                // finished while this attempt waited on the Keychain. Live mode belongs
+                                // to that sign-in, so it stays on; only the borrow consent goes back.
+                                if !engine.isSignedIn() {
+                                    if settings.usageAPI != hadUsageAPI { settings.usageAPI = hadUsageAPI }
+                                    engine.usageEnabled = hadUsageEnabled
+                                }
+                            }
                             switch UsageEngine.lastBootstrapFailure {
                             case .emptyToken:
                                 borrowError = "Claude Code no longer stores its sign-in where Burndown can read it. Use Sign in with Claude instead."
                             case .expired:
                                 borrowError = "Claude Code's sign-in has expired. Open Claude Code to refresh it, or use Sign in with Claude."
-                            case .noCredential, nil:
+                            case .noCredential:
                                 borrowError = "Could not read a Claude Code sign-in on this Mac. Use Sign in with Claude instead."
+                            case nil:
+                                // The sign-in itself was fine (the flag is reset per attempt), so the
+                                // fetch failed for another reason, such as no network or a rate limit.
+                                borrowError = "Could not reach Claude just now. Burndown will try again on its own."
                             }
                         }
                     }

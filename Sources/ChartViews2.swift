@@ -101,7 +101,11 @@ struct PaceGaugeChart: View {
                     if !ctx.sessionLimitAbsent { paceStrip("Session", rS, p) }
                     paceStrip("Week", rW, p)
                 }
-                .frame(height: ctx.plotH, alignment: .top)
+                // Natural height (at least the base plot height), then the grip's boost as extra
+                // space below, so the block grows by exactly the boost even when both captions
+                // wrap and the strips are taller than the base. The drag-resize freeze depends on it.
+                .frame(minHeight: kChartH, alignment: .top)
+                .padding(.bottom, max(0, ctx.plotH - kChartH))
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("Pace")
                 .accessibilityValue([rS.map { "session \(String(format: "%.1f", $0.ratio)) times the even pace, \($0.caption)" },
@@ -147,7 +151,9 @@ struct PaceGaugeChart: View {
             }
             Text(r?.caption ?? "not enough of this window has run yet")
                 .font(.system(size: 9)).foregroundStyle(p.faint)
-                .lineLimit(1).truncationMode(.tail)
+                // Two lines, not one: the sentence ends in "before the reset", and cutting it at
+                // "arrives 3h..." changes what it says.
+                .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 .padding(.leading, 51)
         }
     }
@@ -188,11 +194,34 @@ struct ModelCapsChart: View {
                             .frame(width: kRowValueWidth, alignment: .trailing)
                     }
                 }
+                // What the dot means, said once under the rows instead of in the stat line, where
+                // it was cut off whenever this was the card's last chart (the live indicator owns
+                // the end of that line). The API sets is_active on the limit that binds right
+                // now (in the recorded responses, always the fullest of the set). That is not a
+                // forecast of which one runs out first, so the words do not claim one.
+                // It may wrap but never truncate, and the dot is the rows' own dot.
+                // The Settings gallery tile has a fixed height: with four or more rows this line
+                // would push the stat line out of it, so the tile leaves it out there (ctx.preview,
+                // never ctx.hover, which is the user's own setting). The real card always shows it.
+                if ctx.modelLimits.contains(where: { $0.active }) && !(ctx.preview && rows.count > 3) {
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        Circle().fill(p.session).frame(width: 4, height: 4)
+                            // Sit the dot on the middle of the lowercase letters, not the baseline.
+                            .alignmentGuide(.firstTextBaseline) { d in d[.bottom] + 1 }
+                        Text("the tightest limit right now")
+                            .font(.system(size: 9)).foregroundStyle(p.faint)
+                            .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                    }
+                }
                 if rows.count < 3 { Spacer(minLength: 0) }
             }
             // minHeight, not height: the API can report several per-model caps, and a fixed frame
-            // would clip the fourth row. The card grows with the rows instead.
-            .frame(minHeight: ctx.plotH, alignment: .top)
+            // would clip the fourth row. The card grows with the rows instead. The boost goes
+            // below as extra space rather than into the min-height, so this block grows by
+            // exactly the boost once the rows are taller than the base, as the drag-resize
+            // freeze assumes of every chart.
+            .frame(minHeight: kChartH, alignment: .top)
+            .padding(.bottom, max(0, ctx.plotH - kChartH))
             // Same gutters as the other row charts, so every value in the card ends on one edge.
             // The 2pt leading gutter aligned to nothing: the in-box left edge is now one token,
                 .padding(.trailing, 8)   // the box's own content edge.
@@ -201,11 +230,15 @@ struct ModelCapsChart: View {
             // Rounded, not truncated, so the spoken figure matches the one drawn beside it. Int() on
             // 38.7 says 38 while the row says 39, and a screen reader disagreeing with the screen is
             // the one kind of accessibility bug the user cannot check for themselves.
-            .accessibilityValue(rows.map { "\($0.name) \(usedAndLeftPercent($0.pct).left) percent left" }.joined(separator: ", "))
+            // The dot's line sits inside this element, whose children are not read, so the value
+            // says which limit carries the dot; a listener would otherwise lose what it marks.
+            .accessibilityValue((rows.map { "\($0.name) \(usedAndLeftPercent($0.pct).left) percent left" }
+                                 + rows.filter { $0.active }.map { "\($0.name) is the tightest limit right now" })
+                                .joined(separator: ", "))
             // Measured against the 264pt card, not guessed: both of the old captions ran past the
-            // end of the line and were cut off mid-sentence.
-            statLine("\(rows.count) weekly limit\(rows.count == 1 ? "" : "s")",
-                     ctx.modelLimits.contains(where: { $0.active }) ? "\u{00B7} dot = binding cap" : "", p)
+            // end of the line and were cut off mid-sentence. The dot's meaning now has its own
+            // line above, so the stat line carries the count only.
+            statLine("\(rows.count) weekly limit\(rows.count == 1 ? "" : "s")", "", p)
         }
     }
 }
